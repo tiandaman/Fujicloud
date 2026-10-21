@@ -50,9 +50,15 @@ const RECIPE_WEIGHTS = [16, 14, 9, 6, 8, 4, 5, 10];
 const recipeKey = (r: Recipe) => JSON.stringify(r);
 const recipeByKey = new Map(RECIPES.map((r) => [recipeKey(r), r]));
 
+/** Every mock photo by id, so an edit can look like its original. */
+const library = new Map<number, Photo>();
+
+/** RAW+JPEG twins and edits share a scene with their original. */
+const sceneSeed = (p: Photo) => (p.editOf ?? (p.pairId ? Math.min(p.id, p.pairId) : p.id)) * 7919;
+
 /** What each fake photo "shows", for the mock smart search. */
 function lightOf(p: Photo): 'golden' | 'dusk' | 'day' {
-  const light = rng(p.pairId ? Math.min(p.id, p.pairId) * 7919 : p.id * 7919)();
+  const light = rng(sceneSeed(p))();
   return light > 0.78 ? 'golden' : light > 0.64 ? 'dusk' : 'day';
 }
 
@@ -133,17 +139,40 @@ function buildLibrary(days = 140): Photo[] {
           : { lat: null, lon: null, gpsEstimated: false, town: null, region: null, country: null }),
       };
       const kind: Kind = r() < 0.04 ? 'heif' : 'jpeg';
-      const jpg: Photo = { ...base, id: id++, name: `${name}.${kind === 'heif' ? 'HIF' : 'JPG'}`, kind, size: 9e6 + r() * 9e6, mtime: Math.round(t), pairId: null };
+      const jpg: Photo = { ...base, id: id++, name: `${name}.${kind === 'heif' ? 'HIF' : 'JPG'}`, kind, size: 9e6 + r() * 9e6, mtime: Math.round(t), pairId: null, editOf: null };
       photos.push(jpg);
       if (rawJpeg && kind === 'jpeg') {
-        const raf: Photo = { ...base, id: id++, name: `${name}.RAF`, kind: 'raf', size: 3.2e7 + r() * 2e7, mtime: Math.round(t), pairId: jpg.id };
+        const raf: Photo = { ...base, id: id++, name: `${name}.RAF`, kind: 'raf', size: 3.2e7 + r() * 2e7, mtime: Math.round(t), pairId: jpg.id, editOf: null };
         jpg.pairId = raf.id;
         photos.push(raf);
+      }
+      // The keepers get taken into Photoshop.
+      if (kind === 'jpeg' && r() < (rating >= 3 ? 0.35 : 0.03)) {
+        const x = r();
+        const [ext, editKind, size]: [string, Kind, number] = x < 0.45 ? ['-Edit.jpg', 'jpeg', 1.2e7] : x < 0.85 ? ['.psd', 'psd', 1.4e8] : ['.tif', 'tiff', 1.5e8];
+        const edited = Math.round(t + 86400 * (1 + r() * 20));
+        photos.push({
+          ...base,
+          id: id++,
+          name: `${name}${ext}`,
+          kind: editKind,
+          size: size * (0.8 + r() * 0.4),
+          mtime: edited,
+          addedAt: edited,
+          pairId: null,
+          editOf: jpg.id,
+          filmSim: null,
+          recipeKey: null,
+          rating: Math.max(rating, 4),
+          flag: 0,
+        });
       }
       t -= 20 + r() * 400;
     }
     t -= 86400 * (1 + r() * 8);
   }
+  library.clear();
+  for (const p of photos) library.set(p.id, p);
   return photos;
 }
 
@@ -166,9 +195,11 @@ const svgCache = new Map<number, string>();
 function sceneFor(p: Photo): string {
   const cached = svgCache.get(p.id);
   if (cached) return cached;
-  const r = rng(p.pairId ? Math.min(p.id, p.pairId) * 7919 : p.id * 7919);
-  const mono = !!p.filmSim && (p.filmSim.startsWith('Acros') || p.filmSim.startsWith('Mono'));
-  const pal = mono ? ['#9a9a9a', '#e6e6e6', '#4a4a4a', '#1c1c1c', '#7a7a7a'] : (palettes[p.filmSim ?? ''] ?? palettes.Provia)[0];
+  const r = rng(sceneSeed(p));
+  const edit = p.editOf != null;
+  const film = (edit ? library.get(p.editOf!)?.filmSim : p.filmSim) ?? null;
+  const mono = !!film && (film.startsWith('Acros') || film.startsWith('Mono'));
+  const pal = mono ? ['#9a9a9a', '#e6e6e6', '#4a4a4a', '#1c1c1c', '#7a7a7a'] : (palettes[film ?? ''] ?? palettes.Provia)[0];
   // Vary the light a little so a day's shots don't all look the same.
   r();
   const light = lightOf(p);
@@ -184,7 +215,17 @@ function sceneFor(p: Photo): string {
     return `${d} L${W} ${H} Z`;
   };
   const seed = Math.floor(r() * 1e6);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice"><defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${sky[0]}"/><stop offset="1" stop-color="${sky[1]}"/></linearGradient><radialGradient id="g"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset="1" stop-color="${pal[1]}" stop-opacity="0"/></radialGradient></defs><rect width="${W}" height="${H}" fill="url(#s)"/><circle cx="${sunX}" cy="${sunY}" r="${H * 0.35}" fill="url(#g)"/><circle cx="${sunX}" cy="${sunY}" r="${18 + r() * 26}" fill="${pal[4]}" opacity=".85"/><path d="${hill(H * 0.62, H * 0.22, seed)}" fill="${pal[2]}" opacity=".75"/><path d="${hill(H * 0.74, H * 0.16, seed + 1)}" fill="${pal[3]}" opacity=".9"/><path d="${hill(H * 0.88, H * 0.08, seed + 2)}" fill="${pal[3]}"/></svg>`;
+  // An "edit" is the same scene, graded: punchier, warmer, with a vignette.
+  const grade = edit
+    ? mono
+      ? '<filter id="e"><feComponentTransfer><feFuncR type="linear" slope="1.22" intercept="-.06"/><feFuncG type="linear" slope="1.22" intercept="-.06"/><feFuncB type="linear" slope="1.22" intercept="-.06"/></feComponentTransfer></filter>'
+      : '<filter id="e"><feColorMatrix type="saturate" values="1.5"/><feComponentTransfer><feFuncR type="linear" slope="1.2" intercept="-.03"/><feFuncG type="linear" slope="1.12" intercept="-.06"/><feFuncB type="linear" slope="1" intercept="-.08"/></feComponentTransfer></filter>'
+    : '';
+  const vignette = edit
+    ? `<radialGradient id="v" cx=".5" cy=".5" r=".75"><stop offset=".55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".55"/></radialGradient>`
+    : '';
+  const scene = `<rect width="${W}" height="${H}" fill="url(#s)"/><circle cx="${sunX}" cy="${sunY}" r="${H * 0.35}" fill="url(#g)"/><circle cx="${sunX}" cy="${sunY}" r="${18 + r() * 26}" fill="${pal[4]}" opacity=".85"/><path d="${hill(H * 0.62, H * 0.22, seed)}" fill="${pal[2]}" opacity=".75"/><path d="${hill(H * 0.74, H * 0.16, seed + 1)}" fill="${pal[3]}" opacity=".9"/><path d="${hill(H * 0.88, H * 0.08, seed + 2)}" fill="${pal[3]}"/>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice"><defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${sky[0]}"/><stop offset="1" stop-color="${sky[1]}"/></linearGradient><radialGradient id="g"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset="1" stop-color="${pal[1]}" stop-opacity="0"/></radialGradient>${grade}${vignette}</defs>${edit ? `<g filter="url(#e)">${scene}</g><rect width="${W}" height="${H}" fill="url(#v)"/>` : scene}</svg>`;
   const url = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   svgCache.set(p.id, url);
   return url;

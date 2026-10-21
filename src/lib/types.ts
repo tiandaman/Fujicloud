@@ -1,4 +1,4 @@
-export type Kind = 'jpeg' | 'raf' | 'heif' | 'tiff';
+export type Kind = 'jpeg' | 'raf' | 'heif' | 'tiff' | 'psd';
 
 /** One indexed file. Mirrors `fuji_core::db::PhotoRow`. */
 export interface Photo {
@@ -36,6 +36,8 @@ export interface Photo {
   region: string | null;
   /** ISO 3166-1 alpha-2. */
   country: string | null;
+  /** For an edit (Photoshop save or export), the camera original. */
+  editOf: number | null;
 }
 
 /** The camera's film recipe. Mirrors `fuji_core::fuji::Recipe`. */

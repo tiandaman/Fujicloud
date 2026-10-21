@@ -2,6 +2,7 @@
 //! of the desktop shell, so it can be tested and benchmarked on its own.
 
 pub mod db;
+pub mod decode;
 #[cfg(feature = "smart-search")]
 pub mod embed;
 pub mod fuji;
@@ -27,6 +28,8 @@ pub enum Kind {
     Raf,
     Heif,
     Tiff,
+    /// Photoshop document (PSD or PSB), usually an edit of a camera file.
+    Psd,
 }
 
 impl Kind {
@@ -37,6 +40,7 @@ impl Kind {
             "raf" => Kind::Raf,
             "hif" | "heif" | "heic" => Kind::Heif,
             "tif" | "tiff" => Kind::Tiff,
+            "psd" | "psb" => Kind::Psd,
             _ => return None,
         })
     }
@@ -47,6 +51,7 @@ impl Kind {
             "raf" => Kind::Raf,
             "heif" => Kind::Heif,
             "tiff" => Kind::Tiff,
+            "psd" => Kind::Psd,
             _ => return None,
         })
     }
@@ -57,6 +62,7 @@ impl Kind {
             Kind::Raf => "raf",
             Kind::Heif => "heif",
             Kind::Tiff => "tiff",
+            Kind::Psd => "psd",
         }
     }
 
@@ -65,8 +71,13 @@ impl Kind {
     }
 
     /// Whether we can build thumbnails and previews for this kind.
-    pub fn has_jpeg_preview(self) -> bool {
-        matches!(self, Kind::Jpeg | Kind::Raf)
+    pub fn has_preview(self) -> bool {
+        !matches!(self, Kind::Heif)
+    }
+
+    /// Formats edits are saved in, as opposed to straight-from-camera files.
+    pub fn is_edit_format(self) -> bool {
+        matches!(self, Kind::Tiff | Kind::Psd)
     }
 }
 
@@ -278,6 +289,37 @@ mod tests {
         };
         let m = meta::from_jpeg_bytes(&south_west.jpeg()).unwrap();
         assert!(m.lat.unwrap() < 0.0 && m.lon.unwrap() < 0.0);
+    }
+
+    #[test]
+    fn photoshop_edits_get_previews_and_thumbnails() {
+        let dir = tempfile::tempdir().unwrap();
+        let rgb: Vec<u8> = (0..900u32 * 600)
+            .flat_map(|i| [(i % 900 / 4) as u8, 90, 160])
+            .collect();
+        let path = dir.path().join("DSCF0003.psd");
+        std::fs::write(&path, decode::write_test_psd(900, 600, &rgb, 8, true, &[])).unwrap();
+        let m = meta::read(&path, Kind::Psd).unwrap();
+        assert_eq!((m.width, m.height), (900, 600));
+
+        let cache = thumbs::Cache::new(dir.path().join("cache")).unwrap();
+        let src = thumbs::Source {
+            path: &path,
+            kind: Kind::Psd,
+            size: 1,
+            mtime: 1,
+        };
+        let thumb = cache.ensure(&src, thumbs::Size::Thumb).unwrap();
+        assert!(thumb.is_file());
+        // One decode made both renditions.
+        assert!(cache.get(&src, thumbs::Size::Preview).is_some());
+        let mut d =
+            jpeg_decoder::Decoder::new(std::io::Cursor::new(std::fs::read(&thumb).unwrap()));
+        d.read_info().unwrap();
+        assert_eq!(
+            (d.info().unwrap().width, d.info().unwrap().height),
+            (512, 341)
+        );
     }
 
     #[test]

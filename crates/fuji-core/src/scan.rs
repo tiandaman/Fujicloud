@@ -120,6 +120,7 @@ pub fn scan_source(
         report(Phase::Reading, n, total);
     }
     if total > 0 || summary.removed > 0 {
+        lib.link_edits()?;
         lib.infer_locations()?;
     }
     report(Phase::Done, total, total);
@@ -132,6 +133,7 @@ pub fn index_files(lib: &Library, source_id: i64, paths: &[PathBuf]) -> Result<u
     let photos: Vec<NewPhoto> =
         io_pool().install(|| files.par_iter().filter_map(read_one).collect());
     lib.upsert(source_id, &photos)?;
+    lib.link_edits()?;
     lib.infer_locations()?;
     Ok(photos.len())
 }

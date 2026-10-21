@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use fast_image_resize::{self as fr, images::Image};
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Kind, meta, raf};
+use crate::{Error, Kind, decode, meta, raf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -94,8 +94,29 @@ impl Cache {
         if path.is_file() {
             return Ok(path);
         }
-        if !src.kind.has_jpeg_preview() {
+        if !src.kind.has_preview() {
             return Err(Error::Unsupported(src.kind));
+        }
+
+        // PSD/TIFF edits are expensive to decode (and may be large network
+        // reads): make both renditions from one decode.
+        if !matches!(src.kind, Kind::Jpeg | Kind::Raf) {
+            let image = decode::image(src.path, src.kind)?;
+            let preview = render_rgb(
+                image.data,
+                image.width,
+                image.height,
+                Size::Preview.long_edge(),
+                Size::Preview.quality(),
+            )?;
+            let thumb = render(
+                &preview.jpeg,
+                Size::Thumb.long_edge(),
+                Size::Thumb.quality(),
+                false,
+            )?;
+            self.store(src, &Renditions { preview, thumb })?;
+            return Ok(path);
         }
 
         // A preview is a much better source than a 40MP original when
@@ -186,15 +207,22 @@ pub fn render(
     jpeg: &[u8],
     long_edge: u32,
     quality: u8,
-    apply_orientation: bool,
+    from_camera: bool,
 ) -> Result<Rendered, Error> {
-    let orientation = if apply_orientation {
-        exif::Reader::new()
-            .read_from_container(&mut Cursor::new(jpeg))
-            .map(|e| meta::orientation(&e))
-            .unwrap_or(1)
+    // Our own renditions are already upright sRGB without EXIF.
+    let (orientation, adobe_rgb) = if from_camera {
+        match exif::Reader::new().read_from_container(&mut Cursor::new(jpeg)) {
+            Ok(e) => (
+                meta::orientation(&e),
+                // "Uncalibrated" is how cameras flag Adobe RGB (DCF option file).
+                e.get_field(exif::Tag::ColorSpace, exif::In::PRIMARY)
+                    .and_then(|f| f.value.get_uint(0))
+                    == Some(0xFFFF),
+            ),
+            Err(_) => (1, false),
+        }
     } else {
-        1
+        (1, false)
     };
 
     let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(jpeg));
@@ -209,15 +237,34 @@ pub fn render(
         .scale(target_w as u16, target_h as u16)
         .map_err(decode_err)?;
     let pixels = decoder.decode().map_err(decode_err)?;
-    let rgb = to_rgb(pixels, info.pixel_format);
+    let mut rgb = to_rgb(pixels, info.pixel_format);
+    if from_camera {
+        match decode::jpeg_icc(jpeg) {
+            Some(icc) => decode::to_srgb(&mut rgb, &icc),
+            None if adobe_rgb => decode::adobe_rgb_to_srgb(&mut rgb),
+            None => {}
+        }
+    }
+    let (rgb, w, h) = orient(rgb, dw as u32, dh as u32, orientation);
+    let long_edge = long_edge.min(w.max(h));
+    render_rgb(rgb, w, h, long_edge, quality)
+}
 
-    let (dw, dh) = (dw as u32, dh as u32);
-    let rgb = if (dw, dh) == (target_w, target_h) {
+/// Fits upright sRGB pixels inside `long_edge` and encodes them as JPEG.
+pub fn render_rgb(
+    rgb: Vec<u8>,
+    w: u32,
+    h: u32,
+    long_edge: u32,
+    quality: u8,
+) -> Result<Rendered, Error> {
+    let (width, height) = fit(w, h, long_edge);
+    let rgb = if (width, height) == (w, h) {
         rgb
     } else {
-        let src = Image::from_vec_u8(dw, dh, rgb, fr::PixelType::U8x3)
+        let src = Image::from_vec_u8(w, h, rgb, fr::PixelType::U8x3)
             .map_err(|e| Error::Decode(e.to_string()))?;
-        let mut dst = Image::new(target_w, target_h, fr::PixelType::U8x3);
+        let mut dst = Image::new(width, height, fr::PixelType::U8x3);
         let options = fr::ResizeOptions::new()
             .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3));
         fr::Resizer::new()
@@ -225,8 +272,6 @@ pub fn render(
             .map_err(|e| Error::Decode(e.to_string()))?;
         dst.into_vec()
     };
-
-    let (rgb, width, height) = orient(rgb, target_w, target_h, orientation);
     let mut jpeg = Vec::with_capacity((width * height / 4) as usize);
     let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg, quality);
     encoder.set_progressive(false);

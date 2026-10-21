@@ -39,6 +39,8 @@
     globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
     sparkle: '<path d="M12 3.5 13.8 9a2 2 0 0 0 1.2 1.2l5.5 1.8-5.5 1.8a2 2 0 0 0-1.2 1.2L12 20.5 10.2 15a2 2 0 0 0-1.2-1.2L3.5 12 9 10.2A2 2 0 0 0 10.2 9Z"/><path d="M19 3v3M17.5 4.5h3"/>',
     similar: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/><path d="M15 7h4M17 5v4M7 15v4M5 17h4" opacity=".6"/>',
+    compare: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M12 2.5v19"/><path d="m7.5 10-2 2 2 2M16.5 10l2 2-2 2"/>',
+    swap: '<path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/>',
     recipe: '<path d="M6 3h9l4 4v14H6Z"/><path d="M14 3v5h5M9.5 12h6M9.5 15.5h6M9.5 9h2.5"/>',
   } as const;
 

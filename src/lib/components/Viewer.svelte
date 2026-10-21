@@ -24,6 +24,7 @@
   const photo = $derived(store.byId.get(id)!);
   const order = $derived(store.navOrder);
   const idx = $derived(order.findIndex((p) => p.id === id));
+  const pair = $derived(store.comparisonFor(photo));
   const stageW = $derived(vw - (store.showInfo ? INFO_W : 0));
 
   /** Where the photo sits at "fit" zoom, in window coordinates. */
@@ -229,7 +230,7 @@
   // ---- keyboard ---------------------------------------------------------------------
 
   async function onKey(e: KeyboardEvent) {
-    if (store.settingsOpen || (e.target as HTMLElement).closest('input, textarea')) return;
+    if (store.settingsOpen || store.compare || (e.target as HTMLElement).closest('input, textarea')) return;
     switch (e.key) {
       case 'ArrowRight':
       case 'ArrowDown':
@@ -362,6 +363,11 @@
         <button class="icon-btn" class:on={store.showInfo} title="Info (I)" onclick={() => (store.showInfo = !store.showInfo)}>
           <Icon name="info" size={17} />
         </button>
+        {#if pair}
+          <button class="btn compare" title="Compare before and after (C)" onclick={() => store.openCompare(pair)}>
+            <Icon name="compare" size={15} /> Before / After
+          </button>
+        {/if}
         <button class="btn edit" title="Edit in Photoshop (Ctrl+E)" onclick={() => store.edit([photo.id])}>
           <Icon name="edit" size={15} /> Edit
         </button>
@@ -532,9 +538,13 @@
   .reject {
     color: var(--danger) !important;
   }
-  .edit {
+  .edit,
+  .compare {
     margin-left: 8px;
     height: 30px;
+  }
+  .compare + .edit {
+    margin-left: 6px;
   }
 
   .zoom-pill {

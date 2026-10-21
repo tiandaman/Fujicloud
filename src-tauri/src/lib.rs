@@ -180,7 +180,7 @@ fn spawn_warm(app: AppHandle, state: Arc<AppState>) {
     let photos = state.lib.photos().unwrap_or_default();
     let missing: Vec<i64> = photos
         .iter()
-        .filter(|p| p.kind.has_jpeg_preview())
+        .filter(|p| p.kind.has_preview())
         // A RAF stacked under its JPEG twin isn't shown in the grid; build
         // its thumbnail on demand rather than pulling it over the network now.
         .filter(|p| !(p.kind.is_raw() && p.pair_id.is_some()))

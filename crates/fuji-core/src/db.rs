@@ -69,6 +69,7 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("town", "TEXT"),
     ("region", "TEXT"),
     ("country", "TEXT"),
+    ("edit_of", "INTEGER"),
 ];
 
 const INDEXES: &str = r#"
@@ -125,6 +126,8 @@ pub struct PhotoRow {
     pub town: Option<String>,
     pub region: Option<String>,
     pub country: Option<String>,
+    /// For an edit (a Photoshop save or export), the camera original.
+    pub edit_of: Option<i64>,
 }
 
 /// Everything about one photo, for the info panel.
@@ -333,7 +336,7 @@ impl Library {
                     folder,
                     name,
                     p.kind.as_str(),
-                    pair_key(&p.path),
+                    pair_key(&p.path, p.kind),
                     p.size as i64,
                     p.mtime,
                     m.taken_at,
@@ -620,6 +623,113 @@ impl Library {
         Ok(estimated)
     }
 
+    // ---- edits ---------------------------------------------------------------
+
+    /// Links edits to the camera file they were made from, so they can be
+    /// compared before/after. An edit sits in the same folder as its original
+    /// or one below it (e.g. `Edits/`), and its name starts with the
+    /// original's: `DSCF1234.psd`, `DSCF1234.tif`, `DSCF1234-Edit.jpg`,
+    /// `DSCF1234_v2.tif`. Edits inherit the original's capture date, camera
+    /// settings and place, which Photoshop saves don't always carry. Returns
+    /// how many edits are linked.
+    pub fn link_edits(&self) -> Result<usize, Error> {
+        let mut conn = self.conn.lock();
+        let rows: Vec<(i64, String, String, String, Option<i64>)> = conn
+            .prepare("SELECT id, folder, name, kind, edit_of FROM photos")?
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<Result<_, _>>()?;
+
+        let stem = |name: &str| {
+            Path::new(name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_lowercase())
+                .unwrap_or_default()
+        };
+        let folder_key = |f: &str| f.to_lowercase();
+        // Camera originals by (folder, stem); the JPEG is the better "before"
+        // than the RAF because it carries the film simulation.
+        let mut originals: HashMap<(String, String), (i64, bool)> = HashMap::new();
+        for (id, folder, name, kind, _) in &rows {
+            let is_jpeg = kind == "jpeg";
+            if is_jpeg || kind == "raf" || kind == "heif" {
+                originals
+                    .entry((folder_key(folder), stem(name)))
+                    .and_modify(|e| {
+                        if is_jpeg && !e.1 {
+                            *e = (*id, true);
+                        }
+                    })
+                    .or_insert((*id, is_jpeg));
+            }
+        }
+
+        let mut links = Vec::new();
+        for (id, folder, name, kind, current) in &rows {
+            let Some(k) = Kind::parse(kind) else { continue };
+            if !(k.is_edit_format() || k == Kind::Jpeg) {
+                continue;
+            }
+            let full = stem(name);
+            // Candidate base names, longest first: "dscf1-edit-2" → "dscf1-edit" → "dscf1".
+            let mut bases = Vec::new();
+            if k.is_edit_format() {
+                bases.push(full.clone());
+            }
+            let mut rest = full.as_str();
+            while let Some(i) = rest.rfind(['-', '_', ' ']) {
+                rest = &rest[..i];
+                if !rest.is_empty() {
+                    bases.push(rest.to_owned());
+                }
+            }
+            let here = folder_key(folder);
+            let above = Path::new(folder)
+                .parent()
+                .map(|p| folder_key(&p.to_string_lossy()));
+            let original = bases.iter().find_map(|base| {
+                originals
+                    .get(&(here.clone(), base.clone()))
+                    .or_else(|| {
+                        above
+                            .as_ref()
+                            .and_then(|a| originals.get(&(a.clone(), base.clone())))
+                    })
+                    .map(|o| o.0)
+                    .filter(|o| o != id)
+            });
+            if original != *current {
+                links.push((*id, original));
+            }
+        }
+
+        let tx = conn.transaction()?;
+        {
+            let mut set = tx.prepare("UPDATE photos SET edit_of = ?2 WHERE id = ?1")?;
+            for (id, original) in &links {
+                set.execute(params![id, original])?;
+            }
+            // Photoshop files carry no metadata we read; JPEG exports may have
+            // had it stripped. Either way, borrow the original's.
+            tx.execute_batch(
+                "UPDATE photos AS e SET
+                    taken_at = o.taken_at, camera = o.camera, lens = o.lens,
+                    focal_length = o.focal_length, aperture = o.aperture, shutter = o.shutter,
+                    iso = o.iso, lat = o.lat, lon = o.lon, gps_estimated = o.gps_estimated,
+                    town = o.town, region = o.region, country = o.country
+                 FROM photos AS o
+                 WHERE e.edit_of = o.id AND (e.kind IN ('tiff', 'psd') OR e.camera IS NULL)",
+            )?;
+        }
+        tx.commit()?;
+        Ok(conn.query_row(
+            "SELECT count(*) FROM photos WHERE edit_of IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? as usize)
+    }
+
     // ---- smart search embeddings --------------------------------------------
 
     /// Photos still needing an embedding for `model`, newest first. A RAF
@@ -628,7 +738,7 @@ impl Library {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT p.id FROM photos p
-             WHERE p.kind IN ('jpeg', 'raf')
+             WHERE p.kind IN ('jpeg', 'raf', 'tiff', 'psd')
                AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model = ?1)
                AND NOT (p.kind = 'raf' AND EXISTS
                     (SELECT 1 FROM photos j WHERE j.pair_key = p.pair_key AND j.kind = 'jpeg'))
@@ -673,13 +783,13 @@ impl Library {
     }
 }
 
-const ROW_COLUMNS: usize = 29;
+const ROW_COLUMNS: usize = 30;
 const ROW_SELECT: &str =
     "SELECT p.id, p.source_id, p.name, p.folder, p.kind, p.size, p.mtime, p.taken_at,
     p.width, p.height, p.camera, p.lens, p.focal_length, p.aperture, p.shutter, p.iso, p.film_sim,
     p.rating, p.flag, p.label, p.added_at,
     (SELECT q.id FROM photos q WHERE q.pair_key = p.pair_key AND q.id <> p.id LIMIT 1),
-    p.recipe_key, p.lat, p.lon, p.gps_estimated, p.town, p.region, p.country";
+    p.recipe_key, p.lat, p.lon, p.gps_estimated, p.town, p.region, p.country, p.edit_of";
 
 fn row_from(r: &rusqlite::Row) -> rusqlite::Result<PhotoRow> {
     Ok(PhotoRow {
@@ -712,6 +822,7 @@ fn row_from(r: &rusqlite::Row) -> rusqlite::Result<PhotoRow> {
         town: r.get(26)?,
         region: r.get(27)?,
         country: r.get(28)?,
+        edit_of: r.get(29)?,
     })
 }
 
@@ -734,9 +845,15 @@ fn migrate(conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 
-/// Files shot as RAW+JPEG share a folder and stem (`DSCF1234.RAF`/`.JPG`).
-fn pair_key(path: &Path) -> String {
-    path.with_extension("").to_string_lossy().to_lowercase()
+/// Files the camera shot together share a folder and stem (`DSCF1234.RAF`
+/// and `.JPG` or `.HIF`). Edits such as `DSCF1234.psd` share the stem too but
+/// are separate photos (linked by `edit_of`), so they get a key of their own.
+fn pair_key(path: &Path, kind: Kind) -> String {
+    if kind.is_edit_format() {
+        path.to_string_lossy().to_lowercase()
+    } else {
+        path.with_extension("").to_string_lossy().to_lowercase()
+    }
 }
 
 fn default_label(path: &Path) -> String {
@@ -926,6 +1043,66 @@ mod tests {
         assert_eq!(lib.embedding_count("m").unwrap(), 1);
         assert_eq!(lib.missing_embeddings("m").unwrap().len(), 1);
         assert_eq!(lib.missing_embeddings("other-model").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn edits_are_linked_to_their_originals() {
+        let lib = Library::open_in_memory().unwrap();
+        let src = lib.add_source(Path::new("/lib")).unwrap();
+        let mut original = photo("/lib/day/DSCF0001.JPG", Kind::Jpeg);
+        original.meta.taken_at = Some(1_000);
+        original.meta.camera = Some("X-T5".into());
+        let files = [
+            original,
+            photo("/lib/day/DSCF0001.RAF", Kind::Raf),
+            photo("/lib/day/DSCF0001.psd", Kind::Psd),
+            photo("/lib/day/Edits/DSCF0001-Edit.jpg", Kind::Jpeg),
+            photo("/lib/day/DSCF0002.RAF", Kind::Raf),
+            photo("/lib/day/DSCF0002_v2-final.tif", Kind::Tiff),
+            photo("/lib/day/DSCF0003.JPG", Kind::Jpeg),
+            photo("/lib/day/holiday-best.jpg", Kind::Jpeg),
+        ];
+        lib.upsert(src.id, &files).unwrap();
+        assert_eq!(lib.link_edits().unwrap(), 3);
+
+        let rows = lib.photos().unwrap();
+        let get = |n: &str| rows.iter().find(|r| r.name == n).unwrap().clone();
+        let jpg = get("DSCF0001.JPG");
+        // The JPEG (with its film simulation) is the "before", not the RAF.
+        assert_eq!(get("DSCF0001.psd").edit_of, Some(jpg.id));
+        assert_eq!(get("DSCF0001-Edit.jpg").edit_of, Some(jpg.id));
+        assert_eq!(
+            get("DSCF0002_v2-final.tif").edit_of,
+            Some(get("DSCF0002.RAF").id)
+        );
+        for n in [
+            "DSCF0001.JPG",
+            "DSCF0001.RAF",
+            "DSCF0002.RAF",
+            "DSCF0003.JPG",
+            "holiday-best.jpg",
+        ] {
+            assert_eq!(get(n).edit_of, None, "{n}");
+        }
+        // A Photoshop save doesn't steal the RAW+JPEG pairing.
+        assert_eq!(jpg.pair_id, Some(get("DSCF0001.RAF").id));
+        assert_eq!(get("DSCF0001.psd").pair_id, None);
+        // Edits borrow the original's capture details.
+        assert_eq!(get("DSCF0001.psd").taken_at, Some(1_000));
+        assert_eq!(get("DSCF0001.psd").camera.as_deref(), Some("X-T5"));
+
+        // The original goes away: the link goes too.
+        lib.remove_photos(&[jpg.id, get("DSCF0001.RAF").id])
+            .unwrap();
+        lib.link_edits().unwrap();
+        assert_eq!(
+            lib.photos()
+                .unwrap()
+                .iter()
+                .filter(|r| r.edit_of.is_some())
+                .count(),
+            1
+        );
     }
 
     #[test]

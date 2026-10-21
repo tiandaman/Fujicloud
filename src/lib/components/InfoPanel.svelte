@@ -25,6 +25,8 @@
   const photo = $derived(ids.length === 1 ? store.byId.get(ids[0]) : undefined);
   const twin = $derived(photo?.pairId != null ? store.byId.get(photo.pairId) : undefined);
   const many = $derived(ids.length > 1 ? ids.map((id) => store.byId.get(id)).filter((p) => !!p) : []);
+  const pair = $derived(store.comparisonOf(ids));
+  const edits = $derived(photo ? (store.editsOf.get(photo.id) ?? (twin ? store.editsOf.get(twin.id) : undefined) ?? []) : []);
 
   let detail = $state<Detail | null>(null);
   let showExif = $state(false);
@@ -83,6 +85,38 @@
         <p class="ev muted">Exposure compensation {formatEv(detail.exposureComp)}</p>
       {/if}
     </section>
+
+    {#if pair}
+      {@const b = store.byId.get(pair.before)}
+      {@const a = store.byId.get(pair.after)}
+      <section class="edits">
+        <h4>{photo.editOf != null ? 'Before & after' : edits.length > 1 ? `Before & after · ${plural(edits.length, 'edit')}` : 'Before & after'}</h4>
+        <button class="ba" title="Compare before and after (C)" onclick={() => store.openCompare(pair)}>
+          {#each [b, a] as p, i (i)}
+            {#if p}
+              <span class="side">
+                <img src={api.thumbUrl(p)} alt="" draggable="false" />
+                <em>{i === 0 ? 'Before' : 'After'}</em>
+              </span>
+            {/if}
+          {/each}
+          <span class="go"><Icon name="compare" size={15} /> Compare</span>
+        </button>
+        {#if photo.editOf != null && b}
+          <button class="link truncate" title="Go to the original" onclick={() => (store.viewerId != null ? (store.viewerId = store.focusId = b.id) : (store.focusId = b.id))}>
+            Original: {b.name}
+          </button>
+        {:else if edits.length > 1}
+          <div class="others">
+            {#each edits as e (e.id)}
+              <button class="chip" title="Compare with {e.name}" onclick={() => store.openCompare({ before: pair.before, after: e.id })}>
+                {e.kind === 'psd' ? 'PSD' : e.kind === 'tiff' ? 'TIFF' : 'JPEG'} · {e.name}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </section>
+    {/if}
 
     {#if detail?.recipe?.filmSim}
       <section><RecipeCard recipe={detail.recipe} recipeKey={photo.recipeKey} /></section>
@@ -196,6 +230,9 @@
       <Stars value={many.every((p) => p.rating === many[0].rating) ? many[0].rating : 0} size={20} onrate={(r) => store.rate(r, ids)} />
       <div class="multi-actions">
         <button class="btn primary" onclick={() => store.edit(ids)}><Icon name="edit" size={15} /> Edit in Photoshop</button>
+        {#if pair}
+          <button class="btn" onclick={() => store.openCompare(pair)}><Icon name="compare" size={15} /> Compare side by side</button>
+        {/if}
         <button class="btn" onclick={() => store.flag(1, ids)}><Icon name="flag" size={15} /> Pick all</button>
         <button class="btn subtle" onclick={() => (store.selection = new Set())}>Clear selection</button>
       </div>
@@ -404,6 +441,106 @@
     margin-top: 10px;
     font-size: 11.5px;
     user-select: text;
+  }
+  .edits h4 {
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .ba {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px;
+    width: 100%;
+    padding: 0;
+    border-radius: 9px;
+    overflow: hidden;
+    background: var(--tile);
+  }
+  .ba .side {
+    position: relative;
+    aspect-ratio: 4 / 3;
+  }
+  .ba img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 300ms var(--ease-out);
+  }
+  .ba:hover img {
+    transform: scale(1.04);
+  }
+  .ba em {
+    position: absolute;
+    left: 6px;
+    bottom: 6px;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .ba .go {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 11px;
+    border-radius: 999px;
+    transform: translate(-50%, -50%);
+    background: rgba(20, 20, 22, 0.78);
+    backdrop-filter: blur(10px);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 160ms ease;
+  }
+  .ba:hover .go,
+  .ba:focus-visible .go {
+    opacity: 1;
+  }
+  .link {
+    display: block;
+    max-width: 100%;
+    margin-top: 8px;
+    color: var(--accent);
+    font-size: 12px;
+  }
+  .link:hover {
+    text-decoration: underline;
+  }
+  .others {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+  }
+  .chip {
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-2);
+    font-size: 11.5px;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .chip:hover {
+    background: var(--hover);
+    color: var(--text);
   }
   .multi {
     display: flex;

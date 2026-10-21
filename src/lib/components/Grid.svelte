@@ -157,12 +157,15 @@
     }
     const ids = store.selection.size ? [...store.selection] : [p.id];
     const many = ids.length > 1;
+    const pair = store.comparisonOf(ids);
+    const compareLabel = many ? 'Compare side by side' : p.editOf != null ? 'Compare with original' : 'Compare with edit';
     menu = {
       x: e.clientX,
       y: e.clientY,
       items: [
         { label: 'Open', icon: 'expand', hint: 'Space', action: () => store.open(p.id), hidden: many },
         { label: many ? `Edit ${ids.length} in Photoshop` : 'Edit in Photoshop', icon: 'edit', hint: 'Ctrl+E', action: () => store.edit(ids) },
+        { label: compareLabel, icon: 'compare', hint: 'C', action: () => store.openCompare(pair), hidden: !pair },
         { label: 'Show in Explorer', icon: 'reveal', action: () => api.reveal(p.id), hidden: many },
         { label: 'Open with default app', icon: 'open', action: () => api.openDefault(p.id), hidden: many },
         { label: 'Find similar photos', icon: 'similar', action: () => store.findSimilar(p.id), hidden: many || !store.smartReady },
@@ -179,7 +182,7 @@
   // ---- keyboard ------------------------------------------------------------------
 
   function onKey(e: KeyboardEvent) {
-    if (store.viewerId != null || store.settingsOpen || menu) return;
+    if (store.viewerId != null || store.compare || store.settingsOpen || menu) return;
     const t = e.target as HTMLElement;
     if (t.closest('input, textarea, select, [contenteditable]')) return;
     const flat = layout.flat;
@@ -303,9 +306,15 @@
                 <span class="stars">{'★'.repeat(p.rating)}</span>
               {/if}
               <span class="kinds">
+                {#if p.editOf == null && store.editsOf.has(p.id)}
+                  <span class="badge" title="Edited · press C to compare"><Icon name="compare" size={11} stroke={2} /></span>
+                {/if}
                 {#if p.pairId != null && store.stack}<span class="badge">RAW+JPG</span>
                 {:else if p.kind === 'raf'}<span class="badge">RAW</span>{/if}
               </span>
+              {#if p.editOf != null}
+                <span class="badge edit" title="Edit · press C to compare with the original">{p.kind === 'psd' ? 'PSD' : p.kind === 'tiff' ? 'TIFF' : 'EDIT'}</span>
+              {/if}
             </div>
           </div>
         </div>
@@ -326,7 +335,7 @@
       <h3>No photos here</h3>
       <p>
         {#if store.query}Nothing matches “{store.query}”.
-        {:else if store.minRating || store.kinds.length < 4}Try loosening the filters in the toolbar.
+        {:else if store.minRating || store.kinds.length < 5}Try loosening the filters in the toolbar.
         {:else}Photos you add will show up here.{/if}
       </p>
     </div>
@@ -570,10 +579,19 @@
   .tile:hover .kinds {
     opacity: 1;
   }
-  .kinds .badge {
+  .kinds {
+    display: flex;
+    gap: 3px;
+  }
+  .kinds .badge,
+  .badge.edit {
     background: rgba(0, 0, 0, 0.55);
     color: rgba(255, 255, 255, 0.9);
     backdrop-filter: blur(6px);
+  }
+  .badge.edit {
+    color: #fff;
+    box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.35);
   }
 
   .empty {

@@ -48,10 +48,21 @@ pub fn read(path: &Path, kind: Kind) -> Result<PhotoMeta, Error> {
                 .or_else(|_| from_jpeg_stream(&mut Cursor::new(raf::read_embedded_jpeg(path)?)))
         }
         Kind::Jpeg => from_jpeg_stream(&mut BufReader::with_capacity(64 * 1024, File::open(path)?)),
-        Kind::Heif | Kind::Tiff => {
+        Kind::Heif => {
             let exif =
                 exif::Reader::new().read_from_container(&mut BufReader::new(File::open(path)?))?;
             Ok(from_exif(&exif))
+        }
+        // Edits can be hundreds of MB; read just the header. Date, camera and
+        // place come from the original they're linked to.
+        Kind::Tiff | Kind::Psd => {
+            let (width, height, orientation) = crate::decode::dimensions(path, kind)?;
+            Ok(PhotoMeta {
+                width,
+                height,
+                orientation,
+                ..Default::default()
+            })
         }
     }
 }
@@ -229,6 +240,7 @@ fn parse_exif_datetime(s: &[u8]) -> Option<i64> {
 /// Every EXIF field rendered for humans, for the info panel.
 pub fn all_fields(path: &Path, kind: Kind) -> Result<Vec<(String, String)>, Error> {
     let exif = match kind {
+        Kind::Tiff | Kind::Psd => return Ok(Vec::new()),
         Kind::Raf => exif::Reader::new()
             .read_from_container(&mut Cursor::new(raf::read_embedded_jpeg(path)?))?,
         _ => exif::Reader::new().read_from_container(&mut BufReader::new(File::open(path)?))?,

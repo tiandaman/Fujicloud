@@ -40,6 +40,17 @@ thousands of images.
   to the Shield's SSD, filed as `YYYY/YYYY-MM-DD/`, several files at a time. Thumbnails
   and previews are rendered from the local copy *while* it uploads, so a new photo can
   be browsed the moment it arrives.
+- **Before and after:** edits are matched to the shot they came from: a PSD, a TIFF, or
+  an `-Edit.jpg` next to the original or in a subfolder. Press `C` (or *Before / After*
+  in the viewer) to see the camera's version and your edit **side by side**, or on
+  one image with a **slider** you drag across. Zoom and pan move both sides together,
+  so you can compare the same eye or the same sky at 100%. Edits get a badge in the
+  grid and inherit the original's date, camera and location. Select any two photos and
+  right-click to compare them, too.
+- **Photoshop files in the grid:** layered PSD/PSB and TIFF files get thumbnails and
+  previews from their flattened image (8- or 16-bit, compressed or not). Colour is
+  managed, so Adobe RGB and ProPhoto edits look the same as they do in Photoshop
+  rather than washed out.
 - **Recipe cards:** the full in-camera film recipe is read from every shot: film
   simulation, grain, Color Chrome and FX Blue, white balance and its shift, dynamic
   range, highlight/shadow, color, sharpness, noise reduction, clarity and monochrome
@@ -90,7 +101,7 @@ cache.
 | Layer | Choice | Why |
 | --- | --- | --- |
 | App shell | [Tauri 2](https://tauri.app) (Rust) | Uses Windows' built-in WebView2: ~10 MB installer and low RAM, versus ~150 MB for Electron. |
-| UI | Svelte 5 (runes) + Vite 8 | Compiles to plain DOM updates with no virtual DOM. The whole UI is ~45 KB gzipped. |
+| UI | Svelte 5 (runes) + Vite 8 | Compiles to plain DOM updates with no virtual DOM. The UI is ~70 KB gzipped; the map loads only when you open Places. |
 | Grid | Custom virtualised layout | Layout for 50k photos takes ~12 ms, and only on-screen tiles exist in the DOM. Measured at 60 fps median while flinging through 43k photos. |
 | Images | `fuji://` protocol + `<img>` | No base64 over IPC. The webview decodes off the main thread, and URLs are immutable so they're cached. |
 | Scheduling | 3-lane worker pool | The open photo comes first, then the visible thumbnails (LIFO, so a fast scroll serves what's on screen *now*), then background warm-up. |
@@ -109,8 +120,9 @@ crates/fuji-core/   Rust core, tested on its own
   raf.rs            RAF container → embedded JPEG
   fuji.rs           Fujifilm MakerNote (film simulation, grain, DR)
   meta.rs           EXIF extraction
+  decode.rs         PSD/TIFF decoding and ICC colour conversion to sRGB
   thumbs.rs         thumbnail/preview pipeline + disk cache
-  db.rs             SQLite index, RAW+JPEG pairing, culling
+  db.rs             SQLite index, RAW+JPEG pairing, edit linking, culling
   scan.rs           parallel incremental scanning
   ingest.rs         inbox → library filing
   xmp.rs            Lightroom/Bridge-compatible sidecars
@@ -146,7 +158,7 @@ cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
 - Read ratings back from `.xmp` sidecars during scans, so every laptop sees the same
   stars.
 - Direct camera import over PTP/IP (no PC AutoSave needed).
-- Side-by-side compare, and grouping bursts into stacks using smart search vectors.
+- Group bursts into stacks using smart search vectors.
 - Import a phone's location history (GPX / Google Takeout) for shots taken without
   location sync.
 

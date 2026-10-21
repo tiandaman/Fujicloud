@@ -166,6 +166,10 @@ impl ModelSpec {
         device: Device,
         progress: &dyn Fn(u64, u64),
     ) -> Result<(), Error> {
+        // One download at a time, so a second caller finds the files the
+        // first one fetched instead of racing it for the same paths.
+        static DOWNLOAD: Mutex<()> = Mutex::new(());
+        let _one = DOWNLOAD.lock();
         let mut wanted: Vec<&[&str]> = vec![
             std::slice::from_ref(&self.text),
             std::slice::from_ref(&self.tokenizer),
@@ -211,7 +215,7 @@ impl ModelSpec {
         progress(done, total);
         for (path, response) in pending {
             fs::create_dir_all(path.parent().unwrap())?;
-            let part = path.with_extension("part");
+            let part = path.with_extension(format!("{}.part", std::process::id()));
             let mut out = fs::File::create(&part)?;
             let mut reader = response.into_body().into_reader();
             let mut buf = vec![0u8; 1 << 20];

@@ -32,7 +32,7 @@ export interface GridHandle {
 }
 
 const PREFS_KEY = 'fujicloud.prefs.v1';
-const ALL_KINDS: Kind[] = ['jpeg', 'raf', 'heif', 'tiff'];
+const ALL_KINDS: Kind[] = ['jpeg', 'raf', 'heif', 'tiff', 'psd'];
 
 const sortKeys: Record<SortKey, (p: Photo) => number | string | null> = {
   taken: (p) => p.takenAt,
@@ -90,6 +90,9 @@ class Store {
   /** Tile hidden while the viewer animates out of / back into it. */
   hiddenId = $state<number | null>(null);
   settingsOpen = $state(false);
+  /** Before/after comparison, shown over everything else. */
+  compare = $state.raw<{ before: number; after: number } | null>(null);
+  compareMode = $state<'split' | 'slider'>('split');
   /** Where the map should fly to next. */
   mapFocus = $state.raw<{ lat: number; lon: number; zoom?: number } | null>(null);
 
@@ -140,6 +143,19 @@ class Store {
   // ---- derived views ----
 
   byId = $derived(new Map(this.photos.map((p) => [p.id, p])));
+
+  /** Original id → its edits, newest first. */
+  editsOf = $derived.by(() => {
+    const m = new Map<number, Photo[]>();
+    for (const p of this.photos) {
+      if (p.editOf == null) continue;
+      const list = m.get(p.editOf) ?? [];
+      list.push(p);
+      m.set(p.editOf, list);
+    }
+    for (const list of m.values()) list.sort((a, b) => b.mtime - a.mtime);
+    return m;
+  });
   recipeByKey = $derived(new Map(this.recipes.map((r) => [r.key, r])));
 
   smartReady = $derived(!!this.smart?.enabled && (this.smart.phase === 'ready' || this.smart.phase === 'indexing') && this.smart.indexed > 0);
@@ -533,6 +549,33 @@ class Store {
     } catch (e) {
       this.toast(String(e), 'error');
     }
+  }
+
+  /** The before/after pair for a photo: an edit with its original, or an
+   * original with its newest edit. */
+  comparisonFor(p: Photo | undefined): { before: number; after: number } | null {
+    if (!p) return null;
+    if (p.editOf != null && this.byId.has(p.editOf)) return { before: p.editOf, after: p.id };
+    const original = p.kind === 'raf' && p.pairId != null ? this.byId.get(p.pairId) : p;
+    const edit = this.editsOf.get(p.id)?.[0] ?? (original ? this.editsOf.get(original.id)?.[0] : undefined);
+    return edit ? { before: p.id, after: edit.id } : null;
+  }
+
+  /** What to compare for a selection: two photos side by side (original or
+   * older one first), or one photo against its edit or original. */
+  comparisonOf(ids: number[]): { before: number; after: number } | null {
+    if (ids.length === 1) return this.comparisonFor(this.byId.get(ids[0]));
+    if (ids.length !== 2) return null;
+    const [a, b] = ids.map((id) => this.byId.get(id));
+    if (!a || !b) return null;
+    const rank = (p: Photo) => [p.editOf != null ? 1 : 0, p.takenAt ?? p.mtime, p.mtime];
+    const [ra, rb] = [rank(a), rank(b)];
+    const aFirst = ra[0] !== rb[0] ? ra[0] < rb[0] : ra[1] !== rb[1] ? ra[1] < rb[1] : ra[2] <= rb[2];
+    return aFirst ? { before: a.id, after: b.id } : { before: b.id, after: a.id };
+  }
+
+  openCompare(pair: { before: number; after: number } | null) {
+    if (pair) this.compare = pair;
   }
 
   showOnMap(p: Photo) {

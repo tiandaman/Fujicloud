@@ -134,6 +134,11 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
         "o" => match file_kind {
             Kind::Jpeg => std::fs::read(&file).map_err(Into::into),
             Kind::Raf => raf::read_embedded_jpeg(&file).map_err(Into::into),
+            // The webview can't show PSD/TIFF; the 2560px rendition stands in.
+            Kind::Psd | Kind::Tiff => state
+                .cache
+                .ensure(&src, Size::Preview)
+                .and_then(|p| Ok(std::fs::read(p)?)),
             other => Err(fuji_core::Error::Unsupported(other)),
         },
         _ => return status(StatusCode::NOT_FOUND),

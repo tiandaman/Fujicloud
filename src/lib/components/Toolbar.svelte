@@ -37,7 +37,8 @@
     ['jpeg', 'JPEG'],
     ['raf', 'RAW (RAF)'],
     ['heif', 'HEIF'],
-    ['tiff', 'TIFF'],
+    ['tiff', 'TIFF (edits)'],
+    ['psd', 'Photoshop (PSD)'],
   ];
 
   function openAt(e: MouseEvent, items: MenuItem[]) {
@@ -79,7 +80,7 @@
     ]);
   }
 
-  const filtered = $derived(store.minRating > 0 || store.kinds.length < 4 || !store.stack);
+  const filtered = $derived(store.minRating > 0 || store.kinds.length < 5 || !store.stack);
   const sortLabel = $derived(sorts.find(([k]) => k === store.sort)?.[1]);
 
   export function focusSearch() {
