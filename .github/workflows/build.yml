@@ -41,7 +41,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .models
-          key: siglip-base-patch16-224-q8
+          key: siglip-base-patch16-224-cpu
       # Downloads the same model the app does and checks real image↔text
       # matching end to end (inputs, outputs, preprocessing, tokenizer).
       - run: cargo test -p fuji-core -- --ignored --nocapture real_siglip
@@ -62,8 +62,11 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
+      # GPU smart search: ship Microsoft's DirectML runtime next to the app.
+      - name: Fetch DirectML
+        run: pwsh scripts/fetch-directml.ps1 -Into target/debug/deps
       - name: Build installer
-        run: npx tauri build
+        run: npx tauri build --config src-tauri/tauri.directml.conf.json
       - uses: actions/upload-artifact@v4
         with:
           name: Fujicloud-Windows-installer
@@ -75,5 +78,16 @@ jobs:
       # release never blocks getting an installer.
       - name: Core tests on Windows (incl. ONNX Runtime)
         run: cargo test -p fuji-core
+      - uses: actions/cache@v4
+        with:
+          path: .models
+          key: siglip-base-patch16-224-gpu
+      # Real model on the CPU and through DirectML (on Windows' software
+      # renderer, since CI machines have no GPU): proves the GPU code path,
+      # the fp16 model and the bundled DirectML.dll work together.
+      - name: Smart search on Windows (CPU + DirectML)
+        run: cargo test -p fuji-core -- --ignored --nocapture real_siglip
+        env:
+          FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
       - name: Clippy
         run: cargo clippy -p fujicloud -- -D warnings

@@ -2,10 +2,10 @@
 //! photo in the background from its cached thumbnail, and answer queries.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
-use fuji_core::embed::{Engine, SIGLIP_BASE as MODEL};
+use fuji_core::embed::{self, Device, Engine, Gpu, SIGLIP_BASE as MODEL};
 use fuji_core::search::{self, Index};
 use fuji_core::thumbs::{self, Size};
 use parking_lot::Mutex;
@@ -13,9 +13,6 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::AppState;
-
-/// Photos embedded per model call.
-const BATCH: usize = 8;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -40,6 +37,14 @@ pub struct Status {
     pub indexed: i64,
     pub download_mb: u32,
     pub error: Option<String>,
+    /// The graphics card found on this PC, if any.
+    pub gpu: Option<Gpu>,
+    /// Whether the user allows using it.
+    pub use_gpu: bool,
+    /// What photos are being analysed on right now, e.g. "GPU" or "CPU".
+    pub running_on: Option<String>,
+    /// Why the GPU isn't being used, if it was wanted but failed.
+    pub gpu_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -51,18 +56,35 @@ pub struct Smart {
     again: AtomicBool,
     /// Photos whose thumbnail couldn't be read; not retried this session.
     failed: Mutex<HashSet<i64>>,
+    gpu: OnceLock<Option<Gpu>>,
+    /// DirectML failed to start; stay on the CPU until settings change.
+    gpu_error: Mutex<Option<String>>,
 }
 
 impl Smart {
     pub fn status(&self, state: &AppState) -> Status {
         let mut s = self.status.lock().clone();
-        s.enabled = state.settings.read().smart_search;
-        s.download_mb = MODEL.download_mb;
+        let settings = state.settings.read();
+        s.enabled = settings.smart_search;
+        s.use_gpu = settings.smart_gpu;
+        drop(settings);
+        s.gpu = self.gpu().cloned();
+        s.gpu_error = self.gpu_error.lock().clone();
+        s.download_mb = MODEL.download_mb(self.preferred(state));
         s.indexed = state.lib.embedding_count(MODEL.id).unwrap_or(0);
+        // Never wait here: status is polled from the UI while a model loads.
+        s.running_on = self
+            .engine
+            .try_lock()
+            .and_then(|e| e.as_ref().map(|e| e.device()))
+            .map(|d| match d {
+                Device::Gpu(_) => "GPU".to_owned(),
+                Device::Cpu => "CPU".to_owned(),
+            });
         if !s.enabled {
             s.phase = Phase::Off;
         } else if s.phase == Phase::Off {
-            s.phase = if MODEL.is_downloaded(&state.models_dir) {
+            s.phase = if MODEL.is_downloaded(&state.models_dir, self.preferred(state)) {
                 Phase::Ready
             } else {
                 Phase::Downloading
@@ -71,19 +93,62 @@ impl Smart {
         s
     }
 
+    /// The GPU, detected once (DXGI on Windows).
+    fn gpu(&self) -> Option<&Gpu> {
+        self.gpu.get_or_init(embed::best_gpu).as_ref()
+    }
+
+    /// Where we'd like to run: the GPU if there is one, it's allowed, and it
+    /// hasn't failed to start this session.
+    fn preferred(&self, state: &AppState) -> Device {
+        if state.settings.read().smart_gpu
+            && self.gpu().is_some()
+            && self.gpu_error.lock().is_none()
+        {
+            Device::Gpu(None)
+        } else {
+            Device::Cpu
+        }
+    }
+
+    /// Forgets the loaded model so the next use picks the device afresh.
+    pub fn reset_device(&self) {
+        *self.engine.lock() = None;
+        *self.gpu_error.lock() = None;
+    }
+
     fn update(&self, app: &AppHandle, state: &AppState, f: impl FnOnce(&mut Status)) {
         f(&mut self.status.lock());
         let _ = app.emit("smart", self.status(state));
     }
 
+    /// The loaded model: on the GPU when preferred and DirectML starts,
+    /// otherwise on the CPU (if that variant is downloaded).
     fn engine(&self, state: &AppState) -> Result<Arc<Engine>, String> {
         let mut slot = self.engine.lock();
         if let Some(engine) = slot.as_ref() {
             return Ok(engine.clone());
         }
+        let dir = &state.models_dir;
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get() / 2);
-        let engine =
-            Arc::new(Engine::load(&state.models_dir, &MODEL, threads).map_err(|e| e.to_string())?);
+        let mut engine = None;
+        if self.preferred(state).is_gpu() && MODEL.is_downloaded(dir, Device::Gpu(None)) {
+            match Engine::load(dir, &MODEL, Device::Gpu(None), threads) {
+                Ok(e) => engine = Some(e),
+                Err(e) => {
+                    log::warn!("GPU unavailable, using the CPU: {e}");
+                    *self.gpu_error.lock() = Some(e.to_string());
+                }
+            }
+        }
+        let engine = match engine {
+            Some(e) => e,
+            None if MODEL.is_downloaded(dir, Device::Cpu) => {
+                Engine::load(dir, &MODEL, Device::Cpu, threads).map_err(|e| e.to_string())?
+            }
+            None => return Err("The smart search model isn't downloaded yet.".into()),
+        };
+        let engine = Arc::new(engine);
         *slot = Some(engine.clone());
         Ok(engine)
     }
@@ -110,7 +175,10 @@ impl Smart {
         let q = engine.embed_text(query).map_err(|e| e.to_string())?;
         // SigLIP's text↔image scores are small and tightly bunched; keep the
         // ones close to the best match.
-        Ok(self.index(state)?.search(&q, 600, 0.07))
+        // Measured with the real model: matching image/text pairs score
+        // ~0.11–0.12 and non-matches 0.02–0.06, so 0.05 below the best
+        // keeps real matches and drops the rest.
+        Ok(self.index(state)?.search(&q, 600, 0.05))
     }
 
     /// Photos that look like `id`, excluding itself.
@@ -166,27 +234,42 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
         .expect("spawn smart search thread");
 }
 
+fn download(app: &AppHandle, state: &AppState, device: Device) -> Result<(), String> {
+    let smart = &state.smart;
+    if MODEL.is_downloaded(&state.models_dir, device) {
+        return Ok(());
+    }
+    smart.update(app, state, |s| {
+        s.phase = Phase::Downloading;
+        s.error = None;
+    });
+    let last = Mutex::new(std::time::Instant::now());
+    MODEL
+        .download(&state.models_dir, device, &|done, total| {
+            let mut last = last.lock();
+            if last.elapsed().as_millis() > 250 || (total > 0 && done == total) {
+                *last = std::time::Instant::now();
+                smart.update(app, state, |s| (s.done, s.total) = (done, total));
+            }
+        })
+        .map_err(|e| e.to_string())
+}
+
 fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let smart = &state.smart;
-    if !MODEL.is_downloaded(&state.models_dir) {
-        smart.update(app, state, |s| {
-            s.phase = Phase::Downloading;
-            s.error = None;
-        });
-        let last = Mutex::new(std::time::Instant::now());
-        MODEL
-            .download(&state.models_dir, &|done, total| {
-                let mut last = last.lock();
-                if last.elapsed().as_millis() > 250 || (total > 0 && done == total) {
-                    *last = std::time::Instant::now();
-                    smart.update(app, state, |s| (s.done, s.total) = (done, total));
-                }
-            })
-            .map_err(|e| e.to_string())?;
-    }
-
+    download(app, state, smart.preferred(state))?;
     smart.update(app, state, |s| s.phase = Phase::Loading);
-    let engine = smart.engine(state)?;
+    let engine = match smart.engine(state) {
+        Ok(engine) => engine,
+        // DirectML didn't start: fetch the CPU variant and carry on there.
+        Err(_) if smart.gpu_error.lock().is_some() => {
+            download(app, state, Device::Cpu)?;
+            smart.update(app, state, |s| s.phase = Phase::Loading);
+            smart.engine(state)?
+        }
+        Err(e) => return Err(e),
+    };
+    let batch = engine.batch_size();
 
     let failed = smart.failed.lock().clone();
     let todo: Vec<i64> = state
@@ -202,7 +285,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         (s.done, s.total) = (0, total);
     });
 
-    for (n, chunk) in todo.chunks(BATCH).enumerate() {
+    for (n, chunk) in todo.chunks(batch).enumerate() {
         if !state.settings.read().smart_search {
             return Ok(());
         }
@@ -250,10 +333,10 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
 
         // New results become searchable every few hundred photos.
-        if n % 40 == 39 {
+        if (n + 1) * batch % 320 < batch {
             *smart.index.lock() = None;
         }
-        let done = ((n + 1) * BATCH).min(todo.len()) as u64;
+        let done = ((n + 1) * batch).min(todo.len()) as u64;
         smart.update(app, state, |s| s.done = done);
     }
     *smart.index.lock() = None;

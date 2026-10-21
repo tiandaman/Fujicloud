@@ -501,6 +501,15 @@ class Store {
     }
   }
 
+  async setSmartGpu(enabled: boolean) {
+    try {
+      this.smart = await api.setSmartGpu(enabled);
+      if (this.settings) this.settings = { ...this.settings, smartGpu: enabled };
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
   async #searchSmart(query: string) {
     this.smartBusy = true;
     try {

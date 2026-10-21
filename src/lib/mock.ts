@@ -206,9 +206,22 @@ export function mockApi(): Api {
     editorPath: null,
     editRaw: true,
     smartSearch: false,
+    smartGpu: true,
   };
   const recipeNames = new Map<string, string>([[recipeKey(RECIPES[0]), 'Kodachrome 64-ish']]);
-  let smart: SmartStatus = { enabled: false, phase: 'off', done: 0, total: 0, indexed: 0, downloadMb: 210, error: null };
+  let smart: SmartStatus = {
+    enabled: false,
+    phase: 'off',
+    done: 0,
+    total: 0,
+    indexed: 0,
+    downloadMb: 300,
+    error: null,
+    gpu: { name: 'NVIDIA GeForce RTX 4070 Laptop GPU', vramMb: 8188 },
+    useGpu: true,
+    runningOn: null,
+    gpuError: null,
+  };
   const listeners = new Map<string, Set<(p: unknown) => void>>();
   const emit = (event: string, payload: unknown) => listeners.get(event)?.forEach((cb) => cb(payload));
   const delay = (ms = 0) => new Promise((r) => setTimeout(r, ms));
@@ -307,10 +320,15 @@ export function mockApi(): Api {
         if (i <= 10) smart = { ...smart, phase: 'downloading', done: i * 21e6, total: 210e6 };
         else if (i <= 20) smart = { ...smart, phase: 'indexing', done: Math.round(((i - 10) / 10) * total), total, indexed: Math.round(((i - 10) / 10) * total) };
         else smart = { ...smart, phase: 'ready', done: total, total };
+        if (i > 10) smart = { ...smart, runningOn: smart.useGpu ? 'GPU' : 'CPU' };
         emit('smart', smart);
         if (i <= 20) setTimeout(() => step(i + 1), 120);
       };
       setTimeout(() => step(1), 50);
+      return smart;
+    },
+    async setSmartGpu(enabled) {
+      smart = { ...smart, useGpu: enabled, runningOn: smart.runningOn ? (enabled ? 'GPU' : 'CPU') : null, downloadMb: enabled ? 300 : 210 };
       return smart;
     },
     async searchSmart(query): Promise<Hit[]> {

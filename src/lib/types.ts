@@ -73,6 +73,12 @@ export interface SmartStatus {
   indexed: number;
   downloadMb: number;
   error: string | null;
+  /** The graphics card found on this PC, if any. */
+  gpu: { name: string; vramMb: number } | null;
+  useGpu: boolean;
+  /** "GPU" or "CPU" once the model is loaded. */
+  runningOn: string | null;
+  gpuError: string | null;
 }
 
 export interface Hit {
@@ -106,6 +112,7 @@ export interface Settings {
   editorPath: string | null;
   editRaw: boolean;
   smartSearch: boolean;
+  smartGpu: boolean;
 }
 
 export interface Bootstrap {

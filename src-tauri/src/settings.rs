@@ -19,6 +19,8 @@ pub struct Settings {
     pub edit_raw: bool,
     /// On-device "search by what's in the photo" (downloads a model once).
     pub smart_search: bool,
+    /// Analyse photos on the graphics card when there is one (DirectML).
+    pub smart_gpu: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +33,7 @@ impl Default for Settings {
             editor_path: None,
             edit_raw: true,
             smart_search: false,
+            smart_gpu: true,
         }
     }
 }

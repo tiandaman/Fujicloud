@@ -353,6 +353,19 @@ fn set_smart_search(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<s
     Ok(state.smart.status(&state))
 }
 
+/// Switches photo analysis between the graphics card and the CPU.
+#[tauri::command]
+fn set_smart_gpu(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<smart::Status> {
+    {
+        let mut settings = state.settings.write();
+        settings.smart_gpu = enabled;
+        settings.save(&state.settings_path).map_err(err)?;
+    }
+    state.smart.reset_device();
+    smart::spawn(app, state.inner().clone());
+    Ok(state.smart.status(&state))
+}
+
 #[derive(Serialize)]
 struct Hit {
     id: i64,
@@ -390,8 +403,9 @@ async fn similar_photos(state: Shared<'_>, id: i64) -> CmdResult<Vec<Hit>> {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdResult<()> {
-    // Smart search is switched by its own command (it downloads and indexes).
+    // Smart search is switched by its own commands (they download and index).
     settings.smart_search = state.settings.read().smart_search;
+    settings.smart_gpu = state.settings.read().smart_gpu;
     settings.save(&state.settings_path).map_err(err)?;
     *state.settings.write() = settings;
     restart_sync(&app, state.inner())
@@ -525,6 +539,7 @@ pub fn run() {
             name_recipe,
             smart_status,
             set_smart_search,
+            set_smart_gpu,
             search_smart,
             similar_photos,
         ])

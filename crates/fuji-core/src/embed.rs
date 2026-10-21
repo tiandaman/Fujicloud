@@ -6,8 +6,10 @@
 //! is embedded in ~10 ms and compared against every photo with
 //! [`crate::search::Index`]. Nothing leaves the PC.
 //!
-//! The model is downloaded on first use. Runs on ONNX Runtime's CPU provider
-//! with int8-quantised weights.
+//! The model is downloaded on first use. Photos are analysed on the GPU via
+//! DirectML on Windows (any DirectX 12 card: NVIDIA, AMD, Intel) with a
+//! half-precision vision model, or on the CPU with an 8-bit one. Typed
+//! queries always run on the CPU: one short sentence doesn't need a GPU.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -15,23 +17,92 @@ use std::path::{Path, PathBuf};
 
 use fast_image_resize::{self as fr, images::Image};
 use ort::session::Session;
-use ort::value::Tensor;
+use ort::value::{Tensor, TensorElementType, ValueType};
 use parking_lot::Mutex;
 use tokenizers::Tokenizer;
 
 use crate::Error;
 
+/// Where inference runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Cpu,
+    /// DirectML (Windows). `None` lets it pick the fastest GPU; an index
+    /// forces a DXGI adapter (tests use this to run on the software one).
+    Gpu(Option<i32>),
+}
+
+impl Device {
+    pub fn is_gpu(self) -> bool {
+        matches!(self, Device::Gpu(_))
+    }
+}
+
+/// The graphics card smart search would use, if it can use one at all.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Gpu {
+    pub name: String,
+    pub vram_mb: u64,
+}
+
+/// The fastest hardware GPU, as DirectML's "high performance" preference
+/// would choose it (the discrete card on laptops that also have an
+/// integrated one). Software adapters don't count.
+#[cfg(windows)]
+pub fn best_gpu() -> Option<Gpu> {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+        IDXGIAdapter1, IDXGIFactory6,
+    };
+    unsafe {
+        let factory: IDXGIFactory6 = CreateDXGIFactory1().ok()?;
+        for i in 0..8 {
+            let adapter: IDXGIAdapter1 = factory
+                .EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE)
+                .ok()?;
+            let desc = adapter.GetDesc1().ok()?;
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+                continue;
+            }
+            let len = desc
+                .Description
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(desc.Description.len());
+            return Some(Gpu {
+                name: String::from_utf16_lossy(&desc.Description[..len])
+                    .trim()
+                    .to_owned(),
+                vram_mb: (desc.DedicatedVideoMemory / (1 << 20)) as u64,
+            });
+        }
+        None
+    }
+}
+
+#[cfg(not(windows))]
+pub fn best_gpu() -> Option<Gpu> {
+    None
+}
+
 /// Where a model's files come from and how it expects its inputs.
 #[derive(Debug)]
 pub struct ModelSpec {
-    /// Stored next to each embedding, so a model change re-indexes.
+    /// Stored next to each embedding. Every variant below maps into the same
+    /// vector space, so switching CPU/GPU doesn't re-index the library.
     pub id: &'static str,
     pub base_url: &'static str,
-    pub vision: &'static str,
+    /// 8-bit weights: smallest download, fastest on CPUs.
+    pub vision_cpu: &'static str,
+    /// Half-precision first (GPUs are built for it), full precision if the
+    /// repository doesn't have it.
+    pub vision_gpu: &'static [&'static str],
     pub text: &'static str,
     pub tokenizer: &'static str,
     /// Approximate total download, for the UI.
-    pub download_mb: u32,
+    pub download_mb_cpu: u32,
+    pub download_mb_gpu: u32,
     pub image_size: u32,
     pub mean: [f32; 3],
     pub std: [f32; 3],
@@ -41,12 +112,14 @@ pub struct ModelSpec {
 
 /// Google's SigLIP (base, 224px), as exported to ONNX for transformers.js.
 pub const SIGLIP_BASE: ModelSpec = ModelSpec {
-    id: "siglip-base-patch16-224-q8",
+    id: "siglip-base-patch16-224",
     base_url: "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/",
-    vision: "onnx/vision_model_quantized.onnx",
+    vision_cpu: "onnx/vision_model_quantized.onnx",
+    vision_gpu: &["onnx/vision_model_fp16.onnx", "onnx/vision_model.onnx"],
     text: "onnx/text_model_quantized.onnx",
     tokenizer: "tokenizer.json",
-    download_mb: 210,
+    download_mb_cpu: 210,
+    download_mb_gpu: 300,
     image_size: 224,
     mean: [0.5, 0.5, 0.5],
     std: [0.5, 0.5, 0.5],
@@ -54,48 +127,89 @@ pub const SIGLIP_BASE: ModelSpec = ModelSpec {
 };
 
 impl ModelSpec {
-    pub fn files(&self) -> [&'static str; 3] {
-        [self.vision, self.text, self.tokenizer]
-    }
-
     fn local(&self, dir: &Path, remote: &str) -> PathBuf {
         dir.join(self.id)
             .join(remote.rsplit('/').next().unwrap_or(remote))
     }
 
-    pub fn is_downloaded(&self, dir: &Path) -> bool {
-        self.files().iter().all(|f| self.local(dir, f).is_file())
+    pub fn download_mb(&self, device: Device) -> u32 {
+        if device.is_gpu() {
+            self.download_mb_gpu
+        } else {
+            self.download_mb_cpu
+        }
     }
 
-    /// Downloads whatever is missing. `progress(done, total)` is in bytes;
-    /// `total` is 0 until the server reports sizes.
-    pub fn download(&self, dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
+    /// The vision model file for `device`, if downloaded.
+    fn vision_file(&self, dir: &Path, device: Device) -> Option<PathBuf> {
+        if device.is_gpu() {
+            self.vision_gpu
+                .iter()
+                .map(|f| self.local(dir, f))
+                .find(|p| p.is_file())
+        } else {
+            Some(self.local(dir, self.vision_cpu)).filter(|p| p.is_file())
+        }
+    }
+
+    pub fn is_downloaded(&self, dir: &Path, device: Device) -> bool {
+        self.vision_file(dir, device).is_some()
+            && self.local(dir, self.text).is_file()
+            && self.local(dir, self.tokenizer).is_file()
+    }
+
+    /// Downloads whatever `device` needs that is missing. `progress(done,
+    /// total)` is in bytes; `total` is 0 until the server reports sizes.
+    pub fn download(
+        &self,
+        dir: &Path,
+        device: Device,
+        progress: &dyn Fn(u64, u64),
+    ) -> Result<(), Error> {
+        let mut wanted: Vec<&[&str]> = vec![
+            std::slice::from_ref(&self.text),
+            std::slice::from_ref(&self.tokenizer),
+        ];
+        wanted.push(if device.is_gpu() {
+            self.vision_gpu
+        } else {
+            std::slice::from_ref(&self.vision_cpu)
+        });
+
         let mut done = 0u64;
         let mut total = 0u64;
-        let mut sizes = Vec::new();
-        for file in self.files() {
-            let path = self.local(dir, file);
-            if path.is_file() {
+        let mut pending = Vec::new();
+        'files: for candidates in wanted {
+            if let Some(path) = candidates
+                .iter()
+                .map(|f| self.local(dir, f))
+                .find(|p| p.is_file())
+            {
                 let len = fs::metadata(&path)?.len();
                 done += len;
                 total += len;
-                sizes.push(None);
                 continue;
             }
-            let response = ureq::get(format!("{}{}", self.base_url, file))
-                .call()
-                .map_err(|e| Error::Model(format!("downloading {file}: {e}")))?;
-            let len = response
-                .headers()
-                .get("content-length")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(0);
-            total += len;
-            sizes.push(Some((path, response)));
+            let mut last_err = None;
+            for file in candidates {
+                match ureq::get(format!("{}{}", self.base_url, file)).call() {
+                    Ok(response) => {
+                        total += response
+                            .headers()
+                            .get("content-length")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        pending.push((self.local(dir, file), response));
+                        continue 'files;
+                    }
+                    Err(e) => last_err = Some(format!("downloading {file}: {e}")),
+                }
+            }
+            return Err(Error::Model(last_err.unwrap_or_default()));
         }
         progress(done, total);
-        for (path, response) in sizes.into_iter().flatten() {
+        for (path, response) in pending {
             fs::create_dir_all(path.parent().unwrap())?;
             let part = path.with_extension("part");
             let mut out = fs::File::create(&part)?;
@@ -120,7 +234,10 @@ impl ModelSpec {
 
 pub struct Engine {
     spec: &'static ModelSpec,
+    device: Device,
     vision: Mutex<Session>,
+    /// Some exports (the fp16 one) take half-precision pixels.
+    vision_f16: bool,
     text: Mutex<Session>,
     tokenizer: Tokenizer,
     pad_id: u32,
@@ -131,14 +248,24 @@ fn model_err(e: impl std::fmt::Display) -> Error {
 }
 
 impl Engine {
-    /// Loads a downloaded model. `threads` caps ONNX Runtime's CPU use so
+    /// Loads a downloaded model. On the GPU, failure to start DirectML is an
+    /// error (callers fall back to the CPU); `threads` caps CPU use so
     /// background indexing leaves room for browsing.
-    pub fn load(dir: &Path, spec: &'static ModelSpec, threads: usize) -> Result<Self, Error> {
+    pub fn load(
+        dir: &Path,
+        spec: &'static ModelSpec,
+        device: Device,
+        threads: usize,
+    ) -> Result<Self, Error> {
+        let vision = spec
+            .vision_file(dir, device)
+            .ok_or_else(|| model_err("the model isn't downloaded"))?;
         Self::load_files(
-            &spec.local(dir, spec.vision),
+            &vision,
             &spec.local(dir, spec.text),
             &spec.local(dir, spec.tokenizer),
             spec,
+            device,
             threads,
         )
     }
@@ -148,18 +275,22 @@ impl Engine {
         text: &Path,
         tokenizer: &Path,
         spec: &'static ModelSpec,
+        device: Device,
         threads: usize,
     ) -> Result<Self, Error> {
         let env = ort::init()
             .with_name("fujicloud")
             .build()
             .map_err(model_err)?;
-        let session = |path: &Path| -> Result<Session, Error> {
+        let session = |path: &Path, device: Device| -> Result<Session, Error> {
             let fail = |e: &dyn std::fmt::Display| Error::Model(format!("{}: {e}", path.display()));
             let builder = Session::builder(&env).map_err(|e| fail(&e))?;
-            let mut builder = builder
-                .with_intra_threads(threads.max(1))
-                .map_err(|e| fail(&e))?;
+            let mut builder = match device {
+                Device::Cpu => builder
+                    .with_intra_threads(threads.max(1))
+                    .map_err(|e| fail(&e))?,
+                Device::Gpu(id) => gpu_builder(builder, id).map_err(|e| fail(&e))?,
+            };
             builder.commit_from_file(path).map_err(|e| fail(&e))
         };
         let tokenizer = Tokenizer::from_file(tokenizer).map_err(model_err)?;
@@ -168,10 +299,21 @@ impl Engine {
             .map(|p| p.pad_id)
             .or_else(|| tokenizer.token_to_id("</s>"))
             .unwrap_or(1);
+        let vision = session(vision, device)?;
+        let vision_f16 = matches!(
+            vision.inputs().first().map(|i| i.dtype()),
+            Some(ValueType::Tensor {
+                ty: TensorElementType::Float16,
+                ..
+            })
+        );
         Ok(Self {
             spec,
-            vision: Mutex::new(session(vision)?),
-            text: Mutex::new(session(text)?),
+            device,
+            vision: Mutex::new(vision),
+            vision_f16,
+            // One query at a time: quicker on the CPU than a round trip to the GPU.
+            text: Mutex::new(session(text, Device::Cpu)?),
             tokenizer,
             pad_id,
         })
@@ -179,6 +321,15 @@ impl Engine {
 
     pub fn spec(&self) -> &'static ModelSpec {
         self.spec
+    }
+
+    pub fn device(&self) -> Device {
+        self.device
+    }
+
+    /// Photos per inference call: GPUs want big batches, CPUs don't care.
+    pub fn batch_size(&self) -> usize {
+        if self.device.is_gpu() { 32 } else { 8 }
     }
 
     /// Embeds a batch of JPEGs (thumbnails are plenty). Each result is
@@ -189,8 +340,17 @@ impl Engine {
         for jpeg in jpegs {
             pixels.extend(self.preprocess(jpeg)?);
         }
-        let input =
-            Tensor::from_array(([jpegs.len(), 3, size, size], pixels)).map_err(model_err)?;
+        let shape = [jpegs.len(), 3, size, size];
+        let input = if self.vision_f16 {
+            let half: Vec<half::f16> = pixels.iter().map(|&x| half::f16::from_f32(x)).collect();
+            Tensor::from_array((shape, half))
+                .map_err(model_err)?
+                .upcast()
+        } else {
+            Tensor::from_array((shape, pixels))
+                .map_err(model_err)?
+                .upcast()
+        };
         let mut session = self.vision.lock();
         let name = session.inputs()[0].name().to_owned();
         let outputs = session
@@ -271,6 +431,37 @@ impl Engine {
     }
 }
 
+/// Session options for DirectML: it needs sequential execution and no memory
+/// pattern, and must fail loudly rather than quietly fall back to the CPU.
+#[cfg(windows)]
+fn gpu_builder(
+    builder: ort::session::builder::SessionBuilder,
+    device_id: Option<i32>,
+) -> Result<ort::session::builder::SessionBuilder, String> {
+    use ort::ep::directml::{DeviceFilter, DirectML, PerformancePreference};
+    let ep = match device_id {
+        Some(id) => DirectML::default().with_device_id(id),
+        None => DirectML::default()
+            .with_device_filter(DeviceFilter::Gpu)
+            .with_performance_preference(PerformancePreference::HighPerformance),
+    };
+    builder
+        .with_memory_pattern(false)
+        .map_err(|e| e.to_string())?
+        .with_parallel_execution(false)
+        .map_err(|e| e.to_string())?
+        .with_execution_providers([ep.build().error_on_failure()])
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+fn gpu_builder(
+    _: ort::session::builder::SessionBuilder,
+    _: Option<i32>,
+) -> Result<ort::session::builder::SessionBuilder, String> {
+    Err("GPU acceleration needs Windows (DirectML)".into())
+}
+
 /// Short queries work better phrased the way captions are.
 fn prompt(query: &str) -> String {
     let cleaned: String = query
@@ -303,15 +494,20 @@ fn embeddings_from(
         .copied()
         .find(|name| outputs.contains_key(name))
         .or_else(|| {
-            outputs.keys().find(|k| {
-                outputs[*k]
-                    .try_extract_tensor::<f32>()
-                    .is_ok_and(|(shape, _)| shape.len() == 2)
+            outputs.keys().find(|k| match outputs[*k].dtype() {
+                ValueType::Tensor { shape, .. } => shape.len() == 2,
+                _ => false,
             })
         })
         .ok_or_else(|| model_err("model has no pooled embedding output"))?;
     let value = &outputs[name];
-    let (shape, data) = value.try_extract_tensor::<f32>().map_err(model_err)?;
+    let (shape, data): (Vec<i64>, Vec<f32>) = match value.try_extract_tensor::<f32>() {
+        Ok((shape, data)) => (shape.to_vec(), data.to_vec()),
+        Err(_) => {
+            let (shape, data) = value.try_extract_tensor::<half::f16>().map_err(model_err)?;
+            (shape.to_vec(), data.iter().map(|x| x.to_f32()).collect())
+        }
+    };
     if shape.len() != 2 || shape[0] as usize != rows {
         return Err(model_err(format!("unexpected embedding shape {shape:?}")));
     }
@@ -347,6 +543,7 @@ mod tests {
             &fixture("text.onnx"),
             &fixture("tokenizer.json"),
             &SPEC,
+            Device::Cpu,
             1,
         )
         .expect("tiny model loads")
@@ -386,17 +583,8 @@ mod tests {
         assert!(dot(&a, &b) < 0.9999);
     }
 
-    /// The real model, end to end. Downloads ~200 MB, so it only runs when
-    /// asked: `FUJICLOUD_MODEL_DIR=… cargo test -p fuji-core -- --ignored`.
-    #[test]
-    #[ignore]
-    fn real_siglip_matches_colours_and_meaning() {
-        let dir = std::env::var("FUJICLOUD_MODEL_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir().join("fujicloud-models"));
-        SIGLIP_BASE.download(&dir, &|_, _| {}).expect("download");
-        let engine = Engine::load(&dir, &SIGLIP_BASE, 4).expect("load");
-
+    /// Colours and meanings a working image/text model must get right.
+    fn check_real(engine: &Engine) {
         let images = engine
             .embed_images(&[
                 solid([220, 30, 30]),
@@ -410,7 +598,7 @@ mod tests {
                 .embed_text(&format!("a plain {colour} background"))
                 .unwrap();
             let scores: Vec<f32> = images.iter().map(|v| dot(v, &q)).collect();
-            println!("{colour}: {scores:?}");
+            println!("{:?} {colour}: {scores:?}", engine.device());
             let best = scores
                 .iter()
                 .enumerate()
@@ -419,7 +607,6 @@ mod tests {
                 .0;
             assert_eq!(best, i, "{colour} should match its own image");
         }
-
         let dog = engine.embed_text("a dog playing in the park").unwrap();
         let puppy = engine.embed_text("a puppy running on grass").unwrap();
         let city = engine.embed_text("skyscrapers at night").unwrap();
@@ -429,5 +616,54 @@ mod tests {
             dot(&dog, &city)
         );
         assert!(dot(&dog, &puppy) > dot(&dog, &city));
+    }
+
+    fn model_dir() -> PathBuf {
+        std::env::var("FUJICLOUD_MODEL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("fujicloud-models"))
+    }
+
+    /// The real model, end to end. Downloads ~200 MB, so it only runs when
+    /// asked: `FUJICLOUD_MODEL_DIR=… cargo test -p fuji-core -- --ignored`.
+    #[test]
+    #[ignore]
+    fn real_siglip_matches_colours_and_meaning() {
+        let dir = model_dir();
+        SIGLIP_BASE
+            .download(&dir, Device::Cpu, &|_, _| {})
+            .expect("download");
+        check_real(&Engine::load(&dir, &SIGLIP_BASE, Device::Cpu, 4).expect("load"));
+    }
+
+    /// The GPU path: DirectML with the half-precision model. CI machines have
+    /// no GPU, so this forces adapter 0 (Windows' software renderer) to
+    /// prove the same code path works; on a real card it's just faster.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn real_siglip_on_directml() {
+        let dir = model_dir();
+        SIGLIP_BASE
+            .download(&dir, Device::Gpu(None), &|_, _| {})
+            .expect("download");
+        let engine =
+            Engine::load(&dir, &SIGLIP_BASE, Device::Gpu(Some(0)), 4).expect("DirectML starts");
+        println!("vision input is fp16: {}", engine.vision_f16);
+        check_real(&engine);
+
+        // GPU and CPU embeddings must live in the same space.
+        SIGLIP_BASE
+            .download(&dir, Device::Cpu, &|_, _| {})
+            .expect("download");
+        let cpu = Engine::load(&dir, &SIGLIP_BASE, Device::Cpu, 4).unwrap();
+        let img = [solid([200, 120, 40])];
+        let (a, b) = (
+            engine.embed_images(&img).unwrap(),
+            cpu.embed_images(&img).unwrap(),
+        );
+        let sim: f32 = a[0].iter().zip(&b[0]).map(|(x, y)| x * y).sum();
+        println!("GPU vs CPU embedding similarity {sim}");
+        assert!(sim > 0.95);
     }
 }

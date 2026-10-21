@@ -172,7 +172,7 @@
             {#if !store.smart?.enabled}Off
             {:else if store.smart.phase === 'downloading'}Downloading model… {store.smart.total ? `${formatBytes(store.smart.done)} of ${formatBytes(store.smart.total)}` : ''}
             {:else if store.smart.phase === 'loading'}Starting…
-            {:else if store.smart.phase === 'indexing'}Analysing photos… {formatCount(store.smart.done)} of {formatCount(store.smart.total)}
+            {:else if store.smart.phase === 'indexing'}Analysing photos{store.smart.runningOn ? ` on the ${store.smart.runningOn}` : ''}… {formatCount(store.smart.done)} of {formatCount(store.smart.total)}
             {:else if store.smart.phase === 'error'}Problem: {store.smart.error}
             {:else}Ready · {formatCount(store.smart.indexed)} photos analysed{/if}
           </small>
@@ -182,6 +182,29 @@
       {#if store.smart?.enabled && store.smart.total && store.smart.phase !== 'ready'}
         <div class="progress"><i style:width="{(store.smart.done / store.smart.total) * 100}%"></i></div>
       {/if}
+      <label class="row toggle" class:disabled={!store.smart?.gpu}>
+        <div>
+          <span>Use the graphics card</span>
+          <small class="faint">
+            {#if store.smart?.gpu}
+              {store.smart.gpu.name}{store.smart.gpu.vramMb >= 1024 ? ` · ${Math.round(store.smart.gpu.vramMb / 1024)} GB` : ''}. Analyses photos many
+              times faster than the CPU (DirectML, works with NVIDIA, AMD and Intel).
+            {:else}
+              No DirectX 12 graphics card found, so photos are analysed on the CPU.
+            {/if}
+          </small>
+          {#if store.smart?.gpuError}
+            <small class="warn">The GPU couldn't start, so the CPU is used instead: {store.smart.gpuError}</small>
+          {/if}
+        </div>
+        <input
+          type="checkbox"
+          class="switch"
+          disabled={!store.smart?.gpu}
+          checked={!!store.smart?.gpu && !!store.smart?.useGpu}
+          onchange={(e) => store.setSmartGpu(e.currentTarget.checked)}
+        />
+      </label>
     </section>
 
     <section>
@@ -427,6 +450,12 @@
     padding-bottom: 6px;
     margin-bottom: 18px;
     border-bottom: 1.5px dashed rgba(255, 255, 255, 0.2);
+  }
+  .row.disabled {
+    opacity: 0.6;
+  }
+  .warn {
+    color: #ffb340;
   }
   .progress {
     height: 4px;

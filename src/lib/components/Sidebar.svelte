@@ -186,7 +186,7 @@
         <span class="ico small sparkle"><Icon name="sparkle" size={14} /></span>
         <div class="grow">
           <div class="line">
-            <span>{store.smart.phase === 'downloading' ? 'Downloading search model' : store.smart.phase === 'loading' ? 'Starting smart search' : 'Analysing photos'}</span>
+            <span>{store.smart.phase === 'downloading' ? 'Downloading search model' : store.smart.phase === 'loading' ? 'Starting smart search' : store.smart.runningOn ? `Analysing on ${store.smart.runningOn}` : 'Analysing photos'}</span>
             {#if store.smart.total}<span class="faint tabular">{Math.round((store.smart.done / store.smart.total) * 100)}%</span>{/if}
           </div>
           <div class="bar"><i style:width="{store.smart.total ? (store.smart.done / store.smart.total) * 100 : 8}%" class:indeterminate={!store.smart.total}></i></div>

@@ -24,6 +24,7 @@ export interface Api {
   nameRecipe(key: string, name: string | null): Promise<void>;
   smartStatus(): Promise<SmartStatus>;
   setSmartSearch(enabled: boolean): Promise<SmartStatus>;
+  setSmartGpu(enabled: boolean): Promise<SmartStatus>;
   searchSmart(query: string): Promise<Hit[]>;
   similarPhotos(id: number): Promise<Hit[]>;
   pickFolder(title: string): Promise<string | null>;
@@ -65,6 +66,7 @@ function tauriApi(): Api {
     nameRecipe: (key, name) => invoke('name_recipe', { key, name }),
     smartStatus: () => invoke('smart_status'),
     setSmartSearch: (enabled) => invoke('set_smart_search', { enabled }),
+    setSmartGpu: (enabled) => invoke('set_smart_gpu', { enabled }),
     searchSmart: (query) => invoke('search_smart', { query }),
     similarPhotos: (id) => invoke('similar_photos', { id }),
     async pickFolder(title) {

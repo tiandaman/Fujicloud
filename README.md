@@ -53,9 +53,12 @@ thousands of images.
   you're online.
 - **Search by what's in the photo:** type "golden hour at the beach" or "dog in the
   snow". Google's SigLIP model runs on your PC through ONNX Runtime (a one-time
-  ~210 MB download, enabled with the ✦ in the search box). Each photo is analysed once
-  from its cached thumbnail, and a search over 100k photos takes about 20 ms.
-  Right-click any photo to *Find similar photos*. Nothing leaves your network.
+  download, enabled with the ✦ in the search box). Photos are analysed on your
+  **graphics card** through DirectML (any DirectX 12 GPU: NVIDIA, AMD or Intel; the
+  discrete one on laptops that have two), and on the CPU if there isn't one. Each
+  photo is analysed once from its cached thumbnail, and a search over 100k photos takes
+  about 20 ms. Right-click any photo to *Find similar photos*. Nothing leaves your
+  network.
 - Histogram, full EXIF, drag a folder onto the window to add it, and Windows 11 Mica.
 
 ## Install (Windows)
@@ -95,7 +98,7 @@ cache.
 | RAW | RAF embedded JPEG | Reads a few MB from the RAF header instead of demosaicing 50 MB of X-Trans data. |
 | Index | SQLite (WAL) | Incremental rescans only touch new or changed files. Ratings survive rescans. |
 | Network | Parallel directory walk + metadata reads | SMB is latency-bound, so many requests stay in flight at once. |
-| Smart search | SigLIP via ONNX Runtime, 8-bit vectors | ~770 bytes per photo (75 MB per 100k in RAM), searched by a brute-force scan with no index to maintain. |
+| Smart search | SigLIP via ONNX Runtime + DirectML | fp16 on the GPU (batches of 32) or int8 on the CPU. Results are stored as 8-bit vectors (~770 bytes per photo, 75 MB per 100k in RAM) and searched by a brute-force scan with no index to maintain. |
 | Map | MapLibre GL (WebGL) + Supercluster | A GPU-rendered globe, loaded only when you open Places. Clustering 100k points takes milliseconds. |
 | Places | GeoNames gazetteer bucketed in a 1° grid | Offline reverse geocoding in microseconds per photo. |
 
@@ -130,6 +133,8 @@ npm run tauri dev        # the desktop app, with hot reload
 npm run dev              # UI only, in a browser, with a generated demo library
                          #   ?days=3000 → ~50k photos   ?empty → onboarding screen
 npm run tauri build      # installer → target/release/bundle/
+pwsh scripts/fetch-directml.ps1   # Windows: DirectML runtime for GPU smart search
+npm run tauri build -- --config src-tauri/tauri.directml.conf.json   # …bundled with it
 cargo test -p fuji-core  # core tests (add `-- --ignored` to test the real search model)
 cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
 ```
@@ -143,8 +148,6 @@ cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
 - Direct camera import over PTP/IP (no PC AutoSave needed).
 - Side-by-side compare, and grouping bursts into stacks using smart search vectors.
 - A Fujicloud app for the Shield itself: browse the library and run slideshows on the TV.
-- GPU acceleration for smart search indexing (DirectML is already in the ONNX Runtime
-  build).
 - Import a phone's location history (GPX / Google Takeout) for shots taken without
   location sync.
 
