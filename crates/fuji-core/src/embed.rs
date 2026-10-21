@@ -688,10 +688,17 @@ mod tests {
         drop(first);
         let third = tiny();
         let img = [solid([10, 200, 90])];
-        assert_eq!(
+        let (a, b) = (
             second.embed_images(&img).unwrap(),
-            third.embed_images(&img).unwrap()
+            third.embed_images(&img).unwrap(),
         );
+        // Kernels may round differently from run to run.
+        let diff = a[0]
+            .iter()
+            .zip(&b[0])
+            .map(|(x, y)| (x - y).abs())
+            .fold(0f32, f32::max);
+        assert!(diff < 1e-5, "{a:?} vs {b:?}");
     }
 
     /// Colours and meanings a working image/text model must get right.
