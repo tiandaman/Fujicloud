@@ -646,10 +646,16 @@ mod tests {
     }
 
     fn solid(rgb: [u8; 3]) -> Vec<u8> {
+        picture(|_, _| rgb)
+    }
+
+    /// A 64×48 JPEG with each pixel from `f(x, y)`.
+    fn picture(f: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
+        let (w, h) = (64, 48);
+        let pixels: Vec<u8> = (0..w * h).flat_map(|i| f(i % w, i / w)).collect();
         let mut out = Vec::new();
-        let pixels: Vec<u8> = std::iter::repeat_n(rgb, 64 * 48).flatten().collect();
         jpeg_encoder::Encoder::new(&mut out, 95)
-            .encode(&pixels, 64, 48, jpeg_encoder::ColorType::Rgb)
+            .encode(&pixels, w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
             .unwrap();
         out
     }
@@ -862,19 +868,47 @@ mod tests {
         println!("vision input is fp16: {}", engine.vision_f16);
         check_real(&engine);
 
-        // GPU and CPU embeddings must live in the same space.
+        // The GPU's half-precision model and the CPU's 8-bit one round
+        // differently, but a library indexed partly on each must still work:
+        // every picture has to be closest to its own counterpart.
         SIGLIP_BASE
             .download(&dir, Device::Cpu, &|_, _| {})
             .expect("download");
         let cpu = Engine::load(&dir, &SIGLIP_BASE, Device::Cpu, 4).unwrap();
-        let img = [solid([200, 120, 40])];
-        let (a, b) = (
-            engine.embed_images(&img).unwrap(),
-            cpu.embed_images(&img).unwrap(),
-        );
-        let sim: f32 = a[0].iter().zip(&b[0]).map(|(x, y)| x * y).sum();
-        println!("GPU vs CPU embedding similarity {sim}");
-        assert!(sim > 0.95);
+        let pictures = [
+            solid([220, 30, 30]),
+            solid([30, 60, 220]),
+            solid([200, 120, 40]),
+            // Sky over a dark hill, with a sun.
+            picture(|x, y| {
+                let (dx, dy) = (x as f32 - 44.0, y as f32 - 12.0);
+                if dx * dx + dy * dy < 36.0 {
+                    [255, 236, 170]
+                } else if y as f32 > 30.0 + (x as f32 / 9.0).sin() * 4.0 {
+                    [30, 70, 40]
+                } else {
+                    [110 + y as u8 * 3, 160 + y as u8 * 2, 230]
+                }
+            }),
+            picture(|x, y| {
+                if (x / 8 + y / 8) % 2 == 0 {
+                    [0; 3]
+                } else {
+                    [255; 3]
+                }
+            }),
+        ];
+        let gpu = engine.embed_images(&pictures).unwrap();
+        let cpu = cpu.embed_images(&pictures).unwrap();
+        let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        for (i, g) in gpu.iter().enumerate() {
+            let sims: Vec<f32> = cpu.iter().map(|c| dot(g, c)).collect();
+            println!("GPU picture {i} vs CPU: {sims:.3?}");
+            let nearest = (0..sims.len())
+                .max_by(|&a, &b| sims[a].total_cmp(&sims[b]))
+                .unwrap();
+            assert_eq!(nearest, i, "GPU picture {i} matched CPU picture {nearest}");
+        }
     }
 
     /// ONNX Runtime refuses to pick a software adapter itself, so this makes
