@@ -1,0 +1,389 @@
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+  import { api } from '../api';
+  import { filmGradient } from '../film';
+  import { formatCount } from '../format';
+  import { store } from '../store.svelte';
+  import type { Collection } from '../types';
+  import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
+  import Icon, { type IconName } from './Icon.svelte';
+
+  let open = $state({ films: true, cameras: true, lenses: false });
+  let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+
+  const library: { c: Collection; label: string; icon: IconName; count: () => number }[] = [
+    { c: { type: 'all' }, label: 'All Photos', icon: 'photos', count: () => store.counts.all },
+    { c: { type: 'recent' }, label: 'Recently Added', icon: 'clock', count: () => store.counts.recent },
+    { c: { type: 'picks' }, label: 'Picks', icon: 'flag', count: () => store.counts.picks },
+    { c: { type: 'rated' }, label: 'Rated', icon: 'star', count: () => store.counts.rated },
+    { c: { type: 'rejected' }, label: 'Rejected', icon: 'x', count: () => store.counts.rejected },
+  ];
+
+  function isActive(c: Collection) {
+    const cur = store.collection;
+    if (cur.type !== c.type) return false;
+    if ('id' in c && 'id' in cur) return c.id === cur.id;
+    if ('value' in c && 'value' in cur) return c.value === cur.value;
+    return true;
+  }
+
+  async function addFolder() {
+    const path = await api.pickFolder('Add a photo folder or network drive');
+    if (path) store.addSource(path);
+  }
+
+  function sourceMenu(e: MouseEvent, id: number) {
+    e.preventDefault();
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'Rescan', icon: 'sync', action: () => api.rescan() },
+        { separator: true },
+        { label: 'Remove from library', icon: 'trash', action: () => store.removeSource(id) },
+      ],
+    };
+  }
+
+  const syncing = $derived(!!store.sync?.copying);
+</script>
+
+{#snippet item(c: Collection, label: string, count: number, lead: Snippet)}
+  <button class="item" class:active={isActive(c)} onclick={() => store.setCollection(c)}>
+    {@render lead()}
+    <span class="label truncate">{label}</span>
+    <span class="count tabular">{formatCount(count)}</span>
+  </button>
+{/snippet}
+
+{#snippet group(key: 'films' | 'cameras' | 'lenses', title: string)}
+  <button class="heading" onclick={() => (open[key] = !open[key])}>
+    {title}
+    <span class="chev" class:open={open[key]}><Icon name="next" size={11} stroke={2.4} /></span>
+  </button>
+{/snippet}
+
+<nav class="sidebar">
+  <div class="brand">
+    <img src="/icon.svg" alt="" width="22" height="22" />
+    <span>Fujicloud</span>
+  </div>
+
+  <div class="scroll">
+    <div class="heading static">Library</div>
+    {#each library as l (l.label)}
+      {#snippet lead()}<span class="ico"><Icon name={l.icon} size={16} /></span>{/snippet}
+      {@render item(l.c, l.label, l.count(), lead)}
+    {/each}
+
+    <div class="heading static">
+      Sources
+      <button class="add" title="Add folder or network drive" onclick={addFolder}><Icon name="plus" size={14} stroke={2} /></button>
+    </div>
+    {#each store.sources as s (s.id)}
+      <div oncontextmenu={(e) => sourceMenu(e, s.id)} role="presentation" title={s.path}>
+        {#snippet lead()}<span class="ico"><Icon name={s.path.startsWith('\\\\') ? 'drive' : 'folder'} size={16} /></span>{/snippet}
+        {@render item({ type: 'source', id: s.id }, s.label, s.count, lead)}
+      </div>
+    {/each}
+    {#if !store.sources.length}
+      <button class="item ghost" onclick={addFolder}>
+        <span class="ico"><Icon name="plus" size={16} /></span>
+        <span class="label">Add a folder…</span>
+      </button>
+    {/if}
+    {#if store.facets.films.length}
+      {@render group('films', 'Film Simulations')}
+      {#if open.films}
+        {#each store.facets.films as [name, n] (name)}
+          {#snippet lead()}<span class="swatch" style:background={filmGradient(name)}></span>{/snippet}
+          {@render item({ type: 'film', value: name }, name, n, lead)}
+        {/each}
+      {/if}
+    {/if}
+
+    {#if store.facets.cameras.length}
+      {@render group('cameras', 'Cameras')}
+      {#if open.cameras}
+        {#each store.facets.cameras as [name, n] (name)}
+          {#snippet lead()}<span class="ico"><Icon name="camera" size={16} /></span>{/snippet}
+          {@render item({ type: 'camera', value: name }, name, n, lead)}
+        {/each}
+      {/if}
+    {/if}
+
+    {#if store.facets.lenses.length}
+      {@render group('lenses', 'Lenses')}
+      {#if open.lenses}
+        {#each store.facets.lenses as [name, n] (name)}
+          {#snippet lead()}<span class="ico"><Icon name="lens" size={16} /></span>{/snippet}
+          {@render item({ type: 'lens', value: name }, name.replace(/^XF/, 'XF '), n, lead)}
+        {/each}
+      {/if}
+    {/if}
+
+  </div>
+
+  <footer>
+    {#if store.scan}
+      <div class="status">
+        <span class="spin"><Icon name="sync" size={14} /></span>
+        <div class="grow">
+          <div class="line">
+            <span class="truncate">{store.scan.progress.phase === 'listing' ? 'Looking for photos' : 'Indexing'} · {store.scan.label}</span>
+            {#if store.scan.progress.total}<span class="faint tabular">{formatCount(store.scan.progress.done)}/{formatCount(store.scan.progress.total)}</span>{/if}
+          </div>
+          <div class="bar"><i style:width="{store.scan.progress.total ? (store.scan.progress.done / store.scan.progress.total) * 100 : 8}%" class:indeterminate={!store.scan.progress.total}></i></div>
+        </div>
+      </div>
+    {:else if store.warm}
+      <div class="status">
+        <span class="ico small"><Icon name="photos" size={14} /></span>
+        <div class="grow">
+          <div class="line"><span>Building thumbnails</span><span class="faint tabular">{Math.round((store.warm.done / store.warm.total) * 100)}%</span></div>
+          <div class="bar"><i style:width="{(store.warm.done / store.warm.total) * 100}%"></i></div>
+        </div>
+      </div>
+    {/if}
+
+    <button class="sync" class:on={store.sync?.active} onclick={() => (store.settingsOpen = true)}>
+      <span class="sync-ico" class:pulse={syncing}><Icon name="wifi" size={15} /></span>
+      <div class="grow">
+        <strong>{store.sync?.active ? (syncing ? 'Importing from camera' : 'Camera sync on') : 'Camera sync off'}</strong>
+        <span class="faint truncate">
+          {#if syncing}{store.sync?.done ?? 0} of {store.sync?.total ?? 0} copied to library
+          {:else if store.sync?.active}Watching for new shots
+          {:else}Set up in Settings{/if}
+        </span>
+      </div>
+      <Icon name="gear" size={15} />
+    </button>
+  </footer>
+</nav>
+
+{#if menu}
+  <ContextMenu {...menu} onclose={() => (menu = null)} />
+{/if}
+
+<style>
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 236px;
+    flex: none;
+    height: 100%;
+    background: var(--sidebar);
+    border-right: 1px solid var(--sep);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 52px;
+    padding: 0 18px;
+    font: 650 14.5px var(--font-display);
+    letter-spacing: -0.01em;
+    flex: none;
+  }
+  .scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 10px 12px;
+  }
+  .heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    margin: 16px 0 4px;
+    padding: 0 8px;
+    height: 22px;
+    font-size: 11px;
+    font-weight: 650;
+    color: var(--text-3);
+    letter-spacing: 0.02em;
+  }
+  .heading.static:first-child {
+    margin-top: 2px;
+  }
+  button.heading:hover {
+    color: var(--text-2);
+  }
+  .chev {
+    display: grid;
+    transition: transform 160ms var(--ease-out);
+  }
+  .chev.open {
+    transform: rotate(90deg);
+  }
+  .add {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    color: var(--text-2);
+  }
+  .add:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 30px;
+    padding: 0 8px;
+    border-radius: 7px;
+    text-align: left;
+    color: var(--text);
+    transition: background 100ms;
+  }
+  .item:hover {
+    background: var(--hover);
+  }
+  .item.active {
+    background: var(--active);
+  }
+  .item.active .ico {
+    color: var(--accent);
+  }
+  .item.ghost {
+    color: var(--text-2);
+  }
+  .ico {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    color: var(--text-2);
+    flex: none;
+  }
+  .swatch {
+    width: 14px;
+    height: 14px;
+    margin: 0 2px;
+    border-radius: 4px;
+    flex: none;
+    box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.25);
+  }
+  .label {
+    flex: 1;
+    min-width: 0;
+  }
+  .count {
+    font-size: 11.5px;
+    color: var(--text-3);
+  }
+
+  footer {
+    flex: none;
+    padding: 8px 10px 10px;
+    border-top: 1px solid var(--sep);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    font-size: 11.5px;
+  }
+  .grow {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .line {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .bar {
+    height: 3px;
+    margin-top: 5px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+  }
+  .bar i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 300ms var(--ease);
+  }
+  .bar i.indeterminate {
+    width: 30% !important;
+    animation: slide 1.1s ease-in-out infinite;
+  }
+  @keyframes slide {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(340%);
+    }
+  }
+  .spin {
+    display: grid;
+    color: var(--accent);
+    animation: spin 1.2s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .sync {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px;
+    border-radius: 9px;
+    text-align: left;
+    color: var(--text-3);
+    background: rgba(255, 255, 255, 0.035);
+    box-shadow: inset 0 0 0 0.5px var(--sep);
+  }
+  .sync:hover {
+    background: var(--hover);
+    color: var(--text-2);
+  }
+  .sync strong {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-2);
+  }
+  .sync span {
+    font-size: 11px;
+  }
+  .sync-ico {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    flex: none;
+  }
+  .sync.on .sync-ico {
+    color: var(--pick);
+    background: rgba(48, 209, 88, 0.14);
+  }
+  .sync.on strong {
+    color: var(--text);
+  }
+  .pulse {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.45;
+    }
+  }
+</style>

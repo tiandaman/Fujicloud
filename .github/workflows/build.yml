@@ -1,0 +1,60 @@
+name: Build
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Tests & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p fuji-core --all-targets -- -D warnings
+      - run: cargo test -p fuji-core
+
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      # Tauri embeds dist/ at compile time, so it has to exist before clippy.
+      - run: npm run build
+      - name: Clippy (Windows-only code paths)
+        run: cargo clippy -p fujicloud -- -D warnings
+      - name: Build installer
+        run: npx tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fujicloud-Windows-installer
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
+          if-no-files-found: error
