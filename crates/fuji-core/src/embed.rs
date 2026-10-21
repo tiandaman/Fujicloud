@@ -360,10 +360,7 @@ impl Engine {
         threads: usize,
         gpu: &dyn Fn(SessionBuilder) -> Result<SessionBuilder, String>,
     ) -> Result<Self, Error> {
-        let env = ort::init()
-            .with_name("fujicloud")
-            .build()
-            .map_err(model_err)?;
+        let env = environment()?;
         let session = |path: &Path, device: Device| -> Result<Session, Error> {
             let fail = |e: &dyn std::fmt::Display| Error::Model(format!("{}: {e}", path.display()));
             let builder = Session::builder(&env).map_err(|e| fail(&e))?;
@@ -511,6 +508,23 @@ impl Engine {
         }
         Ok(out)
     }
+}
+
+/// ONNX Runtime allows one environment per process, ever (even after the
+/// first is dropped), so every engine shares this one: switching between
+/// GPU and CPU loads a second engine.
+fn environment() -> Result<ort::environment::Environment, Error> {
+    static ENV: Mutex<Option<ort::environment::Environment>> = Mutex::new(None);
+    let mut env = ENV.lock();
+    if env.is_none() {
+        *env = Some(
+            ort::init()
+                .with_name("fujicloud")
+                .build()
+                .map_err(model_err)?,
+        );
+    }
+    Ok(env.clone().unwrap())
 }
 
 /// Session options for DirectML: it needs sequential execution and no memory
@@ -663,6 +677,21 @@ mod tests {
         let b = engine.embed_text("blue").unwrap();
         assert_eq!(a.len(), 8);
         assert!(dot(&a, &b) < 0.9999);
+    }
+
+    /// The app loads a second engine when it falls back from the GPU to the
+    /// CPU, or when the GPU setting changes.
+    #[test]
+    fn engines_can_be_loaded_more_than_once() {
+        let first = tiny();
+        let second = tiny();
+        drop(first);
+        let third = tiny();
+        let img = [solid([10, 200, 90])];
+        assert_eq!(
+            second.embed_images(&img).unwrap(),
+            third.embed_images(&img).unwrap()
+        );
     }
 
     /// Colours and meanings a working image/text model must get right.
