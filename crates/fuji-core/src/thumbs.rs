@@ -267,19 +267,24 @@ fn to_rgb(pixels: Vec<u8>, format: jpeg_decoder::PixelFormat) -> Vec<u8> {
     match format {
         P::RGB24 => pixels,
         P::L8 => pixels.iter().flat_map(|&l| [l, l, l]).collect(),
+        // Big-endian samples: the high byte is a fine 8-bit approximation.
         P::L16 => pixels
-            .chunks_exact(2)
-            .flat_map(|c| [c[0], c[0], c[0]])
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|&[hi, _]| [hi, hi, hi])
             .collect(),
         // Adobe-style inverted CMYK, which is what jpeg-decoder hands back.
         P::CMYK32 => pixels
-            .chunks_exact(4)
-            .flat_map(|c| {
-                let k = c[3] as u16;
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|&[c, m, y, k]| {
+                let k = k as u16;
                 [
-                    (c[0] as u16 * k / 255) as u8,
-                    (c[1] as u16 * k / 255) as u8,
-                    (c[2] as u16 * k / 255) as u8,
+                    (c as u16 * k / 255) as u8,
+                    (m as u16 * k / 255) as u8,
+                    (y as u16 * k / 255) as u8,
                 ]
             })
             .collect(),
