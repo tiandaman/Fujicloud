@@ -14,7 +14,9 @@
   } from '../format';
   import { store } from '../store.svelte';
   import type { Detail, Label } from '../types';
+  import { placeName } from '../recipe';
   import Histogram from './Histogram.svelte';
+  import RecipeCard from './RecipeCard.svelte';
   import Icon from './Icon.svelte';
   import Stars from './Stars.svelte';
 
@@ -82,18 +84,15 @@
       {/if}
     </section>
 
+    {#if detail?.recipe?.filmSim}
+      <section><RecipeCard recipe={detail.recipe} recipeKey={photo.recipeKey} /></section>
+    {/if}
+
     <section class="rows">
-      {#if photo.filmSim}
+      {#if photo.filmSim && !detail?.recipe?.filmSim}
         <div class="row">
           <span class="swatch" style:background={filmGradient(photo.filmSim)}></span>
-          <div>
-            <strong>{photo.filmSim}</strong>
-            {#if detail && (detail.grain || detail.dynamicRange)}
-              <span class="muted">{[detail.grain && detail.grain !== 'Off' ? `Grain ${detail.grain}` : null, detail.dynamicRange].filter(Boolean).join(' · ')}</span>
-            {:else}
-              <span class="muted">Film simulation</span>
-            {/if}
-          </div>
+          <div><strong>{photo.filmSim}</strong><span class="muted">Film simulation</span></div>
         </div>
       {/if}
       {#if photo.camera}
@@ -106,6 +105,18 @@
         <div class="row">
           <span class="ico"><Icon name="lens" size={16} /></span>
           <div><strong class="truncate">{photo.lens}</strong><span class="muted">Lens</span></div>
+        </div>
+      {/if}
+      {#if photo.lat != null && photo.lon != null}
+        <div class="row">
+          <span class="ico"><Icon name="pin" size={16} /></span>
+          <div class="grow">
+            <strong class="truncate">{placeName(photo) ?? 'Somewhere on Earth'}</strong>
+            <span class="muted tabular">
+              {photo.gpsEstimated ? 'Estimated from a nearby shot' : `${photo.lat.toFixed(4)}, ${photo.lon.toFixed(4)}${detail?.altitude != null ? ` · ${Math.round(detail.altitude)} m` : ''}`}
+            </span>
+          </div>
+          <button class="icon-btn" title="Show on map" aria-label="Show on map" onclick={() => store.showOnMap(photo)}><Icon name="globe" size={16} /></button>
         </div>
       {/if}
     </section>
@@ -148,6 +159,9 @@
         <button class="btn primary" onclick={() => store.edit([photo.id])}>
           <Icon name="edit" size={15} /> Edit in Photoshop
         </button>
+        {#if store.smartReady}
+          <button class="icon-btn" title="Find similar photos" onclick={() => store.findSimilar(photo.id)}><Icon name="similar" size={16} /></button>
+        {/if}
         <button class="icon-btn" title="Show in Explorer" onclick={() => api.reveal(photo.id)}><Icon name="reveal" size={17} /></button>
         <button class="icon-btn" title="Open with default app" onclick={() => api.openDefault(photo.id)}><Icon name="open" size={16} /></button>
       </div>
@@ -277,6 +291,9 @@
   }
   .row strong {
     font-weight: 550;
+  }
+  .row .grow {
+    flex: 1;
   }
   .row span {
     font-size: 11.5px;

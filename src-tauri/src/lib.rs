@@ -1,5 +1,6 @@
 mod protocol;
 mod settings;
+mod smart;
 mod sync;
 
 use std::path::PathBuf;
@@ -7,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use fuji_core::db::{PhotoDetail, PhotoRow, SourceRow, Touched};
+use fuji_core::db::{PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
 use fuji_core::thumbs::{self, Size};
 use fuji_core::{Library, meta, scan, xmp};
 use parking_lot::{Mutex, RwLock};
@@ -25,6 +26,8 @@ pub struct AppState {
     scanning: AtomicBool,
     warming: AtomicBool,
     sync: Mutex<Option<sync::InboxSync>>,
+    pub models_dir: PathBuf,
+    pub smart: smart::Smart,
 }
 
 type Shared<'a> = State<'a, Arc<AppState>>;
@@ -43,6 +46,7 @@ struct Bootstrap {
     settings: Settings,
     effects: bool,
     editor: Option<String>,
+    smart: smart::Status,
 }
 
 #[tauri::command]
@@ -57,6 +61,7 @@ fn bootstrap(state: Shared) -> CmdResult<Bootstrap> {
         settings,
         effects: state.effects.load(Ordering::Relaxed),
         editor: editor.map(|p| p.to_string_lossy().into_owned()),
+        smart: state.smart.status(&state),
     })
 }
 
@@ -155,6 +160,7 @@ fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
         state.scanning.store(false, Ordering::Release);
         let _ = app.emit("scan-done", ());
         let _ = app.emit("library-changed", ());
+        smart::spawn(app.clone(), state.clone());
         spawn_warm(app, state);
     });
 }
@@ -313,10 +319,79 @@ fn open_default(state: Shared, id: i64) -> CmdResult<()> {
     tauri_plugin_opener::open_path(&detail.path, None::<&str>).map_err(err)
 }
 
+// ---- recipes ------------------------------------------------------------------
+
+#[tauri::command]
+async fn list_recipes(state: Shared<'_>) -> CmdResult<Vec<RecipeRow>> {
+    state.lib.recipes().map_err(err)
+}
+
+#[tauri::command]
+fn name_recipe(state: Shared, key: String, name: Option<String>) -> CmdResult<()> {
+    state.lib.name_recipe(&key, name.as_deref()).map_err(err)
+}
+
+// ---- smart search -----------------------------------------------------------
+
+#[tauri::command]
+fn smart_status(state: Shared) -> smart::Status {
+    state.smart.status(&state)
+}
+
+#[tauri::command]
+fn set_smart_search(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<smart::Status> {
+    {
+        let mut settings = state.settings.write();
+        settings.smart_search = enabled;
+        settings.save(&state.settings_path).map_err(err)?;
+    }
+    if enabled {
+        smart::spawn(app, state.inner().clone());
+    } else {
+        state.smart.disable(&app, &state);
+    }
+    Ok(state.smart.status(&state))
+}
+
+#[derive(Serialize)]
+struct Hit {
+    id: i64,
+    score: f32,
+}
+
+fn hits(found: Vec<(i64, f32)>) -> Vec<Hit> {
+    found
+        .into_iter()
+        .map(|(id, score)| Hit { id, score })
+        .collect()
+}
+
+/// Photos matching a description, best first. Embedding the query (and, the
+/// first time, loading the model) takes a moment, so it runs off the IPC thread.
+#[tauri::command]
+async fn search_smart(state: Shared<'_>, query: String) -> CmdResult<Vec<Hit>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.smart.search(&state, &query))
+        .await
+        .map_err(err)?
+        .map(hits)
+}
+
+#[tauri::command]
+async fn similar_photos(state: Shared<'_>, id: i64) -> CmdResult<Vec<Hit>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.smart.similar(&state, id))
+        .await
+        .map_err(err)?
+        .map(hits)
+}
+
 // ---- settings & sync ---------------------------------------------------------
 
 #[tauri::command]
-fn save_settings(app: AppHandle, state: Shared, settings: Settings) -> CmdResult<()> {
+fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdResult<()> {
+    // Smart search is switched by its own command (it downloads and indexes).
+    settings.smart_search = state.settings.read().smart_search;
     settings.save(&state.settings_path).map_err(err)?;
     *state.settings.write() = settings;
     restart_sync(&app, state.inner())
@@ -409,6 +484,8 @@ pub fn run() {
                 scanning: AtomicBool::new(false),
                 warming: AtomicBool::new(false),
                 sync: Mutex::new(None),
+                models_dir: data.join("models"),
+                smart: smart::Smart::default(),
             });
 
             #[cfg(windows)]
@@ -444,6 +521,12 @@ pub fn run() {
             save_settings,
             cache_info,
             clear_cache,
+            list_recipes,
+            name_recipe,
+            smart_status,
+            set_smart_search,
+            search_smart,
+            similar_photos,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Fujicloud");

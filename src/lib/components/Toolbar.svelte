@@ -26,6 +26,8 @@
     ['month', 'Month'],
     ['year', 'Year'],
     ['film', 'Film simulation'],
+    ['recipe', 'Recipe'],
+    ['place', 'Place'],
     ['camera', 'Camera'],
     ['lens', 'Lens'],
     ['folder', 'Folder'],
@@ -93,18 +95,21 @@
 
   <div class="title">
     <h1 class="truncate">{store.collectionTitle}</h1>
+    {#if store.collection.type === 'similar' || store.collection.type === 'ids'}
+      <button class="clear" title="Back to all photos" aria-label="Back to all photos" onclick={() => store.setCollection({ type: 'all' })}><Icon name="x" size={12} stroke={2.2} /></button>
+    {/if}
     <span class="faint tabular">
       {store.selection.size ? `${formatCount(store.selection.size)} selected · ` : ''}{plural(store.visible.length, 'photo')}
     </span>
   </div>
 
-  <div class="search">
-    <Icon name="search" size={14} />
+  <div class="search" class:smart={store.smartReady}>
+    <span class="lead" class:busy={store.smartBusy}><Icon name={store.smartReady ? 'sparkle' : 'search'} size={14} /></span>
     <input
       bind:this={search}
       class="field"
       type="search"
-      placeholder="Search name, lens, film…"
+      placeholder={store.smartReady ? 'Describe a photo, e.g. “sunset over the sea”' : 'Search name, lens, film, place…'}
       spellcheck="false"
       bind:value={store.query}
       onkeydown={(e) => {
@@ -114,8 +119,22 @@
         }
       }}
     />
+    {#if !store.smart?.enabled}
+      <button
+        class="enable"
+        title="Turn on smart search: find photos by describing them (downloads a {store.smart?.downloadMb ?? 210} MB model once, runs on this PC)"
+        aria-label="Turn on smart search"
+        onclick={() => {
+          store.setSmartSearch(true);
+          store.toast('Smart search is setting up. Progress shows in the sidebar.');
+        }}
+      >
+        <Icon name="sparkle" size={14} />
+      </button>
+    {/if}
   </div>
 
+  {#if store.collection.type !== 'map'}
   <div class="seg" role="radiogroup" aria-label="Layout">
     <button role="radio" aria-checked={store.mode === 'justified'} class:on={store.mode === 'justified'} title="Photo rows" onclick={() => (store.mode = 'justified')}>
       <Icon name="rows" size={15} />
@@ -127,11 +146,17 @@
 
   <input class="size" type="range" min="90" max="480" step="1" bind:value={store.size} title="Thumbnail size (Ctrl + scroll)" aria-label="Thumbnail size" />
 
-  <button class="pill" onclick={sortMenu} title="Sort">
-    <Icon name="sort" size={14} />
-    <span>{sortLabel}</span>
-    <Icon name="down" size={12} stroke={2} />
-  </button>
+  {#if store.ranked}
+    <span class="pill relevance" title="Results are ordered by how well they match">
+      <Icon name="sparkle" size={14} /> Best match first
+    </span>
+  {:else}
+    <button class="pill" onclick={sortMenu} title="Sort">
+      <Icon name="sort" size={14} />
+      <span>{sortLabel}</span>
+      <Icon name="down" size={12} stroke={2} />
+    </button>
+  {/if}
   <button class="pill" onclick={groupMenu} title="Group">
     <span class="faint">Group</span>
     <span>{groups.find(([k]) => k === store.group)?.[1]}</span>
@@ -140,6 +165,8 @@
   <button class="icon-btn" class:on={filtered} title="Filter" onclick={filterMenu}>
     <Icon name="filter" size={17} />
   </button>
+
+  {/if}
 
   <span class="divider"></span>
   <button class="icon-btn" class:on={store.showInfo} title="Info (I)" onclick={() => (store.showInfo = !store.showInfo)}>
@@ -188,10 +215,57 @@
     align-items: center;
     color: var(--text-3);
   }
-  .search :global(svg) {
+  .lead {
     position: absolute;
     left: 10px;
+    display: grid;
     pointer-events: none;
+  }
+  .search.smart .lead {
+    color: #bf9bff;
+  }
+  .lead.busy {
+    animation: pulse 0.9s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .enable {
+    position: absolute;
+    right: 5px;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    color: var(--text-3);
+  }
+  .enable:hover {
+    color: #bf9bff;
+    background: rgba(191, 155, 255, 0.14);
+  }
+  .relevance {
+    color: #d4bfff;
+  }
+  .relevance :global(svg) {
+    color: #bf9bff !important;
+  }
+  .clear {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--active);
+    color: var(--text-2);
+    align-self: center;
+    flex: none;
+  }
+  .clear:hover {
+    background: rgba(255, 255, 255, 0.18);
+    color: var(--text);
   }
   .search input {
     width: 220px;
@@ -202,8 +276,9 @@
       box-shadow 120ms,
       background 120ms;
   }
-  .search input:focus {
-    width: 280px;
+  .search input:focus,
+  .search.smart input {
+    width: 300px;
   }
   .search input::-webkit-search-cancel-button {
     filter: invert(0.7);

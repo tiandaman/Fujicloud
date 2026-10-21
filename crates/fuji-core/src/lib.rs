@@ -2,11 +2,15 @@
 //! of the desktop shell, so it can be tested and benchmarked on its own.
 
 pub mod db;
+#[cfg(feature = "smart-search")]
+pub mod embed;
 pub mod fuji;
+pub mod geo;
 pub mod ingest;
 pub mod meta;
 pub mod raf;
 pub mod scan;
+pub mod search;
 pub mod thumbs;
 pub mod xmp;
 
@@ -80,6 +84,8 @@ pub enum Error {
     Unsupported(Kind),
     #[error("photo {0} not found")]
     NotFound(i64),
+    #[error("smart search: {0}")]
+    Model(String),
 }
 
 impl From<exif::Error> for Error {
@@ -102,89 +108,122 @@ pub fn test_jpeg(width: u16, height: u16, taken: Option<&str>) -> Vec<u8> {
 
 #[doc(hidden)]
 pub fn test_jpeg_with(width: u16, height: u16, taken: Option<&str>, orientation: u16) -> Vec<u8> {
-    use exif::{Field, In, Rational, Tag, Value};
+    TestPhoto {
+        width,
+        height,
+        taken,
+        orientation,
+        gps: None,
+    }
+    .jpeg()
+}
 
-    let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
-    for y in 0..height {
-        for x in 0..width {
-            rgb.extend_from_slice(&[
-                (x as u32 * 255 / width as u32) as u8,
-                (y as u32 * 255 / height as u32) as u8,
-                128,
+/// Builds synthetic camera JPEGs for tests and benchmarks.
+#[doc(hidden)]
+pub struct TestPhoto<'a> {
+    pub width: u16,
+    pub height: u16,
+    /// EXIF DateTimeOriginal; `None` writes no EXIF at all.
+    pub taken: Option<&'a str>,
+    pub orientation: u16,
+    pub gps: Option<(f64, f64)>,
+}
+
+impl TestPhoto<'_> {
+    pub fn jpeg(&self) -> Vec<u8> {
+        use exif::{Field, In, Rational, Tag, Value};
+
+        let (width, height) = (self.width, self.height);
+        let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+        for y in 0..height {
+            for x in 0..width {
+                rgb.extend_from_slice(&[
+                    (x as u32 * 255 / width as u32) as u8,
+                    (y as u32 * 255 / height as u32) as u8,
+                    128,
+                ]);
+            }
+        }
+        let mut out = Vec::new();
+        let mut encoder = jpeg_encoder::Encoder::new(&mut out, 90);
+        if let Some(taken) = self.taken {
+            let ascii = |s: &str| Value::Ascii(vec![s.as_bytes().to_vec()]);
+            let rational = |num, denom| Value::Rational(vec![Rational { num, denom }]);
+            let dms = |deg: f64| {
+                let deg = deg.abs();
+                let secs = (deg * 3600.0 * 100.0).round() as u32;
+                Value::Rational(vec![
+                    Rational {
+                        num: secs / 360_000,
+                        denom: 1,
+                    },
+                    Rational {
+                        num: secs / 6000 % 60,
+                        denom: 1,
+                    },
+                    Rational {
+                        num: secs % 6000,
+                        denom: 100,
+                    },
+                ])
+            };
+            // Classic Neg. with a little grain, like a typical recipe.
+            let makernote = fuji::build_makernote_for_tests(&[
+                (0x1003, 3, &[0]),
+                (0x1047, 9, &[32]),
+                (0x104c, 3, &[16]),
+                (0x1401, 3, &[0x800]),
             ]);
+            let mut values = vec![
+                (Tag::Make, ascii("FUJIFILM")),
+                (Tag::Model, ascii("X-T5")),
+                (Tag::Orientation, Value::Short(vec![self.orientation])),
+                (Tag::DateTimeOriginal, ascii(taken)),
+                (Tag::LensModel, ascii("XF23mmF1.4 R LM WR")),
+                (Tag::FNumber, rational(28, 10)),
+                (Tag::ExposureTime, rational(1, 250)),
+                (Tag::FocalLength, rational(23, 1)),
+                (Tag::PhotographicSensitivity, Value::Short(vec![160])),
+                (Tag::MakerNote, Value::Undefined(makernote, 0)),
+            ];
+            if let Some((lat, lon)) = self.gps {
+                values.extend([
+                    (
+                        Tag::GPSLatitudeRef,
+                        ascii(if lat < 0.0 { "S" } else { "N" }),
+                    ),
+                    (Tag::GPSLatitude, dms(lat)),
+                    (
+                        Tag::GPSLongitudeRef,
+                        ascii(if lon < 0.0 { "W" } else { "E" }),
+                    ),
+                    (Tag::GPSLongitude, dms(lon)),
+                    (Tag::GPSAltitude, rational(42, 1)),
+                ]);
+            }
+            let fields: Vec<Field> = values
+                .into_iter()
+                .map(|(tag, value)| Field {
+                    tag,
+                    ifd_num: In::PRIMARY,
+                    value,
+                })
+                .collect();
+            let mut writer = exif::experimental::Writer::new();
+            for f in &fields {
+                writer.push_field(f);
+            }
+            let mut tiff = std::io::Cursor::new(Vec::new());
+            writer.write(&mut tiff, true).expect("exif encodes");
+            let mut app1 = b"Exif\0\0".to_vec();
+            app1.extend_from_slice(&tiff.into_inner());
+            encoder.add_app_segment(1, app1).expect("app1 fits");
         }
+        encoder
+            .encode(&rgb, width, height, jpeg_encoder::ColorType::Rgb)
+            .expect("jpeg encodes");
+        out
     }
-    let mut out = Vec::new();
-    let mut encoder = jpeg_encoder::Encoder::new(&mut out, 90);
-    if let Some(taken) = taken {
-        let ascii = |s: &str| Value::Ascii(vec![s.as_bytes().to_vec()]);
-        let makernote = fuji::build_makernote_for_tests(&[(0x1003, 0), (0x1401, 0x800)]);
-        let fields = [
-            Field {
-                tag: Tag::Make,
-                ifd_num: In::PRIMARY,
-                value: ascii("FUJIFILM"),
-            },
-            Field {
-                tag: Tag::Model,
-                ifd_num: In::PRIMARY,
-                value: ascii("X-T5"),
-            },
-            Field {
-                tag: Tag::Orientation,
-                ifd_num: In::PRIMARY,
-                value: Value::Short(vec![orientation]),
-            },
-            Field {
-                tag: Tag::DateTimeOriginal,
-                ifd_num: In::PRIMARY,
-                value: ascii(taken),
-            },
-            Field {
-                tag: Tag::LensModel,
-                ifd_num: In::PRIMARY,
-                value: ascii("XF23mmF1.4 R LM WR"),
-            },
-            Field {
-                tag: Tag::FNumber,
-                ifd_num: In::PRIMARY,
-                value: Value::Rational(vec![Rational { num: 28, denom: 10 }]),
-            },
-            Field {
-                tag: Tag::ExposureTime,
-                ifd_num: In::PRIMARY,
-                value: Value::Rational(vec![Rational { num: 1, denom: 250 }]),
-            },
-            Field {
-                tag: Tag::FocalLength,
-                ifd_num: In::PRIMARY,
-                value: Value::Rational(vec![Rational { num: 23, denom: 1 }]),
-            },
-            Field {
-                tag: Tag::PhotographicSensitivity,
-                ifd_num: In::PRIMARY,
-                value: Value::Short(vec![160]),
-            },
-            Field {
-                tag: Tag::MakerNote,
-                ifd_num: In::PRIMARY,
-                value: Value::Undefined(makernote, 0),
-            },
-        ];
-        let mut writer = exif::experimental::Writer::new();
-        for f in &fields {
-            writer.push_field(f);
-        }
-        let mut tiff = std::io::Cursor::new(Vec::new());
-        writer.write(&mut tiff, true).expect("exif encodes");
-        let mut app1 = b"Exif\0\0".to_vec();
-        app1.extend_from_slice(&tiff.into_inner());
-        encoder.add_app_segment(1, app1).expect("app1 fits");
-    }
-    encoder
-        .encode(&rgb, width, height, jpeg_encoder::ColorType::Rgb)
-        .expect("jpeg encodes");
-    out
 }
 
 #[cfg(test)]
@@ -210,6 +249,35 @@ mod tests {
         let raf = dir.path().join("DSCF0001.RAF");
         std::fs::write(&raf, raf::wrap_jpeg_for_tests(&jpeg)).unwrap();
         assert_eq!(meta::read(&raf, Kind::Raf).unwrap(), m);
+        assert_eq!(m.recipe.unwrap().grain.as_deref(), Some("Weak, Small"));
+        assert_eq!(m.lat, None);
+    }
+
+    #[test]
+    fn reads_gps_from_location_sync() {
+        let jpeg = TestPhoto {
+            width: 32,
+            height: 32,
+            taken: Some("2026:04:02 06:30:00"),
+            orientation: 1,
+            // Fushimi Inari, Kyoto.
+            gps: Some((34.96714, 135.77267)),
+        }
+        .jpeg();
+        let m = meta::from_jpeg_bytes(&jpeg).unwrap();
+        assert!((m.lat.unwrap() - 34.96714).abs() < 1e-4);
+        assert!((m.lon.unwrap() - 135.77267).abs() < 1e-4);
+        assert_eq!(m.altitude, Some(42.0));
+
+        let south_west = TestPhoto {
+            gps: Some((-22.9519, -43.2105)),
+            taken: Some("2026:01:01 12:00:00"),
+            width: 8,
+            height: 8,
+            orientation: 1,
+        };
+        let m = meta::from_jpeg_bytes(&south_west.jpeg()).unwrap();
+        assert!(m.lat.unwrap() < 0.0 && m.lon.unwrap() < 0.0);
     }
 
     #[test]

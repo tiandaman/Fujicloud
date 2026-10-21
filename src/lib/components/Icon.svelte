@@ -34,6 +34,12 @@
     raw: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 15V9h2a1.5 1.5 0 0 1 0 3H7m2.5 0L11 15M12.5 15l1.5-6 1.5 6M13 13.2h2M17 9l.8 6 .7-3.5.7 3.5.8-6"/>',
     open: '<path d="M14 4h6v6M20 4l-9 9M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/>',
     keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M7 14h10"/>',
+    copy: '<rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/>',
+    pin: '<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z"/><circle cx="12" cy="10" r="2.3"/>',
+    globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+    sparkle: '<path d="M12 3.5 13.8 9a2 2 0 0 0 1.2 1.2l5.5 1.8-5.5 1.8a2 2 0 0 0-1.2 1.2L12 20.5 10.2 15a2 2 0 0 0-1.2-1.2L3.5 12 9 10.2A2 2 0 0 0 10.2 9Z"/><path d="M19 3v3M17.5 4.5h3"/>',
+    similar: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/><path d="M15 7h4M17 5v4M7 15v4M5 17h4" opacity=".6"/>',
+    recipe: '<path d="M6 3h9l4 4v14H6Z"/><path d="M14 3v5h5M9.5 12h6M9.5 15.5h6M9.5 9h2.5"/>',
   } as const;
 
   export type IconName = keyof typeof paths;

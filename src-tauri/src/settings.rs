@@ -17,6 +17,8 @@ pub struct Settings {
     pub editor_path: Option<PathBuf>,
     /// Open the RAF (via Camera Raw) instead of the JPEG for RAW+JPEG pairs.
     pub edit_raw: bool,
+    /// On-device "search by what's in the photo" (downloads a model once).
+    pub smart_search: bool,
 }
 
 impl Default for Settings {
@@ -28,6 +30,7 @@ impl Default for Settings {
             write_xmp: true,
             editor_path: None,
             edit_raw: true,
+            smart_search: false,
         }
     }
 }

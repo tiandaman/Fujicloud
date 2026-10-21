@@ -40,6 +40,22 @@ thousands of images.
   to the Shield's SSD, filed as `YYYY/YYYY-MM-DD/`, several files at a time. Thumbnails
   and previews are rendered from the local copy *while* it uploads, so a new photo can
   be browsed the moment it arrives.
+- **Recipe cards:** the full in-camera film recipe is read from every shot: film
+  simulation, grain, Color Chrome and FX Blue, white balance and its shift, dynamic
+  range, highlight/shadow, color, sharpness, noise reduction, clarity and monochrome
+  toning. Photos are grouped by recipe in the sidebar. You can name a recipe
+  ("My Kodachrome"), copy it as text, or group the grid by recipe.
+- **Places and a world map:** GPS from the camera (via location sync in the FUJIFILM
+  XApp) is turned into "Kyoto, Japan" offline, using 171k GeoNames places built into the
+  app. Shots without GPS borrow the location of a geotagged shot from the same half
+  hour. *Places* shows a 3D globe with photo bubbles that split apart as you zoom; click
+  one to see its photos. The globe works offline, and street detail is added when
+  you're online.
+- **Search by what's in the photo:** type "golden hour at the beach" or "dog in the
+  snow". Google's SigLIP model runs on your PC through ONNX Runtime (a one-time
+  ~210 MB download, enabled with the ✦ in the search box). Each photo is analysed once
+  from its cached thumbnail, and a search over 100k photos takes about 20 ms.
+  Right-click any photo to *Find similar photos*. Nothing leaves your network.
 - Histogram, full EXIF, drag a folder onto the window to add it, and Windows 11 Mica.
 
 ## Install (Windows)
@@ -79,6 +95,9 @@ cache.
 | RAW | RAF embedded JPEG | Reads a few MB from the RAF header instead of demosaicing 50 MB of X-Trans data. |
 | Index | SQLite (WAL) | Incremental rescans only touch new or changed files. Ratings survive rescans. |
 | Network | Parallel directory walk + metadata reads | SMB is latency-bound, so many requests stay in flight at once. |
+| Smart search | SigLIP via ONNX Runtime, 8-bit vectors | ~770 bytes per photo (75 MB per 100k in RAM), searched by a brute-force scan with no index to maintain. |
+| Map | MapLibre GL (WebGL) + Supercluster | A GPU-rendered globe, loaded only when you open Places. Clustering 100k points takes milliseconds. |
+| Places | GeoNames gazetteer bucketed in a 1° grid | Offline reverse geocoding in microseconds per photo. |
 
 ## Project layout
 
@@ -92,7 +111,10 @@ crates/fuji-core/   Rust core, tested on its own
   scan.rs           parallel incremental scanning
   ingest.rs         inbox → library filing
   xmp.rs            Lightroom/Bridge-compatible sidecars
-src-tauri/          desktop shell: commands, fuji:// protocol, camera sync
+  geo.rs            offline reverse geocoding (GeoNames, bundled)
+  embed.rs          SigLIP image/text embeddings (ONNX Runtime)
+  search.rs         8-bit vector index for smart search
+src-tauri/          desktop shell: commands, fuji:// protocol, camera sync, smart search jobs
 src/                Svelte UI (grid, viewer, info panel, settings)
 ```
 
@@ -108,7 +130,7 @@ npm run tauri dev        # the desktop app, with hot reload
 npm run dev              # UI only, in a browser, with a generated demo library
                          #   ?days=3000 → ~50k photos   ?empty → onboarding screen
 npm run tauri build      # installer → target/release/bundle/
-cargo test -p fuji-core  # core tests
+cargo test -p fuji-core  # core tests (add `-- --ignored` to test the real search model)
 cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
 ```
 
@@ -119,6 +141,16 @@ cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
 - Read ratings back from `.xmp` sidecars during scans, so every laptop sees the same
   stars.
 - Direct camera import over PTP/IP (no PC AutoSave needed).
-- Side-by-side compare and a loupe for culling bursts.
-- Map view from GPS tags, and local AI search ("red car at night") with an on-device
-  CLIP model.
+- Side-by-side compare, and grouping bursts into stacks using smart search vectors.
+- A Fujicloud app for the Shield itself: browse the library and run slideshows on the TV.
+- GPU acceleration for smart search indexing (DirectML is already in the ONNX Runtime
+  build).
+- Import a phone's location history (GPX / Google Takeout) for shots taken without
+  location sync.
+
+## Credits
+
+Place names © [GeoNames](https://www.geonames.org) (CC BY 4.0). Map data ©
+OpenStreetMap contributors, tiles by [OpenFreeMap](https://openfreemap.org). Country
+borders from Natural Earth via `world-atlas`. Smart search uses Google's SigLIP model,
+via the [Xenova ONNX export](https://huggingface.co/Xenova/siglip-base-patch16-224).

@@ -165,6 +165,8 @@
         { label: many ? `Edit ${ids.length} in Photoshop` : 'Edit in Photoshop', icon: 'edit', hint: 'Ctrl+E', action: () => store.edit(ids) },
         { label: 'Show in Explorer', icon: 'reveal', action: () => api.reveal(p.id), hidden: many },
         { label: 'Open with default app', icon: 'open', action: () => api.openDefault(p.id), hidden: many },
+        { label: 'Find similar photos', icon: 'similar', action: () => store.findSimilar(p.id), hidden: many || !store.smartReady },
+        { label: 'Show on map', icon: 'globe', action: () => store.showOnMap(p), hidden: many || p.lat == null },
         { separator: true },
         { stars: true, value: many ? 0 : p.rating, onrate: (r: number) => store.rate(r, ids) },
         { label: p.flag === 1 && !many ? 'Unpick' : 'Pick', icon: 'flag', hint: 'P', action: () => store.flag(p.flag === 1 && !many ? 0 : 1, ids) },

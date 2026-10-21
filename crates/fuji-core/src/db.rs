@@ -7,9 +7,11 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
+use crate::fuji::Recipe;
+use crate::geo::Place;
 use crate::{Error, Kind, PhotoMeta};
 
-const SCHEMA: &str = r#"
+const TABLES: &str = r#"
 CREATE TABLE IF NOT EXISTS sources (
     id    INTEGER PRIMARY KEY,
     path  TEXT NOT NULL UNIQUE,
@@ -44,9 +46,39 @@ CREATE TABLE IF NOT EXISTS photos (
     label         TEXT,
     added_at      INTEGER NOT NULL DEFAULT (unixepoch())
 );
+CREATE TABLE IF NOT EXISTS recipes (
+    key  TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS embeddings (
+    photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+    model    TEXT NOT NULL,
+    vec      BLOB NOT NULL
+);
+"#;
+
+/// Columns added after the first release. Libraries created before them get
+/// the columns and a metadata re-read on the next scan.
+const ADDED_COLUMNS: &[(&str, &str)] = &[
+    ("recipe", "TEXT"),
+    ("recipe_key", "TEXT"),
+    ("lat", "REAL"),
+    ("lon", "REAL"),
+    ("altitude", "REAL"),
+    ("gps_estimated", "INTEGER NOT NULL DEFAULT 0"),
+    ("town", "TEXT"),
+    ("region", "TEXT"),
+    ("country", "TEXT"),
+];
+
+const INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS photos_source ON photos(source_id);
 CREATE INDEX IF NOT EXISTS photos_pair ON photos(pair_key);
+CREATE INDEX IF NOT EXISTS photos_recipe ON photos(recipe_key);
 "#;
+
+/// Shots this close in time to a geotagged one inherit its location.
+const LOCATION_WINDOW_SECS: i64 = 30 * 60;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +117,14 @@ pub struct PhotoRow {
     pub added_at: i64,
     /// The other half of a RAW+JPEG pair shot together, if present.
     pub pair_id: Option<i64>,
+    pub recipe_key: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    /// The position was borrowed from a geotagged shot taken around the same time.
+    pub gps_estimated: bool,
+    pub town: Option<String>,
+    pub region: Option<String>,
+    pub country: Option<String>,
 }
 
 /// Everything about one photo, for the info panel.
@@ -96,8 +136,18 @@ pub struct PhotoDetail {
     pub path: String,
     pub orientation: u16,
     pub exposure_comp: Option<f64>,
-    pub grain: Option<String>,
-    pub dynamic_range: Option<String>,
+    pub altitude: Option<f64>,
+    pub recipe: Option<Recipe>,
+}
+
+/// A recipe seen in the library, with how many photos used it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipeRow {
+    pub key: String,
+    pub name: Option<String>,
+    pub recipe: Recipe,
+    pub count: i64,
 }
 
 /// A file found on disk, ready to be indexed.
@@ -107,6 +157,7 @@ pub struct NewPhoto {
     pub size: u64,
     pub mtime: i64,
     pub meta: PhotoMeta,
+    pub place: Option<Place>,
 }
 
 /// What a write touched, so the caller can mirror it into XMP sidecars.
@@ -143,7 +194,9 @@ impl Library {
              PRAGMA temp_store = MEMORY;
              PRAGMA mmap_size = 268435456;",
         )?;
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(TABLES)?;
+        migrate(&conn)?;
+        conn.execute_batch(INDEXES)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -241,15 +294,21 @@ impl Library {
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO photos (source_id, path, folder, name, kind, pair_key, size, mtime, taken_at,
                     width, height, orientation, camera, lens, focal_length, aperture, shutter, iso,
-                    exposure_comp, film_sim, grain, dynamic_range)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                    exposure_comp, film_sim, grain, dynamic_range, recipe, recipe_key,
+                    lat, lon, altitude, gps_estimated, town, region, country)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                    ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, 0, ?28, ?29, ?30)
                  ON CONFLICT(path) DO UPDATE SET
                     source_id = excluded.source_id, size = excluded.size, mtime = excluded.mtime,
                     taken_at = excluded.taken_at, width = excluded.width, height = excluded.height,
                     orientation = excluded.orientation, camera = excluded.camera, lens = excluded.lens,
                     focal_length = excluded.focal_length, aperture = excluded.aperture,
                     shutter = excluded.shutter, iso = excluded.iso, exposure_comp = excluded.exposure_comp,
-                    film_sim = excluded.film_sim, grain = excluded.grain, dynamic_range = excluded.dynamic_range",
+                    film_sim = excluded.film_sim, grain = excluded.grain, dynamic_range = excluded.dynamic_range,
+                    recipe = excluded.recipe, recipe_key = excluded.recipe_key,
+                    lat = excluded.lat, lon = excluded.lon, altitude = excluded.altitude,
+                    gps_estimated = 0, town = excluded.town, region = excluded.region,
+                    country = excluded.country",
             )?;
             for p in photos {
                 let m = &p.meta;
@@ -263,6 +322,11 @@ impl Library {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                let recipe_json = m
+                    .recipe
+                    .as_ref()
+                    .and_then(|r| serde_json::to_string(r).ok());
+                let recipe_key = m.recipe.as_ref().and_then(Recipe::key);
                 stmt.execute(params![
                     source_id,
                     p.path.to_string_lossy(),
@@ -286,6 +350,14 @@ impl Library {
                     m.film_sim,
                     m.grain,
                     m.dynamic_range,
+                    recipe_json,
+                    recipe_key,
+                    m.lat,
+                    m.lon,
+                    m.altitude,
+                    p.place.as_ref().and_then(|pl| pl.town.clone()),
+                    p.place.as_ref().and_then(|pl| pl.region.clone()),
+                    p.place.as_ref().map(|pl| pl.country.clone()),
                 ])?;
             }
         }
@@ -318,7 +390,7 @@ impl Library {
     pub fn photo(&self, id: i64) -> Result<PhotoDetail, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(&format!(
-            "{ROW_SELECT}, p.path, p.orientation, p.exposure_comp, p.grain, p.dynamic_range FROM photos p WHERE p.id = ?1"
+            "{ROW_SELECT}, p.path, p.orientation, p.exposure_comp, p.altitude, p.recipe FROM photos p WHERE p.id = ?1"
         ))?;
         stmt.query_row([id], |r| {
             Ok(PhotoDetail {
@@ -326,8 +398,10 @@ impl Library {
                 path: r.get(ROW_COLUMNS)?,
                 orientation: r.get(ROW_COLUMNS + 1)?,
                 exposure_comp: r.get(ROW_COLUMNS + 2)?,
-                grain: r.get(ROW_COLUMNS + 3)?,
-                dynamic_range: r.get(ROW_COLUMNS + 4)?,
+                altitude: r.get(ROW_COLUMNS + 3)?,
+                recipe: r
+                    .get::<_, Option<String>>(ROW_COLUMNS + 4)?
+                    .and_then(|json| serde_json::from_str(&json).ok()),
             })
         })
         .optional()?
@@ -418,14 +492,194 @@ impl Library {
         tx.commit()?;
         Ok(touched)
     }
+
+    // ---- recipes -----------------------------------------------------------
+
+    /// Every recipe in the library, most used first. RAW+JPEG pairs count once.
+    pub fn recipes(&self) -> Result<Vec<RecipeRow>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT p.recipe_key, count(DISTINCT p.pair_key), max(p.recipe), r.name
+             FROM photos p LEFT JOIN recipes r ON r.key = p.recipe_key
+             WHERE p.recipe_key IS NOT NULL AND p.flag <> -1
+             GROUP BY p.recipe_key
+             ORDER BY 2 DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (key, count, json, name) = row?;
+            if let Ok(recipe) = serde_json::from_str(&json) {
+                out.push(RecipeRow {
+                    key,
+                    name,
+                    recipe,
+                    count,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Names a recipe ("My Kodachrome"); `None` goes back to the default name.
+    pub fn name_recipe(&self, key: &str, name: Option<&str>) -> Result<(), Error> {
+        let conn = self.conn.lock();
+        match name.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => conn.execute(
+                "INSERT INTO recipes (key, name) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET name = excluded.name",
+                params![key, name],
+            )?,
+            None => conn.execute("DELETE FROM recipes WHERE key = ?1", [key])?,
+        };
+        Ok(())
+    }
+
+    // ---- places ------------------------------------------------------------
+
+    /// Gives photos without GPS the location of the nearest-in-time geotagged
+    /// shot within half an hour (location sync can lag or drop out), and
+    /// clears estimates that no longer have a source. Returns how many
+    /// photos have an estimated location.
+    pub fn infer_locations(&self) -> Result<usize, Error> {
+        type Loc = (f64, f64, Option<String>, Option<String>, Option<String>);
+        let mut conn = self.conn.lock();
+        let rows: Vec<(i64, Option<i64>, Option<Loc>, bool)> = conn
+            .prepare(
+                "SELECT id, taken_at, lat, lon, town, region, country, gps_estimated FROM photos",
+            )?
+            .query_map([], |r| {
+                let lat: Option<f64> = r.get(2)?;
+                let lon: Option<f64> = r.get(3)?;
+                let loc = lat.zip(lon).map(|(lat, lon)| {
+                    (
+                        lat,
+                        lon,
+                        r.get(4).ok().flatten(),
+                        r.get(5).ok().flatten(),
+                        r.get(6).ok().flatten(),
+                    )
+                });
+                Ok((r.get(0)?, r.get(1)?, loc, r.get::<_, i64>(7)? != 0))
+            })?
+            .collect::<Result<_, _>>()?;
+
+        let mut anchors: Vec<(i64, &Loc)> = rows
+            .iter()
+            .filter(|(_, _, loc, est)| !est && loc.is_some())
+            .filter_map(|(_, t, loc, _)| Some((t.as_ref().copied()?, loc.as_ref()?)))
+            .collect();
+        anchors.sort_by_key(|(t, _)| *t);
+
+        let nearest = |t: i64| -> Option<&Loc> {
+            let i = anchors.partition_point(|(at, _)| *at < t);
+            [i.checked_sub(1), Some(i)]
+                .into_iter()
+                .flatten()
+                .filter_map(|j| anchors.get(j))
+                .filter(|(at, _)| (at - t).abs() <= LOCATION_WINDOW_SECS)
+                .min_by_key(|(at, _)| (at - t).abs())
+                .map(|(_, loc)| *loc)
+        };
+
+        let tx = conn.transaction()?;
+        let mut estimated = 0;
+        {
+            let mut set = tx.prepare(
+                "UPDATE photos SET lat = ?2, lon = ?3, town = ?4, region = ?5, country = ?6, gps_estimated = 1
+                 WHERE id = ?1",
+            )?;
+            let mut clear = tx.prepare(
+                "UPDATE photos SET lat = NULL, lon = NULL, town = NULL, region = NULL, country = NULL,
+                 gps_estimated = 0 WHERE id = ?1",
+            )?;
+            for (id, taken, loc, est) in &rows {
+                if loc.is_some() && !est {
+                    continue;
+                }
+                match taken.and_then(nearest) {
+                    Some((lat, lon, town, region, country)) => {
+                        set.execute(params![id, lat, lon, town, region, country])?;
+                        estimated += 1;
+                    }
+                    None if *est => {
+                        clear.execute([id])?;
+                    }
+                    None => {}
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(estimated)
+    }
+
+    // ---- smart search embeddings --------------------------------------------
+
+    /// Photos still needing an embedding for `model`, newest first. A RAF
+    /// stacked under its JPEG twin is skipped: the JPEG stands for both.
+    pub fn missing_embeddings(&self, model: &str) -> Result<Vec<i64>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT p.id FROM photos p
+             WHERE p.kind IN ('jpeg', 'raf')
+               AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model = ?1)
+               AND NOT (p.kind = 'raf' AND EXISTS
+                    (SELECT 1 FROM photos j WHERE j.pair_key = p.pair_key AND j.kind = 'jpeg'))
+             ORDER BY p.taken_at DESC",
+        )?;
+        let rows = stmt.query_map([model], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Stores embeddings packed by [`crate::search::quantize`].
+    pub fn store_embeddings(&self, model: &str, items: &[(i64, Vec<u8>)]) -> Result<(), Error> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO embeddings (photo_id, model, vec) VALUES (?1, ?2, ?3)",
+            )?;
+            for (id, blob) in items {
+                stmt.execute(params![id, model, blob])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// `(photo id, packed embedding)` for every indexed photo.
+    pub fn embeddings(&self, model: &str) -> Result<Vec<(i64, Vec<u8>)>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare_cached("SELECT photo_id, vec FROM embeddings WHERE model = ?1")?;
+        let rows = stmt.query_map([model], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn embedding_count(&self, model: &str) -> Result<i64, Error> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row(
+            "SELECT count(*) FROM embeddings WHERE model = ?1",
+            [model],
+            |r| r.get(0),
+        )?)
+    }
 }
 
-const ROW_COLUMNS: usize = 22;
+const ROW_COLUMNS: usize = 29;
 const ROW_SELECT: &str =
     "SELECT p.id, p.source_id, p.name, p.folder, p.kind, p.size, p.mtime, p.taken_at,
     p.width, p.height, p.camera, p.lens, p.focal_length, p.aperture, p.shutter, p.iso, p.film_sim,
     p.rating, p.flag, p.label, p.added_at,
-    (SELECT q.id FROM photos q WHERE q.pair_key = p.pair_key AND q.id <> p.id LIMIT 1)";
+    (SELECT q.id FROM photos q WHERE q.pair_key = p.pair_key AND q.id <> p.id LIMIT 1),
+    p.recipe_key, p.lat, p.lon, p.gps_estimated, p.town, p.region, p.country";
 
 fn row_from(r: &rusqlite::Row) -> rusqlite::Result<PhotoRow> {
     Ok(PhotoRow {
@@ -451,7 +705,33 @@ fn row_from(r: &rusqlite::Row) -> rusqlite::Result<PhotoRow> {
         label: r.get(19)?,
         added_at: r.get(20)?,
         pair_id: r.get(21)?,
+        recipe_key: r.get(22)?,
+        lat: r.get(23)?,
+        lon: r.get(24)?,
+        gps_estimated: r.get::<_, i64>(25)? != 0,
+        town: r.get(26)?,
+        region: r.get(27)?,
+        country: r.get(28)?,
     })
+}
+
+fn migrate(conn: &Connection) -> Result<(), Error> {
+    let existing: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('photos')")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut added = false;
+    for (name, decl) in ADDED_COLUMNS {
+        if !existing.iter().any(|c| c == name) {
+            conn.execute_batch(&format!("ALTER TABLE photos ADD COLUMN {name} {decl}"))?;
+            added = true;
+        }
+    }
+    if added {
+        // Make the next scan re-read every file's metadata to fill them in.
+        conn.execute_batch("UPDATE photos SET mtime = -1")?;
+    }
+    Ok(())
 }
 
 /// Files shot as RAW+JPEG share a folder and stem (`DSCF1234.RAF`/`.JPG`).
@@ -482,6 +762,7 @@ mod tests {
                 film_sim: Some("Velvia".into()),
                 ..Default::default()
             },
+            place: None,
         }
     }
 
@@ -524,5 +805,159 @@ mod tests {
         assert_eq!(lib.sources().unwrap()[0].count, 3);
         lib.remove_source(src.id).unwrap();
         assert!(lib.photos().unwrap().is_empty());
+    }
+
+    fn shot(path: &str, taken: i64, gps: Option<(f64, f64)>, recipe: Option<Recipe>) -> NewPhoto {
+        let mut p = photo(path, Kind::Jpeg);
+        p.meta.taken_at = Some(taken);
+        p.meta.lat = gps.map(|g| g.0);
+        p.meta.lon = gps.map(|g| g.1);
+        p.place = gps.and_then(|(lat, lon)| crate::geo::reverse(lat, lon));
+        p.meta.recipe = recipe;
+        p
+    }
+
+    #[test]
+    fn recipes_are_grouped_and_nameable() {
+        let lib = Library::open_in_memory().unwrap();
+        let src = lib.add_source(Path::new("/lib")).unwrap();
+        let chrome = Recipe {
+            film_sim: Some("Classic Chrome".into()),
+            clarity: Some(2),
+            ..Default::default()
+        };
+        let acros = Recipe {
+            film_sim: Some("Acros".into()),
+            ..Default::default()
+        };
+        lib.upsert(
+            src.id,
+            &[
+                shot("/lib/1.JPG", 0, None, Some(chrome.clone())),
+                shot("/lib/2.JPG", 0, None, Some(chrome.clone())),
+                shot("/lib/3.JPG", 0, None, Some(acros)),
+                shot("/lib/4.JPG", 0, None, None),
+            ],
+        )
+        .unwrap();
+        let recipes = lib.recipes().unwrap();
+        assert_eq!(recipes.len(), 2);
+        assert_eq!(
+            (recipes[0].count, recipes[0].recipe.clone()),
+            (2, chrome.clone())
+        );
+
+        let key = chrome.key().unwrap();
+        lib.name_recipe(&key, Some("  Kodachrome-ish ")).unwrap();
+        assert_eq!(
+            lib.recipes().unwrap()[0].name.as_deref(),
+            Some("Kodachrome-ish")
+        );
+        lib.name_recipe(&key, None).unwrap();
+        assert_eq!(lib.recipes().unwrap()[0].name, None);
+
+        let id = lib
+            .photos()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.name == "1.JPG")
+            .unwrap()
+            .id;
+        assert_eq!(lib.photo(id).unwrap().recipe, Some(chrome));
+    }
+
+    #[test]
+    fn locations_are_borrowed_from_nearby_shots() {
+        let lib = Library::open_in_memory().unwrap();
+        let src = lib.add_source(Path::new("/lib")).unwrap();
+        let kyoto = Some((35.0116, 135.7681));
+        lib.upsert(
+            src.id,
+            &[
+                shot("/lib/a.JPG", 10_000, kyoto, None),
+                shot("/lib/b.JPG", 10_600, None, None), // 10 min later
+                shot("/lib/c.JPG", 20_000, None, None), // hours later
+            ],
+        )
+        .unwrap();
+        assert_eq!(lib.infer_locations().unwrap(), 1);
+        let rows = lib.photos().unwrap();
+        let get = |n: &str| rows.iter().find(|r| r.name == n).unwrap().clone();
+        assert!(!get("a.JPG").gps_estimated);
+        assert_eq!(get("a.JPG").town.as_deref(), Some("Kyoto"));
+        assert!(get("b.JPG").gps_estimated);
+        assert_eq!(get("b.JPG").country.as_deref(), Some("JP"));
+        assert_eq!(get("c.JPG").lat, None);
+
+        // The source photo disappears: the estimate goes with it.
+        lib.remove_photos(&[get("a.JPG").id]).unwrap();
+        assert_eq!(lib.infer_locations().unwrap(), 0);
+        assert_eq!(
+            lib.photos()
+                .unwrap()
+                .iter()
+                .filter(|r| r.lat.is_some())
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn embeddings_round_trip_and_skip_stacked_raws() {
+        let lib = Library::open_in_memory().unwrap();
+        let src = lib.add_source(Path::new("/lib")).unwrap();
+        lib.upsert(
+            src.id,
+            &[
+                photo("/lib/DSCF1.JPG", Kind::Jpeg),
+                photo("/lib/DSCF1.RAF", Kind::Raf),
+                photo("/lib/DSCF2.RAF", Kind::Raf),
+            ],
+        )
+        .unwrap();
+        let missing = lib.missing_embeddings("m").unwrap();
+        assert_eq!(missing.len(), 2, "the RAF twin of DSCF1.JPG is skipped");
+        lib.store_embeddings("m", &[(missing[0], vec![1, 2, 3, 4, 5])])
+            .unwrap();
+        assert_eq!(
+            lib.embeddings("m").unwrap(),
+            vec![(missing[0], vec![1, 2, 3, 4, 5])]
+        );
+        assert_eq!(lib.embedding_count("m").unwrap(), 1);
+        assert_eq!(lib.missing_embeddings("m").unwrap().len(), 1);
+        assert_eq!(lib.missing_embeddings("other-model").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn upgrades_a_first_release_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            // The schema as shipped in the first release.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sources (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, label TEXT NOT NULL);
+                 CREATE TABLE photos (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL, path TEXT NOT NULL UNIQUE,
+                    folder TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, pair_key TEXT NOT NULL,
+                    size INTEGER NOT NULL, mtime INTEGER NOT NULL, taken_at INTEGER,
+                    width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0,
+                    orientation INTEGER NOT NULL DEFAULT 1, camera TEXT, lens TEXT, focal_length REAL,
+                    aperture REAL, shutter REAL, iso INTEGER, exposure_comp REAL, film_sim TEXT, grain TEXT,
+                    dynamic_range TEXT, rating INTEGER NOT NULL DEFAULT 0, flag INTEGER NOT NULL DEFAULT 0,
+                    label TEXT, added_at INTEGER NOT NULL DEFAULT (unixepoch()));
+                 INSERT INTO sources VALUES (1, '/lib', 'lib');
+                 INSERT INTO photos (source_id, path, folder, name, kind, pair_key, size, mtime, rating)
+                    VALUES (1, '/lib/a.JPG', '/lib', 'a.JPG', 'jpeg', '/lib/a', 10, 123, 5);",
+            )
+            .unwrap();
+        }
+        let lib = Library::open(&path).unwrap();
+        let rows = lib.photos().unwrap();
+        assert_eq!(rows[0].rating, 5, "user data survives");
+        assert_eq!(rows[0].mtime, -1, "forces a metadata re-read");
+        assert_eq!(lib.index_of(1).unwrap()["/lib/a.JPG"].2, -1);
+        // Opening again is a no-op.
+        drop(lib);
+        assert_eq!(Library::open(&path).unwrap().photos().unwrap()[0].mtime, -1);
     }
 }

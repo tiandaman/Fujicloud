@@ -28,6 +28,12 @@ pub struct PhotoMeta {
     pub film_sim: Option<String>,
     pub grain: Option<String>,
     pub dynamic_range: Option<String>,
+    /// The full in-camera film recipe (Fujifilm bodies only).
+    pub recipe: Option<fuji::Recipe>,
+    /// GPS position in decimal degrees, e.g. from the phone's location sync.
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub altitude: Option<f64>,
 }
 
 /// Reads metadata touching as few bytes as possible: for JPEG the reader stops
@@ -146,11 +152,13 @@ fn from_exif(exif: &Exif) -> PhotoMeta {
         (make, model) => model.or(make),
     };
 
-    let fuji = match field(Tag::MakerNote) {
+    let recipe = match field(Tag::MakerNote) {
         Some(Value::Undefined(bytes, _)) => fuji::parse_makernote(bytes),
         _ => None,
-    }
-    .unwrap_or_default();
+    };
+    let (lat, lon, altitude) = gps(exif).map_or((None, None, None), |(lat, lon, alt)| {
+        (Some(lat), Some(lon), alt)
+    });
 
     PhotoMeta {
         taken_at,
@@ -164,10 +172,51 @@ fn from_exif(exif: &Exif) -> PhotoMeta {
         shutter: rational(Tag::ExposureTime),
         iso: uint(Tag::PhotographicSensitivity),
         exposure_comp: rational(Tag::ExposureBiasValue),
-        film_sim: fuji.film_simulation,
-        grain: fuji.grain,
-        dynamic_range: fuji.dynamic_range,
+        film_sim: recipe.as_ref().and_then(|r| r.film_sim.clone()),
+        grain: recipe.as_ref().and_then(|r| r.grain.clone()),
+        dynamic_range: recipe.as_ref().and_then(|r| r.dynamic_range.clone()),
+        recipe,
+        lat,
+        lon,
+        altitude,
     }
+}
+
+/// `(latitude, longitude, altitude)` in degrees and metres, if the camera
+/// recorded a position.
+fn gps(exif: &Exif) -> Option<(f64, f64, Option<f64>)> {
+    let field = |tag| exif.get_field(tag, In::PRIMARY).map(|f| &f.value);
+    let degrees = |tag| match field(tag) {
+        Some(Value::Rational(v)) if v.len() >= 3 && v.iter().all(|r| r.denom != 0) => {
+            Some(v[0].to_f64() + v[1].to_f64() / 60.0 + v[2].to_f64() / 3600.0)
+        }
+        _ => None,
+    };
+    let hemisphere = |tag| match field(tag) {
+        Some(Value::Ascii(v)) => v.first().and_then(|s| s.first().copied()),
+        _ => None,
+    };
+    let mut lat = degrees(Tag::GPSLatitude)?;
+    let mut lon = degrees(Tag::GPSLongitude)?;
+    if hemisphere(Tag::GPSLatitudeRef) == Some(b'S') {
+        lat = -lat;
+    }
+    if hemisphere(Tag::GPSLongitudeRef) == Some(b'W') {
+        lon = -lon;
+    }
+    // Some firmwares write zeros when there was no fix.
+    if (lat == 0.0 && lon == 0.0) || lat.abs() > 90.0 || lon.abs() > 180.0 {
+        return None;
+    }
+    let altitude = match field(Tag::GPSAltitude) {
+        Some(Value::Rational(v)) => v.first().filter(|r| r.denom != 0).map(|r| {
+            let below =
+                matches!(field(Tag::GPSAltitudeRef), Some(Value::Byte(b)) if b.first() == Some(&1));
+            if below { -r.to_f64() } else { r.to_f64() }
+        }),
+        _ => None,
+    };
+    Some((lat, lon, altitude))
 }
 
 fn parse_exif_datetime(s: &[u8]) -> Option<i64> {

@@ -1,4 +1,4 @@
-import type { Bootstrap, CacheInfo, Detail, Label, Photo, Settings, Source } from './types';
+import type { Bootstrap, CacheInfo, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -20,6 +20,12 @@ export interface Api {
   saveSettings(settings: Settings): Promise<void>;
   cacheInfo(): Promise<CacheInfo>;
   clearCache(): Promise<void>;
+  listRecipes(): Promise<RecipeRow[]>;
+  nameRecipe(key: string, name: string | null): Promise<void>;
+  smartStatus(): Promise<SmartStatus>;
+  setSmartSearch(enabled: boolean): Promise<SmartStatus>;
+  searchSmart(query: string): Promise<Hit[]>;
+  similarPhotos(id: number): Promise<Hit[]>;
   pickFolder(title: string): Promise<string | null>;
   listen<T>(event: string, cb: (payload: T) => void): Promise<() => void>;
   onDropPaths(cb: (paths: string[]) => void): Promise<() => void>;
@@ -55,6 +61,12 @@ function tauriApi(): Api {
     saveSettings: (settings) => invoke('save_settings', { settings }),
     cacheInfo: () => invoke('cache_info'),
     clearCache: () => invoke('clear_cache'),
+    listRecipes: () => invoke('list_recipes'),
+    nameRecipe: (key, name) => invoke('name_recipe', { key, name }),
+    smartStatus: () => invoke('smart_status'),
+    setSmartSearch: (enabled) => invoke('set_smart_search', { enabled }),
+    searchSmart: (query) => invoke('search_smart', { query }),
+    similarPhotos: (id) => invoke('similar_photos', { id }),
     async pickFolder(title) {
       const { open } = await import('@tauri-apps/plugin-dialog');
       const picked = await open({ directory: true, multiple: false, title });

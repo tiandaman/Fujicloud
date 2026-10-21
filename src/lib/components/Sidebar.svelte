@@ -2,18 +2,21 @@
   import type { Snippet } from 'svelte';
   import { api } from '../api';
   import { filmGradient } from '../film';
+  import { countryName, recipeSummary, recipeTitle } from '../recipe';
   import { formatCount } from '../format';
   import { store } from '../store.svelte';
   import type { Collection } from '../types';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import Icon, { type IconName } from './Icon.svelte';
 
-  let open = $state({ films: true, cameras: true, lenses: false });
+  let open = $state({ recipes: true, films: true, countries: true, cameras: true, lenses: false });
+  let moreRecipes = $state(false);
   let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
   const library: { c: Collection; label: string; icon: IconName; count: () => number }[] = [
     { c: { type: 'all' }, label: 'All Photos', icon: 'photos', count: () => store.counts.all },
     { c: { type: 'recent' }, label: 'Recently Added', icon: 'clock', count: () => store.counts.recent },
+    { c: { type: 'map' }, label: 'Places', icon: 'globe', count: () => store.counts.places },
     { c: { type: 'picks' }, label: 'Picks', icon: 'flag', count: () => store.counts.picks },
     { c: { type: 'rated' }, label: 'Rated', icon: 'star', count: () => store.counts.rated },
     { c: { type: 'rejected' }, label: 'Rejected', icon: 'x', count: () => store.counts.rejected },
@@ -24,6 +27,7 @@
     if (cur.type !== c.type) return false;
     if ('id' in c && 'id' in cur) return c.id === cur.id;
     if ('value' in c && 'value' in cur) return c.value === cur.value;
+    if ('key' in c && 'key' in cur) return c.key === cur.key;
     return true;
   }
 
@@ -56,7 +60,7 @@
   </button>
 {/snippet}
 
-{#snippet group(key: 'films' | 'cameras' | 'lenses', title: string)}
+{#snippet group(key: 'recipes' | 'films' | 'countries' | 'cameras' | 'lenses', title: string)}
   <button class="heading" onclick={() => (open[key] = !open[key])}>
     {title}
     <span class="chev" class:open={open[key]}><Icon name="next" size={11} stroke={2.4} /></span>
@@ -92,12 +96,43 @@
         <span class="label">Add a folder…</span>
       </button>
     {/if}
+    {#if store.recipes.length}
+      {@render group('recipes', 'Recipes')}
+      {#if open.recipes}
+        {#each store.recipes.slice(0, moreRecipes ? 40 : 6) as r (r.key)}
+          <button class="item recipe" class:active={isActive({ type: 'recipe', key: r.key })} title={recipeSummary(r.recipe)} onclick={() => store.setCollection({ type: 'recipe', key: r.key })}>
+            <span class="swatch" style:background={filmGradient(r.recipe.filmSim)}></span>
+            <span class="label two">
+              <span class="truncate">{recipeTitle(r)}</span>
+              <small class="truncate">{r.name ? r.recipe.filmSim : recipeSummary(r.recipe)}</small>
+            </span>
+            <span class="count tabular">{formatCount(r.count)}</span>
+          </button>
+        {/each}
+        {#if store.recipes.length > 6}
+          <button class="item ghost more" onclick={() => (moreRecipes = !moreRecipes)}>
+            <span class="ico"></span><span class="label">{moreRecipes ? 'Show fewer' : `${store.recipes.length - 6} more recipes`}</span>
+          </button>
+        {/if}
+      {/if}
+    {/if}
+
     {#if store.facets.films.length}
       {@render group('films', 'Film Simulations')}
       {#if open.films}
         {#each store.facets.films as [name, n] (name)}
           {#snippet lead()}<span class="swatch" style:background={filmGradient(name)}></span>{/snippet}
           {@render item({ type: 'film', value: name }, name, n, lead)}
+        {/each}
+      {/if}
+    {/if}
+
+    {#if store.facets.countries.length}
+      {@render group('countries', 'Countries')}
+      {#if open.countries}
+        {#each store.facets.countries as [code, n] (code)}
+          {#snippet lead()}<span class="ico"><Icon name="pin" size={16} /></span>{/snippet}
+          {@render item({ type: 'country', value: code }, countryName(code), n, lead)}
         {/each}
       {/if}
     {/if}
@@ -142,6 +177,19 @@
         <div class="grow">
           <div class="line"><span>Building thumbnails</span><span class="faint tabular">{Math.round((store.warm.done / store.warm.total) * 100)}%</span></div>
           <div class="bar"><i style:width="{(store.warm.done / store.warm.total) * 100}%"></i></div>
+        </div>
+      </div>
+    {/if}
+
+    {#if store.smart?.enabled && (store.smart.phase === 'downloading' || store.smart.phase === 'indexing' || store.smart.phase === 'loading')}
+      <div class="status">
+        <span class="ico small sparkle"><Icon name="sparkle" size={14} /></span>
+        <div class="grow">
+          <div class="line">
+            <span>{store.smart.phase === 'downloading' ? 'Downloading search model' : store.smart.phase === 'loading' ? 'Starting smart search' : 'Analysing photos'}</span>
+            {#if store.smart.total}<span class="faint tabular">{Math.round((store.smart.done / store.smart.total) * 100)}%</span>{/if}
+          </div>
+          <div class="bar"><i style:width="{store.smart.total ? (store.smart.done / store.smart.total) * 100 : 8}%" class:indeterminate={!store.smart.total}></i></div>
         </div>
       </div>
     {/if}
@@ -270,6 +318,25 @@
   .label {
     flex: 1;
     min-width: 0;
+  }
+  .label.two {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+  }
+  .label.two small {
+    color: var(--text-3);
+    font-size: 10.5px;
+  }
+  .item.recipe {
+    height: 38px;
+  }
+  .item.more {
+    height: 26px;
+    font-size: 12px;
+  }
+  .sparkle {
+    color: #bf9bff;
   }
   .count {
     font-size: 11.5px;

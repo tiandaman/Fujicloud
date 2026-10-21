@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::db::{Library, NewPhoto, SourceRow};
-use crate::{Error, Kind, meta};
+use crate::{Error, Kind, geo, meta};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,6 +119,9 @@ pub fn scan_source(
         let n = done.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
         report(Phase::Reading, n, total);
     }
+    if total > 0 || summary.removed > 0 {
+        lib.infer_locations()?;
+    }
     report(Phase::Done, total, total);
     Ok(summary)
 }
@@ -129,6 +132,7 @@ pub fn index_files(lib: &Library, source_id: i64, paths: &[PathBuf]) -> Result<u
     let photos: Vec<NewPhoto> =
         io_pool().install(|| files.par_iter().filter_map(read_one).collect());
     lib.upsert(source_id, &photos)?;
+    lib.infer_locations()?;
     Ok(photos.len())
 }
 
@@ -148,12 +152,17 @@ fn read_one(file: &FoundFile) -> Option<NewPhoto> {
     if meta.taken_at.is_none() {
         meta.taken_at = Some(file.mtime);
     }
+    let place = meta
+        .lat
+        .zip(meta.lon)
+        .and_then(|(lat, lon)| geo::reverse(lat, lon));
     Some(NewPhoto {
         path: file.path.clone(),
         kind: file.kind,
         size: file.size,
         mtime: file.mtime,
         meta,
+        place,
     })
 }
 

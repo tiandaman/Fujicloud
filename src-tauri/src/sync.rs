@@ -156,7 +156,11 @@ fn run(
         let _ = app.emit("sync", &status);
 
         match pool.install(|| import_batch(&app, &state, &ready, &library, &status)) {
-            Ok(imported) => status.last_imported = imported,
+            Ok(imported) => {
+                status.last_imported = imported;
+                // Make the new shots findable by description too.
+                crate::smart::spawn(app.clone(), state.clone());
+            }
             Err(e) => status.error = Some(e),
         }
         status.copying = 0;

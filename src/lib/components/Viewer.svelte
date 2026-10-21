@@ -22,7 +22,7 @@
 
   const id = $derived(store.viewerId!);
   const photo = $derived(store.byId.get(id)!);
-  const order = $derived(store.ordered);
+  const order = $derived(store.navOrder);
   const idx = $derived(order.findIndex((p) => p.id === id));
   const stageW = $derived(vw - (store.showInfo ? INFO_W : 0));
 
@@ -199,6 +199,7 @@
     backdrop.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 260, easing: 'ease-in', fill: 'forwards' });
     if (!frame) {
       store.viewerId = null;
+      store.viewerList = null;
       return;
     }
     const anim = rect
@@ -207,6 +208,7 @@
     await anim.finished.catch(() => {});
     store.hiddenId = null;
     store.viewerId = null;
+    store.viewerList = null;
   }
 
   // ---- auto-hiding chrome ---------------------------------------------------------

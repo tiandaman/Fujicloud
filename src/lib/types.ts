@@ -27,6 +27,57 @@ export interface Photo {
   addedAt: number;
   /** The other half of a RAW+JPEG pair. */
   pairId: number | null;
+  recipeKey: string | null;
+  lat: number | null;
+  lon: number | null;
+  /** The position was borrowed from a geotagged shot taken around the same time. */
+  gpsEstimated: boolean;
+  town: string | null;
+  region: string | null;
+  /** ISO 3166-1 alpha-2. */
+  country: string | null;
+}
+
+/** The camera's film recipe. Mirrors `fuji_core::fuji::Recipe`. */
+export interface Recipe {
+  filmSim: string | null;
+  grain: string | null;
+  colorChrome: string | null;
+  colorChromeBlue: string | null;
+  whiteBalance: string | null;
+  wbShift: [number, number] | null;
+  dynamicRange: string | null;
+  highlight: number | null;
+  shadow: number | null;
+  color: number | null;
+  sharpness: number | null;
+  noiseReduction: number | null;
+  clarity: number | null;
+  monoWarmCool: number | null;
+  monoMagentaGreen: number | null;
+}
+
+export interface RecipeRow {
+  key: string;
+  name: string | null;
+  recipe: Recipe;
+  count: number;
+}
+
+export interface SmartStatus {
+  enabled: boolean;
+  phase: 'off' | 'downloading' | 'loading' | 'indexing' | 'ready' | 'error';
+  /** Bytes while downloading, photos while indexing. */
+  done: number;
+  total: number;
+  indexed: number;
+  downloadMb: number;
+  error: string | null;
+}
+
+export interface Hit {
+  id: number;
+  score: number;
 }
 
 export type Label = 'Red' | 'Yellow' | 'Green' | 'Blue' | 'Purple';
@@ -35,8 +86,8 @@ export interface Detail extends Photo {
   path: string;
   orientation: number;
   exposureComp: number | null;
-  grain: string | null;
-  dynamicRange: string | null;
+  altitude: number | null;
+  recipe: Recipe | null;
   exif: [string, string][];
 }
 
@@ -54,6 +105,7 @@ export interface Settings {
   writeXmp: boolean;
   editorPath: string | null;
   editRaw: boolean;
+  smartSearch: boolean;
 }
 
 export interface Bootstrap {
@@ -61,6 +113,7 @@ export interface Bootstrap {
   settings: Settings;
   effects: boolean;
   editor: string | null;
+  smart: SmartStatus;
 }
 
 export interface ScanProgress {
@@ -96,7 +149,12 @@ export type Collection =
   | { type: 'source'; id: number }
   | { type: 'film'; value: string }
   | { type: 'camera'; value: string }
-  | { type: 'lens'; value: string };
+  | { type: 'lens'; value: string }
+  | { type: 'recipe'; key: string }
+  | { type: 'country'; value: string }
+  | { type: 'map' }
+  | { type: 'ids'; ids: number[]; title: string }
+  | { type: 'similar'; id: number };
 
 export type SortKey =
   | 'taken'
@@ -111,7 +169,7 @@ export type SortKey =
   | 'shutter'
   | 'iso';
 
-export type GroupKey = 'none' | 'day' | 'month' | 'year' | 'film' | 'camera' | 'lens' | 'folder';
+export type GroupKey = 'none' | 'day' | 'month' | 'year' | 'film' | 'recipe' | 'place' | 'camera' | 'lens' | 'folder';
 
 export type LayoutMode = 'justified' | 'grid';
 

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import Grid from './lib/components/Grid.svelte';
   import InfoPanel from './lib/components/InfoPanel.svelte';
+  import MapView from './lib/components/MapView.svelte';
   import Settings from './lib/components/Settings.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
   import Toasts from './lib/components/Toasts.svelte';
@@ -68,6 +69,8 @@
         </div>
       {:else if store.ready && !store.sources.length && !store.photos.length}
         <Welcome />
+      {:else if store.collection.type === 'map'}
+        <MapView />
       {:else}
         <Grid />
         {#if store.showInfo}

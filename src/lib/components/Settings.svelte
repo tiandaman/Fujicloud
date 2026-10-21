@@ -12,7 +12,9 @@
 
   api.cacheInfo().then((c) => (cache = c)).catch(() => {});
 
-  const dirty = $derived(JSON.stringify(draft) !== JSON.stringify(store.settings));
+  // Smart search has its own switch that applies immediately; ignore it here.
+  const comparable = (s: Settings | null) => JSON.stringify({ ...s, smartSearch: undefined });
+  const dirty = $derived(comparable(draft) !== comparable(store.settings));
 
   async function pick(key: 'inbox' | 'importTo' | 'editorPath', title: string) {
     const path = await api.pickFolder(title);
@@ -22,7 +24,13 @@
   async function save() {
     saving = true;
     const clean = (v: string | null) => (v?.trim() ? v.trim() : null);
-    const next = { ...$state.snapshot(draft), inbox: clean(draft.inbox), importTo: clean(draft.importTo), editorPath: clean(draft.editorPath) };
+    const next = {
+      ...$state.snapshot(draft),
+      inbox: clean(draft.inbox),
+      importTo: clean(draft.importTo),
+      editorPath: clean(draft.editorPath),
+      smartSearch: store.settings?.smartSearch ?? false,
+    };
     await store.saveSettings(next);
     draft = { ...next };
     saving = false;
@@ -151,6 +159,32 @@
     </section>
 
     <section>
+      <h3><Icon name="sparkle" size={16} /> Smart search</h3>
+      <p class="hint">
+        Find photos by describing them, like <em>“golden hour at the beach”</em> or <em>“dog in the snow”</em>, and right-click any photo to
+        find similar ones. Uses Google's SigLIP model, downloaded once ({store.smart?.downloadMb ?? 210} MB). It runs entirely on this PC, so
+        your photos never leave your network.
+      </p>
+      <label class="row toggle">
+        <div>
+          <span>Enable smart search</span>
+          <small class="faint">
+            {#if !store.smart?.enabled}Off
+            {:else if store.smart.phase === 'downloading'}Downloading model… {store.smart.total ? `${formatBytes(store.smart.done)} of ${formatBytes(store.smart.total)}` : ''}
+            {:else if store.smart.phase === 'loading'}Starting…
+            {:else if store.smart.phase === 'indexing'}Analysing photos… {formatCount(store.smart.done)} of {formatCount(store.smart.total)}
+            {:else if store.smart.phase === 'error'}Problem: {store.smart.error}
+            {:else}Ready · {formatCount(store.smart.indexed)} photos analysed{/if}
+          </small>
+        </div>
+        <input type="checkbox" class="switch" checked={!!store.smart?.enabled} onchange={(e) => store.setSmartSearch(e.currentTarget.checked)} />
+      </label>
+      {#if store.smart?.enabled && store.smart.total && store.smart.phase !== 'ready'}
+        <div class="progress"><i style:width="{(store.smart.done / store.smart.total) * 100}%"></i></div>
+      {/if}
+    </section>
+
+    <section>
       <h3><Icon name="photos" size={16} /> Thumbnail cache</h3>
       <div class="row">
         <div class="grow">
@@ -162,10 +196,18 @@
       </div>
     </section>
 
+    <section class="credits">
+      <p class="faint">
+        Place names © <a href="https://www.geonames.org" target="_blank" rel="noreferrer">GeoNames</a> (CC BY 4.0). Map © OpenStreetMap
+        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model.
+      </p>
+    </section>
+
     <section class="keys">
       <h3><Icon name="keyboard" size={16} /> Shortcuts</h3>
       <dl>
         <dt><span class="kbd">Space</span></dt><dd>Open / close photo</dd>
+        <dt><span class="kbd">Ctrl</span> + click</dt><dd>Select several</dd>
         <dt><span class="kbd">←</span> <span class="kbd">→</span></dt><dd>Previous / next</dd>
         <dt><span class="kbd">1</span>–<span class="kbd">5</span></dt><dd>Rate (<span class="kbd">0</span> clears)</dd>
         <dt><span class="kbd">P</span> <span class="kbd">X</span> <span class="kbd">U</span></dt><dd>Pick / reject / unflag</dd>
@@ -386,6 +428,19 @@
     margin-bottom: 18px;
     border-bottom: 1.5px dashed rgba(255, 255, 255, 0.2);
   }
+  .progress {
+    height: 4px;
+    margin-top: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+  }
+  .progress i {
+    display: block;
+    height: 100%;
+    background: #bf9bff;
+    transition: width 300ms var(--ease);
+  }
   .ok {
     display: flex;
     align-items: center;
@@ -393,6 +448,14 @@
     margin: 8px 0 0;
     color: var(--pick);
     font-size: 12px;
+  }
+  .credits p {
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+  .credits a {
+    color: var(--text-2);
   }
   .keys dl {
     display: grid;

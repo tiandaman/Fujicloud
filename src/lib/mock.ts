@@ -2,7 +2,7 @@
 // browser (`npm run dev`) without the Rust backend or a camera.
 
 import type { Api } from './api';
-import type { Bootstrap, Detail, Kind, Label, Photo, Settings, Source } from './types';
+import type { Bootstrap, Detail, Hit, Kind, Label, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 const FILMS = ['Classic Chrome', 'Classic Neg.', 'Provia', 'Velvia', 'Acros', 'Nostalgic Neg.', 'Reala Ace', 'Eterna', 'Astia', 'Pro Neg. Hi', 'Acros +R', 'Monochrome'];
 const FILM_WEIGHTS = [18, 16, 12, 9, 8, 7, 7, 5, 5, 4, 3, 2];
@@ -11,6 +11,50 @@ const BODIES = [
   { camera: 'X100VI', lenses: [['', 23, 2]] },
   { camera: 'X-H2', lenses: [['XF33mmF1.4 R LM WR', 33, 1.4], ['XF8-16mmF2.8 R LM WR', 0, 2.8]] },
 ] as const;
+
+const PLACES = [
+  { town: 'Kyoto', region: 'Kyoto', country: 'JP', lat: 35.0116, lon: 135.7681 },
+  { town: 'Tokyo', region: 'Tokyo', country: 'JP', lat: 35.6762, lon: 139.6503 },
+  { town: 'Lisbon', region: 'Lisbon', country: 'PT', lat: 38.7223, lon: -9.1393 },
+  { town: 'Reykjavík', region: 'Capital Region', country: 'IS', lat: 64.1466, lon: -21.9426 },
+  { town: 'Vík', region: 'South', country: 'IS', lat: 63.4186, lon: -19.006 },
+  { town: 'San Francisco', region: 'California', country: 'US', lat: 37.7749, lon: -122.4194 },
+  { town: 'Big Sur', region: 'California', country: 'US', lat: 36.2704, lon: -121.8081 },
+  { town: 'New York City', region: 'New York', country: 'US', lat: 40.7128, lon: -74.006 },
+  { town: 'Austin', region: 'Texas', country: 'US', lat: 30.2672, lon: -97.7431 },
+  { town: 'Mexico City', region: 'Mexico City', country: 'MX', lat: 19.4326, lon: -99.1332 },
+  { town: 'Cape Town', region: 'Western Cape', country: 'ZA', lat: -33.9249, lon: 18.4241 },
+  { town: 'Sydney', region: 'New South Wales', country: 'AU', lat: -33.8688, lon: 151.2093 },
+  { town: 'Hà Nội', region: 'Hanoi', country: 'VN', lat: 21.0278, lon: 105.8342 },
+  { town: 'Paris', region: 'Île-de-France', country: 'FR', lat: 48.8566, lon: 2.3522 },
+];
+const PLACE_WEIGHTS = [10, 8, 7, 4, 3, 9, 4, 6, 12, 3, 3, 4, 3, 5];
+
+const DEFAULT_RECIPE: Recipe = {
+  filmSim: null, grain: 'Off', colorChrome: 'Off', colorChromeBlue: 'Off', whiteBalance: 'Auto', wbShift: [0, 0],
+  dynamicRange: 'DR100', highlight: 0, shadow: 0, color: 0, sharpness: 0, noiseReduction: 0, clarity: 0,
+  monoWarmCool: null, monoMagentaGreen: null,
+};
+// Typical recipes people shoot; the mock library is built from these.
+const RECIPES: Recipe[] = [
+  { ...DEFAULT_RECIPE, filmSim: 'Classic Chrome', grain: 'Weak, Small', colorChrome: 'Strong', colorChromeBlue: 'Weak', whiteBalance: 'Daylight', wbShift: [2, -5], dynamicRange: 'DR400', highlight: 0, shadow: 0.5, color: 2, sharpness: 1, noiseReduction: -4, clarity: 2 },
+  { ...DEFAULT_RECIPE, filmSim: 'Classic Neg.', grain: 'Weak, Small', colorChrome: 'Strong', colorChromeBlue: 'Off', whiteBalance: 'Auto', wbShift: [1, -2], dynamicRange: 'DR400', highlight: -1, shadow: 1, color: 4, sharpness: -1, noiseReduction: -4, clarity: -2 },
+  { ...DEFAULT_RECIPE, filmSim: 'Nostalgic Neg.', grain: 'Strong, Small', colorChrome: 'Weak', colorChromeBlue: 'Weak', whiteBalance: '5600K', wbShift: [3, -4], dynamicRange: 'DR Auto', highlight: -1.5, shadow: 0, color: 1, sharpness: -2, noiseReduction: -4, clarity: 0 },
+  { ...DEFAULT_RECIPE, filmSim: 'Acros +R', grain: 'Strong, Large', dynamicRange: 'DR200', highlight: 1, shadow: 2, color: null, sharpness: 1, noiseReduction: -4, clarity: 3, monoWarmCool: 2, monoMagentaGreen: 0 },
+  { ...DEFAULT_RECIPE, filmSim: 'Reala Ace', grain: 'Weak, Small', colorChrome: 'Weak', colorChromeBlue: 'Weak', wbShift: [0, -1], dynamicRange: 'DR200', highlight: -0.5, shadow: -0.5, color: 1 },
+  { ...DEFAULT_RECIPE, filmSim: 'Eterna', grain: 'Weak, Large', dynamicRange: 'DR400', highlight: -2, shadow: -2, color: -2, sharpness: -2, noiseReduction: -4, clarity: -3 },
+  { ...DEFAULT_RECIPE, filmSim: 'Velvia', colorChrome: 'Strong', colorChromeBlue: 'Strong', whiteBalance: 'Daylight', wbShift: [1, -1], highlight: 0.5, shadow: 1, color: 3 },
+  { ...DEFAULT_RECIPE, filmSim: 'Provia' },
+];
+const RECIPE_WEIGHTS = [16, 14, 9, 6, 8, 4, 5, 10];
+const recipeKey = (r: Recipe) => JSON.stringify(r);
+const recipeByKey = new Map(RECIPES.map((r) => [recipeKey(r), r]));
+
+/** What each fake photo "shows", for the mock smart search. */
+function lightOf(p: Photo): 'golden' | 'dusk' | 'day' {
+  const light = rng(p.pairId ? Math.min(p.id, p.pairId) * 7919 : p.id * 7919)();
+  return light > 0.78 ? 'golden' : light > 0.64 ? 'dusk' : 'day';
+}
 
 function rng(seed: number) {
   return () => {
@@ -38,7 +82,12 @@ function buildLibrary(days = 140): Photo[] {
   const now = Date.now() / 1000;
   // ~140 outings over two years, each a burst of related shots.
   for (let day = 0; day < days; day++) {
-    const film = weighted(r, FILMS, FILM_WEIGHTS);
+    const recipe = weighted(r, RECIPES, RECIPE_WEIGHTS);
+    const film = r() < 0.75 ? recipe.filmSim! : weighted(r, FILMS, FILM_WEIGHTS);
+    const key = film === recipe.filmSim ? recipeKey(recipe) : null;
+    const place = weighted(r, PLACES, PLACE_WEIGHTS);
+    // Location sync on for most outings; a few shots each drop out.
+    const geotagged = r() < 0.8;
     const body = BODIES[Math.floor(r() * BODIES.length)];
     const count = 4 + Math.floor(r() ** 2 * 40);
     const rawJpeg = r() < 0.45;
@@ -71,6 +120,17 @@ function buildLibrary(days = 140): Photo[] {
         flag,
         label,
         addedAt: day < 3 ? Math.round(now - day * 3600) : Math.round(t + 86400),
+        recipeKey: key,
+        ...(geotagged
+          ? {
+              lat: place.lat + (r() - 0.5) * 0.06,
+              lon: place.lon + (r() - 0.5) * 0.06,
+              gpsEstimated: r() < 0.1,
+              town: place.town,
+              region: place.region,
+              country: place.country,
+            }
+          : { lat: null, lon: null, gpsEstimated: false, town: null, region: null, country: null }),
       };
       const kind: Kind = r() < 0.04 ? 'heif' : 'jpeg';
       const jpg: Photo = { ...base, id: id++, name: `${name}.${kind === 'heif' ? 'HIF' : 'JPG'}`, kind, size: 9e6 + r() * 9e6, mtime: Math.round(t), pairId: null };
@@ -110,8 +170,9 @@ function sceneFor(p: Photo): string {
   const mono = !!p.filmSim && (p.filmSim.startsWith('Acros') || p.filmSim.startsWith('Mono'));
   const pal = mono ? ['#9a9a9a', '#e6e6e6', '#4a4a4a', '#1c1c1c', '#7a7a7a'] : (palettes[p.filmSim ?? ''] ?? palettes.Provia)[0];
   // Vary the light a little so a day's shots don't all look the same.
-  const light = r();
-  const sky = mono ? [pal[0], pal[1]] : light > 0.78 ? ['#f2a65a', '#fbd7a1'] : light > 0.64 ? ['#22304a', '#6b7aa1'] : [pal[0], pal[1]];
+  r();
+  const light = lightOf(p);
+  const sky = mono ? [pal[0], pal[1]] : light === 'golden' ? ['#f2a65a', '#fbd7a1'] : light === 'dusk' ? ['#22304a', '#6b7aa1'] : [pal[0], pal[1]];
   const W = 600;
   const H = Math.round((600 * p.height) / p.width);
   const sunX = 80 + r() * (W - 160);
@@ -144,7 +205,10 @@ export function mockApi(): Api {
     writeXmp: true,
     editorPath: null,
     editRaw: true,
+    smartSearch: false,
   };
+  const recipeNames = new Map<string, string>([[recipeKey(RECIPES[0]), 'Kodachrome 64-ish']]);
+  let smart: SmartStatus = { enabled: false, phase: 'off', done: 0, total: 0, indexed: 0, downloadMb: 210, error: null };
   const listeners = new Map<string, Set<(p: unknown) => void>>();
   const emit = (event: string, payload: unknown) => listeners.get(event)?.forEach((cb) => cb(payload));
   const delay = (ms = 0) => new Promise((r) => setTimeout(r, ms));
@@ -163,7 +227,7 @@ export function mockApi(): Api {
 
   return {
     native: false,
-    bootstrap: async (): Promise<Bootstrap> => ({ sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe' }),
+    bootstrap: async (): Promise<Bootstrap> => ({ sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart }),
     listPhotos: async () => photos,
     listSources: async () => sources,
     async photoDetail(id) {
@@ -174,8 +238,8 @@ export function mockApi(): Api {
         path: `${p.folder}\\${p.name}`,
         orientation: 1,
         exposureComp: [0, 0, 0, -0.3, 0.3, 0.7, -1][id % 7],
-        grain: ['Off', 'Weak', 'Strong'][id % 3],
-        dynamicRange: ['DR100', 'DR200', 'DR400', 'DR Auto'][id % 4],
+        altitude: p.lat != null ? 40 + (id % 300) : null,
+        recipe: p.recipeKey ? (recipeByKey.get(p.recipeKey) ?? null) : p.filmSim ? { ...DEFAULT_RECIPE, filmSim: p.filmSim } : null,
         exif: [
           ['Make', 'FUJIFILM'],
           ['Model', p.camera ?? ''],
@@ -217,6 +281,69 @@ export function mockApi(): Api {
     openDefault: async () => {},
     async saveSettings(s) {
       settings = s;
+    },
+    async listRecipes(): Promise<RecipeRow[]> {
+      const counts = new Map<string, number>();
+      for (const p of photos) if (p.recipeKey && p.kind !== 'raf' && p.flag !== -1) counts.set(p.recipeKey, (counts.get(p.recipeKey) ?? 0) + 1);
+      return [...counts]
+        .sort((a, b) => b[1] - a[1])
+        .map(([key, count]) => ({ key, count, name: recipeNames.get(key) ?? null, recipe: recipeByKey.get(key)! }));
+    },
+    async nameRecipe(key, name) {
+      if (name?.trim()) recipeNames.set(key, name.trim());
+      else recipeNames.delete(key);
+    },
+    smartStatus: async () => smart,
+    async setSmartSearch(enabled) {
+      if (!enabled) {
+        smart = { ...smart, enabled: false, phase: 'off' };
+        return smart;
+      }
+      // Simulate the one-time download, then indexing.
+      const total = photos.filter((p) => p.kind !== 'raf').length;
+      smart = { ...smart, enabled: true, phase: 'downloading', done: 0, total: 210e6 };
+      const step = (i: number) => {
+        if (!smart.enabled) return;
+        if (i <= 10) smart = { ...smart, phase: 'downloading', done: i * 21e6, total: 210e6 };
+        else if (i <= 20) smart = { ...smart, phase: 'indexing', done: Math.round(((i - 10) / 10) * total), total, indexed: Math.round(((i - 10) / 10) * total) };
+        else smart = { ...smart, phase: 'ready', done: total, total };
+        emit('smart', smart);
+        if (i <= 20) setTimeout(() => step(i + 1), 120);
+      };
+      setTimeout(() => step(1), 50);
+      return smart;
+    },
+    async searchSmart(query): Promise<Hit[]> {
+      await delay(60);
+      const q = query.toLowerCase();
+      const want = {
+        golden: /sunset|golden|warm|orange|evening glow/.test(q),
+        dusk: /dusk|night|blue hour|evening|dark/.test(q),
+        day: /day|sky|bright|blue sky|sunny/.test(q),
+        land: /mountain|landscape|hill|nature|sun/.test(q),
+      };
+      const town = PLACES.find((pl) => q.includes(pl.town.toLowerCase()) || q.includes(pl.country.toLowerCase()));
+      return photos
+        .filter((p) => p.kind !== 'raf')
+        .map((p) => {
+          const light = lightOf(p);
+          let score = 0;
+          if (want[light]) score += 0.12;
+          if (want.land) score += 0.04;
+          if (town && p.town === town.town) score += 0.08;
+          return { id: p.id, score: score + ((p.id * 7919) % 100) / 5000 };
+        })
+        .filter((h) => h.score > 0.05)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 400);
+    },
+    async similarPhotos(id): Promise<Hit[]> {
+      const me = photos.find((p) => p.id === id)!;
+      return photos
+        .filter((p) => p.id !== id && p.kind !== 'raf' && lightOf(p) === lightOf(me) && p.filmSim === me.filmSim)
+        .map((p) => ({ id: p.id, score: 0.9 - Math.abs((p.takenAt ?? 0) - (me.takenAt ?? 0)) / 1e9 }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 120);
     },
     cacheInfo: async () => ({ bytes: 1.84e9, path: 'C:\\Users\\me\\AppData\\Local\\app.fujicloud.desktop\\cache', backlog: 0 }),
     clearCache: async () => {},

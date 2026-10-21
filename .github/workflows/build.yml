@@ -31,6 +31,23 @@ jobs:
       - run: cargo clippy -p fuji-core --all-targets -- -D warnings
       - run: cargo test -p fuji-core
 
+  smart-search-model:
+    name: Smart search (real model)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: .models
+          key: siglip-base-patch16-224-q8
+      # Downloads the same model the app does and checks real image↔text
+      # matching end to end (inputs, outputs, preprocessing, tokenizer).
+      - run: cargo test -p fuji-core -- --ignored --nocapture real_siglip
+        env:
+          FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
+
   windows:
     name: Windows installer
     runs-on: windows-latest
@@ -54,7 +71,9 @@ jobs:
             target/release/bundle/nsis/*.exe
             target/release/bundle/msi/*.msi
           if-no-files-found: error
-      # Lints the Windows-only code paths. Runs after the upload so a lint
-      # added in a new Rust release never blocks getting an installer.
+      # The checks below run after the upload, so a lint added in a new Rust
+      # release never blocks getting an installer.
+      - name: Core tests on Windows (incl. ONNX Runtime)
+        run: cargo test -p fuji-core
       - name: Clippy
         run: cargo clippy -p fujicloud -- -D warnings
