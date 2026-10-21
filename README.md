@@ -147,7 +147,6 @@ cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
   stars.
 - Direct camera import over PTP/IP (no PC AutoSave needed).
 - Side-by-side compare, and grouping bursts into stacks using smart search vectors.
-- A Fujicloud app for the Shield itself: browse the library and run slideshows on the TV.
 - Import a phone's location history (GPX / Google Takeout) for shots taken without
   location sync.
 
