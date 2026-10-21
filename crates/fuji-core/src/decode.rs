@@ -404,9 +404,9 @@ fn undo_prediction(data: &mut [u8], row_bytes: usize, bps: usize) {
     for row in data.chunks_mut(row_bytes) {
         if bps == 2 {
             let mut prev = 0u16;
-            for s in row.chunks_exact_mut(2) {
-                prev = prev.wrapping_add(u16::from_be_bytes([s[0], s[1]]));
-                s.copy_from_slice(&prev.to_be_bytes());
+            for s in row.as_chunks_mut::<2>().0 {
+                prev = prev.wrapping_add(u16::from_be_bytes(*s));
+                *s = prev.to_be_bytes();
             }
         } else {
             for i in 1..row.len() {

@@ -12,11 +12,11 @@
 //! queries always run on the CPU: one short sentence doesn't need a GPU.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use fast_image_resize::{self as fr, images::Image};
-use ort::session::Session;
+use ort::session::{Session, builder::SessionBuilder};
 use ort::value::{Tensor, TensorElementType, ValueType};
 use parking_lot::Mutex;
 use tokenizers::Tokenizer;
@@ -62,7 +62,9 @@ pub fn best_gpu() -> Option<Gpu> {
                 .EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE)
                 .ok()?;
             let desc = adapter.GetDesc1().ok()?;
-            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+            // Microsoft's own adapters (WARP, the basic display driver in
+            // VMs and on PCs without a graphics driver) aren't GPUs.
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 || desc.VendorId == 0x1414 {
                 continue;
             }
             let len = desc
@@ -180,6 +182,8 @@ impl ModelSpec {
             std::slice::from_ref(&self.vision_cpu)
         });
 
+        // Size everything up first so progress has a total, and so a
+        // missing variant falls back to the next one before any big transfer.
         let mut done = 0u64;
         let mut total = 0u64;
         let mut pending = Vec::new();
@@ -196,15 +200,11 @@ impl ModelSpec {
             }
             let mut last_err = None;
             for file in candidates {
-                match ureq::get(format!("{}{}", self.base_url, file)).call() {
-                    Ok(response) => {
-                        total += response
-                            .headers()
-                            .get("content-length")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|v| v.parse::<u64>().ok())
-                            .unwrap_or(0);
-                        pending.push((self.local(dir, file), response));
+                let url = format!("{}{}", self.base_url, file);
+                match remote_len(&url) {
+                    Ok(len) => {
+                        total += len;
+                        pending.push((self.local(dir, file), url, len));
                         continue 'files;
                     }
                     Err(e) => last_err = Some(format!("downloading {file}: {e}")),
@@ -213,26 +213,85 @@ impl ModelSpec {
             return Err(Error::Model(last_err.unwrap_or_default()));
         }
         progress(done, total);
-        for (path, response) in pending {
-            fs::create_dir_all(path.parent().unwrap())?;
-            let part = path.with_extension(format!("{}.part", std::process::id()));
-            let mut out = fs::File::create(&part)?;
-            let mut reader = response.into_body().into_reader();
-            let mut buf = vec![0u8; 1 << 20];
-            loop {
-                let n = reader.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                out.write_all(&buf[..n])?;
-                done += n as u64;
-                progress(done, total);
-            }
-            out.sync_all()?;
-            drop(out);
-            fs::rename(&part, &path)?;
+        for (path, url, len) in pending {
+            fetch(&url, &path, len, &mut |have| progress(done + have, total))?;
+            done += fs::metadata(&path)?.len();
         }
         Ok(())
+    }
+}
+
+/// A file's size, from a one-byte ranged request (a HEAD wouldn't survive
+/// the redirect to a signed CDN link).
+fn remote_len(url: &str) -> Result<u64, ureq::Error> {
+    let response = ureq::get(url).header("Range", "bytes=0-0").call()?;
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    let len = match response.status().as_u16() {
+        206 => header("content-range").and_then(|v| v.rsplit('/').next()?.parse().ok()),
+        _ => header("content-length").and_then(|v| v.parse().ok()),
+    };
+    Ok(len.unwrap_or(0))
+}
+
+/// Downloads `url` to `path`, picking up where it left off if the
+/// connection drops. `progress` gets the bytes received so far.
+fn fetch(url: &str, path: &Path, len: u64, progress: &mut dyn FnMut(u64)) -> Result<(), Error> {
+    const ATTEMPTS: u32 = 5;
+    fs::create_dir_all(path.parent().unwrap())?;
+    let part = path.with_extension(format!("{}.part", std::process::id()));
+    let mut out = fs::File::create(&part)?;
+    let mut have = 0u64;
+    for attempt in 1.. {
+        match fetch_from(url, &mut out, &mut have, progress) {
+            Ok(()) if len == 0 || have >= len => break,
+            Ok(()) if attempt >= ATTEMPTS => {
+                return Err(Error::Model(format!("{url}: got {have} of {len} bytes")));
+            }
+            Err(e) if attempt >= ATTEMPTS => return Err(e),
+            _ => std::thread::sleep(std::time::Duration::from_millis(500 << attempt)),
+        }
+    }
+    out.sync_all()?;
+    drop(out);
+    fs::rename(&part, path)?;
+    Ok(())
+}
+
+fn fetch_from(
+    url: &str,
+    out: &mut fs::File,
+    have: &mut u64,
+    progress: &mut dyn FnMut(u64),
+) -> Result<(), Error> {
+    let mut request = ureq::get(url);
+    if *have > 0 {
+        request = request.header("Range", format!("bytes={have}-"));
+    }
+    let response = request
+        .call()
+        .map_err(|e| Error::Model(format!("downloading {url}: {e}")))?;
+    if *have > 0 && response.status().as_u16() != 206 {
+        // The server ignored the range and is sending the whole file again.
+        out.set_len(0)?;
+        out.seek(SeekFrom::Start(0))?;
+        *have = 0;
+    }
+    let mut reader = response.into_body().into_reader();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        out.write_all(&buf[..n])?;
+        *have += n as u64;
+        progress(*have);
     }
 }
 
@@ -282,6 +341,25 @@ impl Engine {
         device: Device,
         threads: usize,
     ) -> Result<Self, Error> {
+        let id = match device {
+            Device::Gpu(id) => id,
+            Device::Cpu => None,
+        };
+        Self::load_with(vision, text, tokenizer, spec, device, threads, &|b| {
+            gpu_builder(b, id)
+        })
+    }
+
+    /// `gpu` sets up the vision session when `device` is a GPU.
+    fn load_with(
+        vision: &Path,
+        text: &Path,
+        tokenizer: &Path,
+        spec: &'static ModelSpec,
+        device: Device,
+        threads: usize,
+        gpu: &dyn Fn(SessionBuilder) -> Result<SessionBuilder, String>,
+    ) -> Result<Self, Error> {
         let env = ort::init()
             .with_name("fujicloud")
             .build()
@@ -293,7 +371,7 @@ impl Engine {
                 Device::Cpu => builder
                     .with_intra_threads(threads.max(1))
                     .map_err(|e| fail(&e))?,
-                Device::Gpu(id) => gpu_builder(builder, id).map_err(|e| fail(&e))?,
+                Device::Gpu(_) => gpu(builder).map_err(|e| fail(&e))?,
             };
             builder.commit_from_file(path).map_err(|e| fail(&e))
         };
@@ -438,10 +516,7 @@ impl Engine {
 /// Session options for DirectML: it needs sequential execution and no memory
 /// pattern, and must fail loudly rather than quietly fall back to the CPU.
 #[cfg(windows)]
-fn gpu_builder(
-    builder: ort::session::builder::SessionBuilder,
-    device_id: Option<i32>,
-) -> Result<ort::session::builder::SessionBuilder, String> {
+fn gpu_builder(builder: SessionBuilder, device_id: Option<i32>) -> Result<SessionBuilder, String> {
     use ort::ep::directml::{DeviceFilter, DirectML, PerformancePreference};
     let ep = match device_id {
         Some(id) => DirectML::default().with_device_id(id),
@@ -449,20 +524,23 @@ fn gpu_builder(
             .with_device_filter(DeviceFilter::Gpu)
             .with_performance_preference(PerformancePreference::HighPerformance),
     };
-    builder
-        .with_memory_pattern(false)
-        .map_err(|e| e.to_string())?
-        .with_parallel_execution(false)
-        .map_err(|e| e.to_string())?
+    dml_options(builder)?
         .with_execution_providers([ep.build().error_on_failure()])
         .map_err(|e| e.to_string())
 }
 
+/// DirectML can't reuse memory plans or run nodes in parallel.
+#[cfg(windows)]
+fn dml_options(builder: SessionBuilder) -> Result<SessionBuilder, String> {
+    builder
+        .with_memory_pattern(false)
+        .map_err(|e| e.to_string())?
+        .with_parallel_execution(false)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(not(windows))]
-fn gpu_builder(
-    _: ort::session::builder::SessionBuilder,
-    _: Option<i32>,
-) -> Result<ort::session::builder::SessionBuilder, String> {
+fn gpu_builder(_: SessionBuilder, _: Option<i32>) -> Result<SessionBuilder, String> {
     Err("GPU acceleration needs Windows (DirectML)".into())
 }
 
@@ -622,6 +700,82 @@ mod tests {
         assert!(dot(&dog, &puppy) > dot(&dog, &city));
     }
 
+    /// A transfer that's cut off part-way resumes where it stopped.
+    #[test]
+    fn downloads_resume_after_a_dropped_connection() {
+        use std::net::TcpListener;
+        let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/model.onnx", listener.local_addr().unwrap());
+        let served = body.clone();
+        let server = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for stream in listener.incoming().take(3) {
+                let mut stream = stream.unwrap();
+                let mut req = [0u8; 4096];
+                let n = stream.read(&mut req).unwrap();
+                let req = String::from_utf8_lossy(&req[..n]).to_lowercase();
+                let from = req
+                    .lines()
+                    .find_map(|l| l.strip_prefix("range: bytes="))
+                    .map(|r| r.trim().to_owned());
+                let head = |status: &str, extra: String, len: usize| {
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {len}\r\n{extra}Connection: close\r\n\r\n"
+                    )
+                };
+                let all = served.len();
+                match from.as_deref() {
+                    Some("0-0") => {
+                        let h = head(
+                            "206 Partial Content",
+                            format!("Content-Range: bytes 0-0/{all}\r\n"),
+                            1,
+                        );
+                        stream.write_all(h.as_bytes()).unwrap();
+                        stream.write_all(&served[..1]).unwrap();
+                    }
+                    // The first real attempt dies a third of the way in.
+                    None => {
+                        stream
+                            .write_all(head("200 OK", String::new(), all).as_bytes())
+                            .unwrap();
+                        stream.write_all(&served[..all / 3]).unwrap();
+                    }
+                    Some(range) => {
+                        let start: usize = range.trim_end_matches('-').parse().unwrap();
+                        let extra = format!("Content-Range: bytes {start}-{}/{all}\r\n", all - 1);
+                        let h = head("206 Partial Content", extra, all - start);
+                        stream.write_all(h.as_bytes()).unwrap();
+                        stream.write_all(&served[start..]).unwrap();
+                    }
+                }
+                asked.push(from);
+            }
+            asked
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.onnx");
+        let len = remote_len(&url).unwrap();
+        assert_eq!(len, body.len() as u64);
+        let mut seen = 0;
+        fetch(&url, &path, len, &mut |have| seen = have).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(seen, len);
+        let asked = server.join().unwrap();
+        assert_eq!(
+            asked,
+            [
+                Some("0-0".into()),
+                None,
+                Some(format!("{}-", body.len() / 3))
+            ]
+        );
+        // Nothing is left behind.
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
     fn model_dir() -> PathBuf {
         std::env::var("FUJICLOUD_MODEL_DIR")
             .map(PathBuf::from)
@@ -640,9 +794,10 @@ mod tests {
         check_real(&Engine::load(&dir, &SIGLIP_BASE, Device::Cpu, 4).expect("load"));
     }
 
-    /// The GPU path: DirectML with the half-precision model. CI machines have
-    /// no GPU, so this forces adapter 0 (Windows' software renderer) to
-    /// prove the same code path works; on a real card it's just faster.
+    /// The GPU path: DirectML with the half-precision model. On a machine
+    /// with a graphics card this uses it, exactly as the app does. CI
+    /// machines have none, so there it runs DirectML on WARP, Windows'
+    /// software renderer: slow, but the same code path.
     #[test]
     #[ignore]
     #[cfg(windows)]
@@ -651,8 +806,23 @@ mod tests {
         SIGLIP_BASE
             .download(&dir, Device::Gpu(None), &|_, _| {})
             .expect("download");
-        let engine =
-            Engine::load(&dir, &SIGLIP_BASE, Device::Gpu(Some(0)), 4).expect("DirectML starts");
+        let engine = if let Some(gpu) = best_gpu() {
+            println!("DirectML on {gpu:?}");
+            Engine::load(&dir, &SIGLIP_BASE, Device::Gpu(None), 4)
+        } else {
+            println!("DirectML on WARP (no GPU)");
+            let spec = &SIGLIP_BASE;
+            Engine::load_with(
+                &spec.vision_file(&dir, Device::Gpu(None)).unwrap(),
+                &spec.local(&dir, spec.text),
+                &spec.local(&dir, spec.tokenizer),
+                spec,
+                Device::Gpu(None),
+                4,
+                &warp_directml,
+            )
+        }
+        .expect("DirectML starts");
         println!("vision input is fp16: {}", engine.vision_f16);
         check_real(&engine);
 
@@ -669,5 +839,60 @@ mod tests {
         let sim: f32 = a[0].iter().zip(&b[0]).map(|(x, y)| x * y).sum();
         println!("GPU vs CPU embedding similarity {sim}");
         assert!(sim > 0.95);
+    }
+
+    /// ONNX Runtime refuses to pick a software adapter itself, so this makes
+    /// the D3D12 and DirectML devices on WARP and hands them over.
+    #[cfg(windows)]
+    fn warp_directml(mut builder: SessionBuilder) -> Result<SessionBuilder, String> {
+        use ort::AsPointer;
+        use windows::Win32::AI::MachineLearning::DirectML::{
+            DML_CREATE_DEVICE_FLAG_NONE, DML_FEATURE_LEVEL_5_0, DMLCreateDevice1, IDMLDevice,
+        };
+        use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
+        use windows::Win32::Graphics::Direct3D12::{
+            D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
+            D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, D3D12CreateDevice, ID3D12CommandQueue,
+            ID3D12Device,
+        };
+        use windows::Win32::Graphics::Dxgi::{
+            CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter, IDXGIFactory4,
+        };
+        use windows::core::Interface;
+
+        let api = ort::ep::directml::api().ok_or("ONNX Runtime was built without DirectML")?;
+        let err = |e: windows::core::Error| e.to_string();
+        unsafe {
+            let factory: IDXGIFactory4 =
+                CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).map_err(err)?;
+            let adapter: IDXGIAdapter = factory.EnumWarpAdapter().map_err(err)?;
+            let mut device: Option<ID3D12Device> = None;
+            D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device).map_err(err)?;
+            let device = device.ok_or("no D3D12 device")?;
+            let queue: ID3D12CommandQueue = device
+                .CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
+                    Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    Flags: D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT,
+                    ..Default::default()
+                })
+                .map_err(err)?;
+            let mut dml: Option<IDMLDevice> = None;
+            DMLCreateDevice1(
+                &device,
+                DML_CREATE_DEVICE_FLAG_NONE,
+                DML_FEATURE_LEVEL_5_0,
+                &mut dml,
+            )
+            .map_err(err)?;
+            let dml = dml.ok_or("no DirectML device")?;
+            // ONNX Runtime takes its own references to both.
+            ort::Error::result_from_status((api.SessionOptionsAppendExecutionProvider_DML1)(
+                builder.ptr_mut(),
+                dml.as_raw(),
+                queue.as_raw(),
+            ))
+            .map_err(|e| e.to_string())?;
+        }
+        dml_options(builder)
     }
 }
