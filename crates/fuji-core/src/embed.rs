@@ -14,6 +14,7 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fast_image_resize::{self as fr, images::Image};
 use ort::session::{Session, builder::SessionBuilder};
@@ -184,6 +185,7 @@ impl ModelSpec {
 
         // Size everything up first so progress has a total, and so a
         // missing variant falls back to the next one before any big transfer.
+        let agent = agent(STALL);
         let mut done = 0u64;
         let mut total = 0u64;
         let mut pending = Vec::new();
@@ -201,7 +203,7 @@ impl ModelSpec {
             let mut last_err = None;
             for file in candidates {
                 let url = format!("{}{}", self.base_url, file);
-                match remote_len(&url) {
+                match remote_len(&agent, &url) {
                     Ok(len) => {
                         total += len;
                         pending.push((self.local(dir, file), url, len));
@@ -214,17 +216,34 @@ impl ModelSpec {
         }
         progress(done, total);
         for (path, url, len) in pending {
-            fetch(&url, &path, len, &mut |have| progress(done + have, total))?;
+            fetch(&agent, &url, &path, len, &mut |have| {
+                progress(done + have, total)
+            })?;
             done += fs::metadata(&path)?.len();
         }
         Ok(())
     }
 }
 
+/// How long a download may go without receiving anything before the
+/// connection is dropped and the transfer resumed. Without a limit, a
+/// stalled connection waits forever.
+const STALL: Duration = Duration::from_secs(45);
+
+fn agent(stall: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_resolve(Some(Duration::from_secs(30)))
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_recv_response(Some(stall))
+        .timeout_per_read(Some(stall))
+        .build()
+        .into()
+}
+
 /// A file's size, from a one-byte ranged request (a HEAD wouldn't survive
 /// the redirect to a signed CDN link).
-fn remote_len(url: &str) -> Result<u64, ureq::Error> {
-    let response = ureq::get(url).header("Range", "bytes=0-0").call()?;
+fn remote_len(agent: &ureq::Agent, url: &str) -> Result<u64, ureq::Error> {
+    let response = agent.get(url).header("Range", "bytes=0-0").call()?;
     let header = |name: &str| {
         response
             .headers()
@@ -240,22 +259,59 @@ fn remote_len(url: &str) -> Result<u64, ureq::Error> {
 }
 
 /// Downloads `url` to `path`, picking up where it left off if the
-/// connection drops. `progress` gets the bytes received so far.
-fn fetch(url: &str, path: &Path, len: u64, progress: &mut dyn FnMut(u64)) -> Result<(), Error> {
+/// connection drops or stalls, or the app was closed part-way. `progress`
+/// gets the bytes received so far.
+fn fetch(
+    agent: &ureq::Agent,
+    url: &str,
+    path: &Path,
+    len: u64,
+    progress: &mut dyn FnMut(u64),
+) -> Result<(), Error> {
+    /// Tries in a row that receive nothing before giving up.
     const ATTEMPTS: u32 = 5;
     fs::create_dir_all(path.parent().unwrap())?;
-    let part = path.with_extension(format!("{}.part", std::process::id()));
-    let mut out = fs::File::create(&part)?;
-    let mut have = 0u64;
-    for attempt in 1.. {
-        match fetch_from(url, &mut out, &mut have, progress) {
-            Ok(()) if len == 0 || have >= len => break,
-            Ok(()) if attempt >= ATTEMPTS => {
-                return Err(Error::Model(format!("{url}: got {have} of {len} bytes")));
-            }
-            Err(e) if attempt >= ATTEMPTS => return Err(e),
-            _ => std::thread::sleep(std::time::Duration::from_millis(500 << attempt)),
+    remove_old_parts(path);
+    // A fixed name, so the next run can resume it; the lock keeps a second
+    // copy of the app from writing to it at the same time.
+    let part = path.with_extension("part");
+    let mut out = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&part)?;
+    if let Err(fs::TryLockError::WouldBlock) = out.try_lock() {
+        return Err(Error::Model(
+            "Another copy of Fujicloud is downloading the model.".into(),
+        ));
+    }
+    let mut have = out.metadata()?.len();
+    if len == 0 || have > len {
+        // Nothing to check a leftover against: start over.
+        out.set_len(0)?;
+        have = 0;
+    }
+    out.seek(SeekFrom::Start(have))?;
+    progress(have);
+    let mut fruitless = 0;
+    while len == 0 || have < len {
+        let before = have;
+        let result = fetch_from(agent, url, &mut out, &mut have, progress);
+        if result.is_ok() && len == 0 {
+            break;
         }
+        if have > before {
+            fruitless = 0;
+            continue;
+        }
+        fruitless += 1;
+        if fruitless >= ATTEMPTS {
+            return Err(result
+                .err()
+                .unwrap_or_else(|| Error::Model(format!("{url}: got {have} of {len} bytes"))));
+        }
+        std::thread::sleep(Duration::from_millis(500 << fruitless));
     }
     out.sync_all()?;
     drop(out);
@@ -263,13 +319,36 @@ fn fetch(url: &str, path: &Path, len: u64, progress: &mut dyn FnMut(u64)) -> Res
     Ok(())
 }
 
+/// Earlier versions named partial downloads `<name>.<process id>.part` and
+/// left them behind when the app was closed.
+fn remove_old_parts(path: &Path) {
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let pid = name.to_str().and_then(|n| {
+            n.strip_prefix(stem)?
+                .strip_prefix('.')?
+                .strip_suffix(".part")
+        });
+        if pid.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn fetch_from(
+    agent: &ureq::Agent,
     url: &str,
     out: &mut fs::File,
     have: &mut u64,
     progress: &mut dyn FnMut(u64),
 ) -> Result<(), Error> {
-    let mut request = ureq::get(url);
+    let mut request = agent.get(url);
     if *have > 0 {
         request = request.header("Range", format!("bytes={have}-"));
     }
@@ -799,10 +878,11 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("model.onnx");
-        let len = remote_len(&url).unwrap();
+        let agent = agent(STALL);
+        let len = remote_len(&agent, &url).unwrap();
         assert_eq!(len, body.len() as u64);
         let mut seen = 0;
-        fetch(&url, &path, len, &mut |have| seen = have).unwrap();
+        fetch(&agent, &url, &path, len, &mut |have| seen = have).unwrap();
         assert_eq!(fs::read(&path).unwrap(), body);
         assert_eq!(seen, len);
         let asked = server.join().unwrap();
@@ -815,6 +895,74 @@ mod tests {
             ]
         );
         // Nothing is left behind.
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// A connection that goes quiet is dropped and resumed rather than
+    /// waited on forever, and a download left part-way by closing the app
+    /// carries on from where it was.
+    #[test]
+    fn stalled_downloads_resume() {
+        use std::net::TcpListener;
+        let body: Vec<u8> = (0..200_000u32).map(|i| (i % 241) as u8).collect();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/model.onnx", listener.local_addr().unwrap());
+        let served = body.clone();
+        let server = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            let mut quiet = Vec::new();
+            for (n, stream) in listener.incoming().take(2).enumerate() {
+                let mut stream = stream.unwrap();
+                let mut req = [0u8; 4096];
+                let got = stream.read(&mut req).unwrap();
+                let req = String::from_utf8_lossy(&req[..got]).to_lowercase();
+                let start: usize = req
+                    .lines()
+                    .find_map(|l| l.strip_prefix("range: bytes="))
+                    .and_then(|r| r.trim().trim_end_matches('-').parse().ok())
+                    .unwrap();
+                let all = served.len();
+                let head = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{}/{all}\r\n\r\n",
+                    all - start,
+                    all - 1
+                );
+                stream.write_all(head.as_bytes()).unwrap();
+                if n == 0 {
+                    // A little, then silence with the connection still open.
+                    stream.write_all(&served[start..start + 1000]).unwrap();
+                    quiet.push(stream);
+                } else {
+                    stream.write_all(&served[start..]).unwrap();
+                }
+                asked.push(start);
+            }
+            asked
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.onnx");
+        // Where the last run got to before the app was closed...
+        fs::write(dir.path().join("model.part"), &body[..50_000]).unwrap();
+        // ...and what earlier versions left behind.
+        fs::write(dir.path().join("model.4321.part"), b"old").unwrap();
+
+        let started = std::time::Instant::now();
+        let len = body.len() as u64;
+        fetch(
+            &agent(Duration::from_secs(1)),
+            &url,
+            &path,
+            len,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the stall was noticed"
+        );
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(server.join().unwrap(), [50_000, 51_000]);
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 

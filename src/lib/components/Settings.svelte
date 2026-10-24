@@ -170,7 +170,11 @@
           <span>Enable smart search</span>
           <small class="faint">
             {#if !store.smart?.enabled}Off
-            {:else if store.smart.phase === 'downloading'}Downloading model… {store.smart.total ? `${formatBytes(store.smart.done)} of ${formatBytes(store.smart.total)}` : ''}
+            {:else if store.smart.phase === 'downloading'}Downloading model… {store.smart.total
+                ? `${formatBytes(store.smart.done)} of ${formatBytes(store.smart.total)}`
+                : store.smart.done
+                  ? `${formatBytes(store.smart.done)} so far`
+                  : 'connecting'}
             {:else if store.smart.phase === 'loading'}Starting…
             {:else if store.smart.phase === 'indexing'}Analysing photos{store.smart.runningOn ? ` on the ${store.smart.runningOn}` : ''}… {formatCount(store.smart.done)} of {formatCount(store.smart.total)}
             {:else if store.smart.phase === 'error'}Problem: {store.smart.error}

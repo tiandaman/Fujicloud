@@ -3,7 +3,7 @@
   import { api } from '../api';
   import { filmGradient } from '../film';
   import { countryName, recipeSummary, recipeTitle } from '../recipe';
-  import { formatCount } from '../format';
+  import { formatBytes, formatCount } from '../format';
   import { store } from '../store.svelte';
   import type { Collection } from '../types';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
@@ -182,12 +182,16 @@
     {/if}
 
     {#if store.smart?.enabled && (store.smart.phase === 'downloading' || store.smart.phase === 'indexing' || store.smart.phase === 'loading')}
-      <div class="status">
+      <div
+        class="status"
+        title={store.smart.phase === 'downloading' && store.smart.total ? `${formatBytes(store.smart.done)} of ${formatBytes(store.smart.total)}` : undefined}
+      >
         <span class="ico small sparkle"><Icon name="sparkle" size={14} /></span>
         <div class="grow">
           <div class="line">
             <span>{store.smart.phase === 'downloading' ? 'Downloading search model' : store.smart.phase === 'loading' ? 'Starting smart search' : store.smart.runningOn ? `Analysing on ${store.smart.runningOn}` : 'Analysing photos'}</span>
-            {#if store.smart.total}<span class="faint tabular">{Math.round((store.smart.done / store.smart.total) * 100)}%</span>{/if}
+            {#if store.smart.total}<span class="faint tabular">{Math.round((store.smart.done / store.smart.total) * 100)}%</span>
+            {:else if store.smart.phase === 'downloading' && store.smart.done}<span class="faint tabular">{formatBytes(store.smart.done)}</span>{/if}
           </div>
           <div class="bar"><i style:width="{store.smart.total ? (store.smart.done / store.smart.total) * 100 : 8}%" class:indeterminate={!store.smart.total}></i></div>
         </div>

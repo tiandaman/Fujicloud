@@ -514,6 +514,9 @@ pub fn run() {
             if let Err(e) = restart_sync(&handle, &state) {
                 log::warn!("sync: {e}");
             }
+            // Right away, not after the scan: the UI already says the model
+            // is downloading, and on a big network library the scan is slow.
+            smart::spawn(handle.clone(), state.clone());
             spawn_scan(handle, state);
             Ok(())
         })
