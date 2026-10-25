@@ -29,6 +29,8 @@ pub struct Index {
     scales: Vec<f32>,
     dim: usize,
     data: Vec<i8>,
+    /// Row of each photo id.
+    rows: std::collections::HashMap<i64, usize>,
 }
 
 impl Index {
@@ -40,11 +42,13 @@ impl Index {
             ids: Vec::with_capacity(rows.len()),
             scales: Vec::with_capacity(rows.len()),
             data: Vec::with_capacity(rows.len() * dim),
+            rows: std::collections::HashMap::with_capacity(rows.len()),
         };
         for (id, blob) in rows {
             if blob.len() != dim + 4 {
                 continue;
             }
+            index.rows.insert(id, index.ids.len());
             index.ids.push(id);
             index
                 .scales
@@ -62,10 +66,26 @@ impl Index {
         self.ids.is_empty()
     }
 
+    pub fn contains(&self, id: i64) -> bool {
+        self.rows.contains_key(&id)
+    }
+
     pub fn vector(&self, id: i64) -> Option<Vec<f32>> {
-        let i = self.ids.iter().position(|&x| x == id)?;
+        let i = *self.rows.get(&id)?;
         let row = &self.data[i * self.dim..(i + 1) * self.dim];
         Some(row.iter().map(|&q| q as f32 * self.scales[i]).collect())
+    }
+
+    /// Cosine similarity of two photos' vectors.
+    pub fn similarity(&self, a: i64, b: i64) -> Option<f32> {
+        let (i, j) = (*self.rows.get(&a)?, *self.rows.get(&b)?);
+        let row = |k: usize| &self.data[k * self.dim..(k + 1) * self.dim];
+        let dot: i32 = row(i)
+            .iter()
+            .zip(row(j))
+            .map(|(&x, &y)| x as i32 * y as i32)
+            .sum();
+        Some(dot as f32 * self.scales[i] * self.scales[j])
     }
 
     /// The `limit` best matches for `query`, best first, keeping only those

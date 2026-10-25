@@ -301,6 +301,9 @@
         <header class="section" style:transform="translateY({row.y}px)">
           <h2>{row.section!.title}</h2>
           <span>{row.section!.subtitle}</span>
+          {#if row.section!.action}
+            <button class="section-action" onclick={row.section!.action.run}>{row.section!.action.label}</button>
+          {/if}
         </header>
       {/each}
 
@@ -361,6 +364,9 @@
               {#if p.favorite}
                 <span class="fav"><Icon name="heart" size={13} fill stroke={1.6} /></span>
               {/if}
+              {#if store.collection.type === 'duplicates' && store.keepers.has(p.id)}
+                <span class="badge keep" title="The one to keep: best rated, then most pixels">KEEP</span>
+              {/if}
               {#if p.rating}
                 <span class="stars">{'★'.repeat(p.rating)}</span>
               {/if}
@@ -391,11 +397,19 @@
 
   {#if layout.flat.length === 0 && store.ready}
     <div class="empty">
-      <Icon name="photos" size={40} stroke={1.2} />
-      <h3>No photos here</h3>
+      <Icon name={store.collection.type === 'duplicates' ? 'similar' : 'photos'} size={40} stroke={1.2} />
+      <h3>
+        {store.collection.type === 'duplicates' ? (store.findingDuplicates ? 'Looking for duplicates…' : 'No duplicates') : 'No photos here'}
+      </h3>
       <p>
-        {#if store.query}Nothing matches “{store.query}”.
-        {:else if store.minRating || store.kinds.length < 5}Try loosening the filters in the toolbar.
+        {#if store.collection.type === 'duplicates'}
+          {store.findingDuplicates
+            ? 'Comparing files of the same size, and shots taken moments apart.'
+            : store.smartReady
+              ? 'No copies of the same file, and no near-identical shots.'
+              : 'No copies of the same file. Turn on smart search to find near-identical shots too.'}
+        {:else if store.query}Nothing matches “{store.query}”.
+        {:else if store.minRating || store.kindsFiltered}Try loosening the filters in the toolbar.
         {:else}Photos you add will show up here.{/if}
       </p>
     </div>
@@ -538,6 +552,28 @@
   }
   .tile:global(.failed) .placeholder {
     display: flex;
+  }
+  .section-action {
+    margin-left: auto;
+    align-self: center;
+    padding: 2px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--text-2);
+    font: inherit;
+    font-size: 11.5px;
+    cursor: default;
+    pointer-events: auto;
+  }
+  .section-action:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--text);
+  }
+  .badge.keep {
+    background: var(--pick);
+    color: #04210d;
+    font-weight: 700;
   }
   .placeholder .name {
     max-width: 100%;

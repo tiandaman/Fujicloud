@@ -181,6 +181,12 @@ impl Smart {
         Ok(self.index(state)?.search(&q, 600, 0.05))
     }
 
+    /// Every analysed photo's vector, for finding near-identical shots.
+    /// Works from what's stored even while smart search is switched off.
+    pub fn vectors(&self, state: &AppState) -> Option<Arc<Index>> {
+        self.index(state).ok().filter(|i| !i.is_empty())
+    }
+
     /// Photos that look like `id`, excluding itself.
     pub fn similar(&self, state: &AppState, id: i64) -> Result<Vec<(i64, f32)>, String> {
         let index = self.index(state)?;

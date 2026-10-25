@@ -39,6 +39,9 @@
     ['heif', 'HEIF'],
     ['tiff', 'TIFF (edits)'],
     ['psd', 'Photoshop (PSD)'],
+    ['png', 'PNG (screenshots)'],
+    ['dng', 'DNG (ProRAW)'],
+    ['video', 'Videos'],
   ];
 
   function openAt(e: MouseEvent, items: MenuItem[]) {
@@ -80,7 +83,7 @@
     ]);
   }
 
-  const filtered = $derived(store.minRating > 0 || store.kinds.length < 5 || !store.stack);
+  const filtered = $derived(store.minRating > 0 || store.kindsFiltered || !store.stack);
   const sortLabel = $derived(sorts.find(([k]) => k === store.sort)?.[1]);
 
   export function focusSearch() {
@@ -102,6 +105,15 @@
     <span class="faint tabular">
       {store.selection.size ? `${formatCount(store.selection.size)} selected · ` : ''}{plural(store.visible.length, 'photo')}
     </span>
+    {#if store.collection.type === 'duplicates'}
+      {#if store.findingDuplicates}
+        <span class="faint">Looking…</span>
+      {:else if store.sections.length}
+        <button class="btn small" title="In every group, reject all but the photo marked KEEP" onclick={() => store.rejectExtras()}>
+          <Icon name="x" size={13} /> Reject all extras
+        </button>
+      {/if}
+    {/if}
     {#if store.collection.type === 'rejected' && store.visible.length}
       <button class="btn danger small" title="Move every rejected photo to the Recycle Bin" onclick={() => store.deleteRejected()}>
         <Icon name="trash" size={13} /> Delete all rejected…

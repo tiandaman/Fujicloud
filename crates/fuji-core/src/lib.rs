@@ -6,6 +6,7 @@ pub mod db;
 pub mod decode;
 pub mod discard;
 pub mod dng;
+pub mod dupes;
 #[cfg(feature = "smart-search")]
 pub mod embed;
 pub mod export;

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use fuji_core::db::{AlbumRow, PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
 use fuji_core::thumbs::{self, Size};
-use fuji_core::{Kind, Library, discard, export, meta, scan, xmp};
+use fuji_core::{Kind, Library, discard, dupes, export, ingest, meta, scan, xmp};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use settings::Settings;
@@ -368,6 +368,25 @@ fn add_to_album(state: Shared, id: i64, ids: Vec<i64>) -> CmdResult<()> {
 fn remove_from_album(state: Shared, id: i64, ids: Vec<i64>) -> CmdResult<()> {
     sidecars::save(&state.lib.remove_from_album(id, &ids).map_err(err)?);
     Ok(())
+}
+
+/// Copies of the same file, and near-identical shots (with smart search).
+#[tauri::command]
+async fn find_duplicates(state: Shared<'_>) -> CmdResult<Vec<dupes::Group>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let rows = state.lib.photos().map_err(err)?;
+        let index = state.smart.vectors(&state);
+        let checksum = |path: &Path| {
+            // Reading a file on a share that's gone would hang.
+            (!state.reach.covers(path))
+                .then(|| ingest::checksum(path).ok())
+                .flatten()
+        };
+        Ok(dupes::find(&rows, index.as_deref(), &checksum))
+    })
+    .await
+    .map_err(err)?
 }
 
 #[derive(Serialize)]
@@ -935,6 +954,7 @@ pub fn run() {
             cache_info,
             rebuild_thumbnails,
             delete_photos,
+            find_duplicates,
             export_photos,
             drag_files,
             open_folder,

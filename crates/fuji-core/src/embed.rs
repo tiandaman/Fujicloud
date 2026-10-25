@@ -838,6 +838,44 @@ mod tests {
             dot(&dog, &city)
         );
         assert!(dot(&dog, &puppy) > dot(&dog, &city));
+
+        // Near-identical shots (the same scene a moment later: a pixel to the
+        // side, a touch brighter) must reach the duplicate threshold, and a
+        // different picture mustn't.
+        let scene = |shift: f32, gain: f32| {
+            picture(move |x, y| {
+                let x = x as f32 + shift;
+                let (dx, dy) = (x - 44.0, y as f32 - 12.0);
+                let px: [f32; 3] = if dx * dx + dy * dy < 36.0 {
+                    [255.0, 236.0, 170.0]
+                } else if y as f32 > 30.0 + (x / 9.0).sin() * 4.0 {
+                    [30.0, 70.0, 40.0]
+                } else {
+                    [110.0 + y as f32 * 3.0, 160.0 + y as f32 * 2.0, 230.0]
+                };
+                px.map(|c| (c * gain).min(255.0) as u8)
+            })
+        };
+        let checks = picture(|x, y| {
+            if (x / 8 + y / 8) % 2 == 0 {
+                [0; 3]
+            } else {
+                [255; 3]
+            }
+        });
+        let v = engine
+            .embed_images(&[scene(0.0, 1.0), scene(1.0, 1.04), checks])
+            .unwrap();
+        let (near, other) = (dot(&v[0], &v[1]), dot(&v[0], &v[2]));
+        println!("near-identical {near:.3}, different {other:.3}");
+        assert!(
+            near >= crate::dupes::NEAR_DUPLICATE,
+            "near-identical scored {near}"
+        );
+        assert!(
+            other < crate::dupes::NEAR_DUPLICATE,
+            "a different picture scored {other}"
+        );
     }
 
     /// A transfer that's cut off part-way resumes where it stopped.

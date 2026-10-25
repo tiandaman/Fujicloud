@@ -35,6 +35,10 @@ thousands of images.
   favourites. *Delete all rejected…* (or `Del`) moves photos to the Recycle Bin, RAW
   twins and sidecars included. Windows has no Recycle Bin for network drives, so from
   the Shield they go to a `.fujicloud-trash` folder in the library instead.
+- **Find duplicates:** *Duplicates* in the sidebar finds byte-for-byte copies (the same
+  shot imported twice) and, with smart search on, near-identical shots taken moments
+  apart. The best of each group (highest rated, then most pixels) is marked *KEEP*, and
+  one click rejects the rest, ready for *Delete all rejected*.
 - **Favourites and albums:** press `.` or the heart to favourite, separate from stars.
   Albums live in the sidebar; add photos from the right-click menu, the viewer or the
   info panel.

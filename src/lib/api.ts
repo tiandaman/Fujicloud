@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, DuplicateGroup, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -23,6 +23,8 @@ export interface Api {
   deleteAlbum(id: number): Promise<void>;
   addToAlbum(id: number, ids: number[]): Promise<void>;
   removeFromAlbum(id: number, ids: number[]): Promise<void>;
+  /** Copies of the same file, and near-identical shots. */
+  findDuplicates(): Promise<DuplicateGroup[]>;
   /** Moves photos (with their twins and sidecars) to the Recycle Bin. */
   deletePhotos(ids: number[]): Promise<Deleted>;
   /** Exports copies into `folder`; progress arrives as `export` events. */
@@ -85,6 +87,7 @@ function tauriApi(): Api {
     deleteAlbum: (id) => invoke('delete_album', { id }),
     addToAlbum: (id, ids) => invoke('add_to_album', { id, ids }),
     removeFromAlbum: (id, ids) => invoke('remove_from_album', { id, ids }),
+    findDuplicates: () => invoke('find_duplicates'),
     deletePhotos: (ids) => invoke('delete_photos', { ids }),
     exportPhotos: (ids, preset, location, folder) => invoke('export_photos', { ids, preset, location, folder }),
     async dragOut(ids) {

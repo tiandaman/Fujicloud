@@ -6,6 +6,7 @@ import type {
   Album,
   BackupStatus,
   Collection,
+  DuplicateGroup,
   ExportPreset,
   GroupKey,
   Hit,
@@ -95,6 +96,8 @@ class Store {
   mode = $state<LayoutMode>('justified');
   size = $state(220);
   kinds = $state.raw<Kind[]>(ALL_KINDS);
+  /** Some file types are hidden by the toolbar filter. */
+  kindsFiltered = $derived(this.kinds.length < ALL_KINDS.length);
   minRating = $state(0);
   /** Show RAW+JPEG pairs as one tile. */
   stack = $state(true);
@@ -112,6 +115,11 @@ class Store {
   settingsOpen = $state(false);
   /** The "add to album" popover. */
   albumPicker = $state.raw<{ x: number; y: number; ids: number[] } | null>(null);
+  /** Duplicate groups, once looked for. */
+  duplicates = $state.raw<DuplicateGroup[] | null>(null);
+  findingDuplicates = $state(false);
+  /** The photo to keep in each duplicate group. */
+  keepers = $derived(new Set((this.duplicates ?? []).map((g) => g.ids[0])));
   /** The export sheet, for these photos. */
   exportDialog = $state.raw<{ ids: number[] } | null>(null);
   /** Export progress while one runs. */
@@ -226,7 +234,11 @@ class Store {
     const c = this.collection;
     const recent = Date.now() / 1000 - 7 * 86400;
     const similar = this.similarHits?.scores;
-    const ids = c.type === 'ids' ? new Set(c.ids) : c.type === 'album' ? new Set(this.albumById.get(c.id)?.ids ?? []) : null;
+    const ids =
+      c.type === 'ids' ? new Set(c.ids)
+      : c.type === 'album' ? new Set(this.albumById.get(c.id)?.ids ?? [])
+      : c.type === 'duplicates' ? new Set((this.duplicates ?? []).flatMap((g) => g.ids))
+      : null;
     const test: (p: Photo) => boolean =
       c.type === 'all' || c.type === 'map' ? (p) => p.flag !== -1
       : c.type === 'picks' ? (p) => p.flag === 1
@@ -241,7 +253,7 @@ class Store {
       : c.type === 'lens' ? (p) => p.lens === c.value
       : c.type === 'recipe' ? (p) => p.recipeKey === c.key && p.flag !== -1
       : c.type === 'country' ? (p) => p.country === c.value && p.flag !== -1
-      : c.type === 'ids' ? (p) => ids!.has(p.id)
+      : c.type === 'ids' || c.type === 'duplicates' ? (p) => ids!.has(p.id)
       : (p) => !!similar && (similar.has(p.id) || (p.pairId != null && similar.has(p.pairId)));
     return this.photos.filter(test);
   });
@@ -300,6 +312,7 @@ class Store {
       const title = this.collection.type === 'similar' ? 'Most similar first' : `Best matches for “${this.query.trim()}”`;
       return [{ key: 'ranked', title, subtitle: plural(list.length, 'photo'), items: list }];
     }
+    if (this.collection.type === 'duplicates') return this.#duplicateSections(list);
     if (g === 'none') return [{ key: 'all', title: '', subtitle: '', items: list }];
     const keyOf = (p: Photo): [string, string] => {
       const t = p.takenAt ?? 0;
@@ -851,6 +864,46 @@ class Store {
   setCollection(c: Collection) {
     this.collection = c;
     this.selection = new Set();
+    // The library may have changed since last time: look again.
+    if (c.type === 'duplicates') this.findDuplicates();
+  }
+
+  async findDuplicates() {
+    if (this.findingDuplicates) return;
+    this.findingDuplicates = true;
+    try {
+      this.duplicates = await api.findDuplicates();
+    } catch (e) {
+      this.toast(String(e), 'error');
+    } finally {
+      this.findingDuplicates = false;
+    }
+  }
+
+  /** One section per duplicate group, the keeper first, in the order found. */
+  #duplicateSections(list: Photo[]): Section[] {
+    const shown = new Set(list.map((p) => p.id));
+    return (this.duplicates ?? []).flatMap((g, i) => {
+      const items = g.ids.filter((id) => shown.has(id)).map((id) => this.byId.get(id)!);
+      if (items.length < 2) return [];
+      const extras = items.slice(1).map((p) => p.id);
+      const day = items[0].takenAt ? ` · ${formatDay(items[0].takenAt)}` : '';
+      return [
+        {
+          key: `dupes-${i}`,
+          title: g.exact ? 'Identical copies' : 'Near-identical shots',
+          subtitle: `${plural(items.length, 'photo')}${day}`,
+          items,
+          action: { label: extras.length === 1 ? 'Reject the extra' : `Reject the ${extras.length} extras`, run: () => this.flag(-1, extras) },
+        },
+      ];
+    });
+  }
+
+  /** Rejects every duplicate but the keeper of each group. */
+  rejectExtras() {
+    const extras = this.sections.flatMap((s) => s.items.slice(1).map((p) => p.id));
+    if (extras.length) this.flag(-1, extras);
   }
 
   open(id: number, list: number[] | null = null) {

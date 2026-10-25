@@ -404,6 +404,17 @@ export function mockApi(): Api {
       const gone = withPairs(ids);
       albums = albums.map((a) => (a.id === id ? { ...a, ids: a.ids.filter((x) => !gone.has(x)) } : a));
     },
+    async findDuplicates() {
+      await delay(500);
+      // Bursts: shots of one outing a few seconds apart, best rated first.
+      const shown = photos.filter((p) => p.kind !== 'raf' && p.editOf == null && p.flag !== -1);
+      const groups = [];
+      for (let i = 0; i + 2 < shown.length && groups.length < 12; i += 37) {
+        const ids = shown.slice(i, i + 2 + (i % 2)).sort((a, b) => b.rating - a.rating).map((p) => p.id);
+        groups.push({ ids, exact: i % 3 === 0 });
+      }
+      return groups;
+    },
     async deletePhotos(ids) {
       const gone = withPairs(ids);
       photos = photos.filter((p) => !gone.has(p.id));

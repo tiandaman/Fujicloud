@@ -246,4 +246,13 @@ export interface Section {
   title: string;
   subtitle: string;
   items: Photo[];
+  /** A button in the section's header. */
+  action?: { label: string; run: () => void };
+}
+
+/** Photos that are copies of each other, the one to keep first. */
+export interface DuplicateGroup {
+  ids: number[];
+  /** Byte-for-byte the same file; otherwise near-identical shots. */
+  exact: boolean;
 }

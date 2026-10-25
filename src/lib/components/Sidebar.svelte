@@ -13,7 +13,7 @@
   let moreRecipes = $state(false);
   let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
-  const library: { c: Collection; label: string; icon: IconName; count: () => number }[] = [
+  const library: { c: Collection; label: string; icon: IconName; count: () => number | null }[] = [
     { c: { type: 'all' }, label: 'All Photos', icon: 'photos', count: () => store.counts.all },
     { c: { type: 'recent' }, label: 'Recently Added', icon: 'clock', count: () => store.counts.recent },
     { c: { type: 'favorites' }, label: 'Favourites', icon: 'heart', count: () => store.counts.favorites },
@@ -21,6 +21,13 @@
     { c: { type: 'picks' }, label: 'Picks', icon: 'flag', count: () => store.counts.picks },
     { c: { type: 'rated' }, label: 'Rated', icon: 'star', count: () => store.counts.rated },
     { c: { type: 'rejected' }, label: 'Rejected', icon: 'x', count: () => store.counts.rejected },
+    {
+      c: { type: 'duplicates' },
+      label: 'Duplicates',
+      icon: 'similar',
+      // Known only once looked for: the extra copies, not counting keepers.
+      count: () => (store.duplicates ? store.duplicates.reduce((n, g) => n + g.ids.length - 1, 0) : null),
+    },
   ];
 
   function isActive(c: Collection) {
@@ -99,11 +106,11 @@
   }
 </script>
 
-{#snippet item(c: Collection, label: string, count: number, lead: Snippet)}
+{#snippet item(c: Collection, label: string, count: number | null, lead: Snippet)}
   <button class="item" class:active={isActive(c)} onclick={() => store.setCollection(c)}>
     {@render lead()}
     <span class="label truncate">{label}</span>
-    <span class="count tabular">{formatCount(count)}</span>
+    {#if count != null}<span class="count tabular">{formatCount(count)}</span>{/if}
   </button>
 {/snippet}
 
