@@ -1320,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "fuji-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "fast_image_resize",
@@ -1350,7 +1350,7 @@ dependencies = [
 
 [[package]]
 name = "fujicloud"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "fuji-core",

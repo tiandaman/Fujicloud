@@ -65,6 +65,15 @@ jobs:
       # GPU smart search: ship Microsoft's DirectML runtime next to the app.
       - name: Fetch DirectML
         run: pwsh scripts/fetch-directml.ps1 -Into target/debug/deps
+      # The installer's version ends in the build number: Build #29 is 0.2.29,
+      # which the app shows next to its name.
+      - name: Stamp the build number into the version
+        shell: bash
+        run: >-
+          node -e "const fs = require('fs'); const f = 'src-tauri/tauri.conf.json';
+          const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+          c.version = c.version.replace(/[0-9]+$/, process.env.GITHUB_RUN_NUMBER);
+          fs.writeFileSync(f, JSON.stringify(c, null, 2) + '\\n'); console.log('version', c.version)"
       - name: Build installer
         run: npx tauri build --config src-tauri/tauri.directml.conf.json
       - uses: actions/upload-artifact@v4

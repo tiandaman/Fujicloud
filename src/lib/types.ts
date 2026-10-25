@@ -139,6 +139,8 @@ export interface Settings {
 }
 
 export interface Bootstrap {
+  /** e.g. "0.2.29": the last number is the CI build it came from. */
+  version: string;
   sources: Source[];
   settings: Settings;
   effects: boolean;

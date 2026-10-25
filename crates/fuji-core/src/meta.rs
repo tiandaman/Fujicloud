@@ -167,6 +167,20 @@ fn from_jpeg_stream<R: BufRead + Seek>(reader: &mut R) -> Result<PhotoMeta, Erro
     Ok(meta)
 }
 
+/// Phones name each of their cameras: "iPhone 15 Pro back triple camera
+/// 6.86mm f/1.78". Which phone it was is enough: "iPhone 15 Pro".
+pub fn phone_lens(lens: &str) -> String {
+    let lower = lens.to_lowercase();
+    let side = [" back ", " front "]
+        .iter()
+        .filter_map(|s| lower.find(s))
+        .min();
+    match side {
+        Some(at) if lower[at..].contains("camera") => lens[..at].trim().to_owned(),
+        _ => lens.to_owned(),
+    }
+}
+
 pub fn orientation(exif: &Exif) -> u16 {
     exif.get_field(Tag::Orientation, In::PRIMARY)
         .and_then(|f| f.value.get_uint(0))
@@ -217,6 +231,7 @@ fn from_exif(exif: &Exif) -> PhotoMeta {
         });
 
     let camera = camera_name(text(Tag::Make), text(Tag::Model));
+    let lens = text(Tag::LensModel).map(|l| phone_lens(&l));
 
     let recipe = match field(Tag::MakerNote) {
         Some(Value::Undefined(bytes, _)) => fuji::parse_makernote(bytes),
@@ -232,7 +247,7 @@ fn from_exif(exif: &Exif) -> PhotoMeta {
         height,
         orientation,
         camera,
-        lens: text(Tag::LensModel),
+        lens,
         focal_length: rational(Tag::FocalLength),
         aperture: rational(Tag::FNumber),
         shutter: rational(Tag::ExposureTime),
@@ -249,14 +264,20 @@ fn from_exif(exif: &Exif) -> PhotoMeta {
     }
 }
 
-/// "FUJIFILM" + "X-T5" reads better as just the model; "Apple" +
-/// "iPhone 16 Pro" as both.
+/// "FUJIFILM" + "X-T5" reads better as just the model, as does "Apple" +
+/// "iPhone 16 Pro".
 pub(crate) fn camera_name(make: Option<String>, model: Option<String>) -> Option<String> {
     match (make, model) {
         (Some(make), Some(model)) if model.to_lowercase().contains(&make.to_lowercase()) => {
             Some(model)
         }
-        (Some(make), Some(model)) if make.eq_ignore_ascii_case("fujifilm") => Some(model),
+        (Some(make), Some(model))
+            if ["fujifilm", "apple", "google"]
+                .iter()
+                .any(|m| make.eq_ignore_ascii_case(m)) =>
+        {
+            Some(model)
+        }
         (Some(make), Some(model)) => Some(format!("{make} {model}")),
         (make, model) => model.or(make),
     }

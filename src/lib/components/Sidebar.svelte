@@ -143,6 +143,10 @@
   <div class="brand">
     <img src="/icon.svg" alt="" width="22" height="22" />
     <span>Fujicloud</span>
+    {#if store.version}
+      {@const build = store.version.split('.').at(-1)}
+      <span class="version tabular" title="Version {store.version}{build !== '0' ? ` · Build #${build} on GitHub` : ''}">v{store.version}</span>
+    {/if}
   </div>
 
   <div class="scroll">
@@ -360,6 +364,15 @@
     font: 650 14.5px var(--font-display);
     letter-spacing: -0.01em;
     flex: none;
+  }
+  .version {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-3);
+    font: 500 10.5px var(--font);
+    letter-spacing: 0;
   }
   .scroll {
     flex: 1;

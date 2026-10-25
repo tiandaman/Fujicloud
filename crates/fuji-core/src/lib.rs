@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(movie.pair_id, Some(still.id));
         assert_eq!(still.pair_id, Some(movie.id));
         assert_eq!(movie.duration, Some(1.5));
-        assert_eq!(movie.camera.as_deref(), Some("Apple iPhone 16 Pro"));
+        assert_eq!(movie.camera.as_deref(), Some("iPhone 16 Pro"));
 
         let raw = find("IMG_0006.DNG");
         assert_eq!((raw.kind, raw.width, raw.height), (Kind::Dng, 3024, 4032));

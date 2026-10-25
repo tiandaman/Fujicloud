@@ -65,6 +65,8 @@ fn reachable(state: &AppState, path: &Path) -> CmdResult<()> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Bootstrap {
+    /// e.g. "0.2.29": installers built by CI carry their build number.
+    version: String,
     sources: Vec<SourceInfo>,
     settings: Settings,
     effects: bool,
@@ -74,13 +76,14 @@ struct Bootstrap {
 }
 
 #[tauri::command]
-fn bootstrap(state: Shared) -> CmdResult<Bootstrap> {
+fn bootstrap(app: AppHandle, state: Shared) -> CmdResult<Bootstrap> {
     let settings = state.settings.read().clone();
     let editor = settings
         .editor_path
         .clone()
         .or_else(settings::find_photoshop);
     Ok(Bootstrap {
+        version: app.package_info().version.to_string(),
         sources: sources(&state)?,
         settings,
         effects: state.effects.load(Ordering::Relaxed),
@@ -881,7 +884,7 @@ pub fn run() {
         })
         .setup(|app| {
             let data = app.path().app_local_data_dir()?;
-            logfile::init(&data.join("logs"));
+            logfile::init(&data.join("logs"), &app.package_info().version.to_string());
             let config = app.path().app_config_dir()?;
             let settings_path = config.join("settings.json");
             let workers = std::thread::available_parallelism()

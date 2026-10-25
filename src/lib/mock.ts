@@ -148,7 +148,7 @@ function buildLibrary(days = 140): Photo[] {
       }
       // Now and then the phone came out too: Live Photos, clips, ProRAW and screenshots.
       if (id % 41 === 0) {
-        const phone = { ...base, camera: 'Apple iPhone 16 Pro', lens: null, filmSim: null, recipeKey: null, editOf: null, favorite: false, mtime: Math.round(t) };
+        const phone = { ...base, camera: 'iPhone 16 Pro', lens: 'iPhone 16 Pro', filmSim: null, recipeKey: null, editOf: null, favorite: false, mtime: Math.round(t) };
         const n = 4000 + id;
         const pick = id % 4;
         if (pick === 0) {
@@ -333,7 +333,7 @@ export function mockApi(): Api {
 
   return {
     native: false,
-    bootstrap: async (): Promise<Bootstrap> => ({ sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup }),
+    bootstrap: async (): Promise<Bootstrap> => ({ version: '0.2.0', sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup }),
     listPhotos: async () => photos,
     listSources: async () => sources,
     async photoDetail(id) {

@@ -144,6 +144,7 @@ class Store {
   sync = $state.raw<SyncStatus | null>(null);
   toasts = $state.raw<Toast[]>([]);
   backup = $state.raw<BackupStatus | null>(null);
+  version = $state('');
   /** Bumped when an offline source comes back, so missing thumbnails retry. */
   reachEpoch = $state(0);
 
@@ -449,6 +450,7 @@ class Store {
     this.editor = boot.editor;
     this.smart = boot.smart;
     this.backup = boot.backup;
+    this.version = boot.version;
     await this.refresh();
     this.ready = true;
 

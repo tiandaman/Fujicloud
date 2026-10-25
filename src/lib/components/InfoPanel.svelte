@@ -25,6 +25,14 @@
   let { ids, dark = false }: { ids: number[]; dark?: boolean } = $props();
 
   const photo = $derived(ids.length === 1 ? store.byId.get(ids[0]) : undefined);
+  /** Who made the camera, from its model name. */
+  function maker(camera: string): string {
+    if (/^(iphone|ipad)/i.test(camera)) return 'Apple';
+    if (/^pixel/i.test(camera)) return 'Google';
+    if (/^(x-|x\d|xf\d|x100|gfx|finepix)/i.test(camera)) return 'FUJIFILM';
+    return 'Camera';
+  }
+
   const twin = $derived(photo?.pairId != null ? store.byId.get(photo.pairId) : undefined);
   const many = $derived(ids.length > 1 ? ids.map((id) => store.byId.get(id)).filter((p) => !!p) : []);
   const pair = $derived(store.comparisonOf(ids));
@@ -135,10 +143,11 @@
       {#if photo.camera}
         <div class="row">
           <span class="ico"><Icon name="camera" size={16} /></span>
-          <div><strong>{photo.camera}</strong><span class="muted">FUJIFILM</span></div>
+          <div><strong>{photo.camera}</strong><span class="muted">{maker(photo.camera)}</span></div>
         </div>
       {/if}
-      {#if photo.lens}
+      <!-- A phone's "lens" is the phone itself: already said above. -->
+      {#if photo.lens && photo.lens !== photo.camera}
         <div class="row">
           <span class="ico"><Icon name="lens" size={16} /></span>
           <div><strong class="truncate">{photo.lens}</strong><span class="muted">Lens</span></div>

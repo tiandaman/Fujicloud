@@ -114,7 +114,8 @@ thousands of images.
 
 Every push builds an installer on GitHub Actions. Open the latest **Build** run under
 the repo's *Actions* tab, download **Fujicloud-Windows-installer**, and run the
-`.exe` (per-user install, no admin needed) or the `.msi`.
+`.exe` (per-user install, no admin needed) or the `.msi`. The version shown next to
+*Fujicloud* in the sidebar ends in the build number: `v0.2.29` came from Build #29.
 
 ## Set up your library and camera sync
 

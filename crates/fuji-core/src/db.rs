@@ -1205,6 +1205,34 @@ fn migrate(conn: &Connection) -> Result<(), Error> {
             conn.execute_batch(&format!("ALTER TABLE photos ADD COLUMN {name} {decl}"))?;
         }
     }
+    tidy_phone_names(conn)
+}
+
+/// Photos read by earlier versions say "Apple iPhone 15 Pro" and "iPhone 15
+/// Pro back triple camera 6.86mm f/1.78"; today's say "iPhone 15 Pro".
+fn tidy_phone_names(conn: &Connection) -> Result<(), Error> {
+    for make in ["Apple ", "Google "] {
+        conn.execute(
+            "UPDATE photos SET camera = substr(camera, ?2) WHERE camera LIKE ?1 || '%'",
+            params![make, make.len() as i64 + 1],
+        )?;
+    }
+    let lenses: Vec<String> = conn
+        .prepare(
+            "SELECT DISTINCT lens FROM photos
+             WHERE lens LIKE '% camera%' AND (lens LIKE '% back %' OR lens LIKE '% front %')",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for lens in lenses {
+        let tidy = crate::meta::phone_lens(&lens);
+        if tidy != lens {
+            conn.execute(
+                "UPDATE photos SET lens = ?2 WHERE lens = ?1",
+                params![lens, tidy],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1465,6 +1493,69 @@ mod tests {
                 .filter(|r| r.edit_of.is_some())
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn phones_are_named_by_model_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            let lib = Library::open(&path).unwrap();
+            let src = lib.add_source(Path::new("/lib")).unwrap();
+            let shot = |name: &str, camera: &str, lens: &str| NewPhoto {
+                path: PathBuf::from(format!("/lib/{name}")),
+                kind: Kind::Heif,
+                size: 1,
+                mtime: 1,
+                meta: crate::meta::PhotoMeta {
+                    camera: Some(camera.into()),
+                    lens: Some(lens.into()),
+                    ..Default::default()
+                },
+                place: None,
+            };
+            // As earlier versions stored them.
+            lib.upsert(
+                src.id,
+                &[
+                    shot(
+                        "IMG_1.HEIC",
+                        "Apple iPhone 15 Pro",
+                        "iPhone 15 Pro back triple camera 6.86mm f/1.78",
+                    ),
+                    shot(
+                        "IMG_2.HEIC",
+                        "Apple iPhone 15 Pro",
+                        "iPhone 15 Pro front camera 2.69mm f/1.9",
+                    ),
+                    shot("DSCF3.JPG", "X-T5", "XF23mmF1.4 R LM WR"),
+                ],
+            )
+            .unwrap();
+        }
+        let lib = Library::open(&path).unwrap();
+        let names: Vec<(String, String)> = lib
+            .photos()
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.camera.unwrap(), p.lens.unwrap()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("iPhone 15 Pro".into(), "iPhone 15 Pro".into()),
+                ("iPhone 15 Pro".into(), "iPhone 15 Pro".into()),
+                ("X-T5".into(), "XF23mmF1.4 R LM WR".into()),
+            ]
+        );
+        assert_eq!(
+            crate::meta::phone_lens("Pixel 7 back camera 6.81mm f/1.85"),
+            "Pixel 7"
+        );
+        assert_eq!(
+            crate::meta::phone_lens("XF16-80mmF4 R OIS WR"),
+            "XF16-80mmF4 R OIS WR"
         );
     }
 

@@ -411,7 +411,7 @@ pub(crate) mod tests {
 
         assert_eq!((meta.width, meta.height), (1080, 1920), "portrait");
         assert_eq!(meta.duration, Some(1.5));
-        assert_eq!(meta.camera.as_deref(), Some("Apple iPhone 16 Pro"));
+        assert_eq!(meta.camera.as_deref(), Some("iPhone 16 Pro"));
         // Local wall-clock time, like a camera's EXIF date.
         assert_eq!(
             meta.taken_at,

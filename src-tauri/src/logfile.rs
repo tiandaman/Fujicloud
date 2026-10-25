@@ -33,7 +33,7 @@ impl log::Log for FileLog {
     }
 }
 
-pub fn init(dir: &Path) {
+pub fn init(dir: &Path, version: &str) {
     let _ = fs::create_dir_all(dir);
     let path = dir.join("fujicloud.log");
     // Keep the previous file when this one gets big.
@@ -52,5 +52,5 @@ pub fn init(dir: &Path) {
         log::error!("problem in {}: {info}", thread.name().unwrap_or("a worker"));
         default(info);
     }));
-    log::info!("Fujicloud {} started", env!("CARGO_PKG_VERSION"));
+    log::info!("Fujicloud {version} started");
 }
