@@ -410,6 +410,15 @@ export function mockApi(): Api {
       albums = albums.map((a) => ({ ...a, ids: a.ids.filter((x) => !gone.has(x)) }));
       return { ids: [...gone], places: ['the Recycle Bin'], failed: [] };
     },
+    async exportPhotos(ids) {
+      for (let i = 1; i <= ids.length; i++) {
+        await delay(60);
+        emit('export', { done: i, total: ids.length });
+      }
+      return { files: ids.length, failed: [] };
+    },
+    dragOut: async () => {},
+    openFolder: async () => {},
     openInEditor: async () => 'Photoshop',
     reveal: async () => {},
     openDefault: async () => {},

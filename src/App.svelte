@@ -3,6 +3,7 @@
   import AlbumPicker from './lib/components/AlbumPicker.svelte';
   import Compare from './lib/components/Compare.svelte';
   import Confirm from './lib/components/Confirm.svelte';
+  import ExportDialog from './lib/components/ExportDialog.svelte';
   import Grid from './lib/components/Grid.svelte';
   import InfoPanel from './lib/components/InfoPanel.svelte';
   import MapView from './lib/components/MapView.svelte';
@@ -30,13 +31,15 @@
 
   // Shortcuts that work in both the grid and the viewer.
   function onKey(e: KeyboardEvent) {
-    if (store.settingsOpen || store.compare || store.confirmation || (e.target as HTMLElement).closest('input, textarea, select')) return;
+    if (store.settingsOpen || store.compare || store.confirmation || store.exportDialog || (e.target as HTMLElement).closest('input, textarea, select'))
+      return;
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl) {
       if (e.key === 'z' && !e.shiftKey) store.undo();
       else if ((e.key === 'z' || e.key === 'Z') && e.shiftKey) store.redo();
       else if (e.key === 'y') store.redo();
       else if (e.key === 'f') toolbar.focusSearch();
+      else if (e.key.toLowerCase() === 'e' && e.shiftKey) store.targets.length && (store.exportDialog = { ids: store.targets });
       else if (e.key === 'e') store.edit();
       else if (e.key === ',') store.settingsOpen = true;
       else if (e.key === '=' || e.key === '+') store.size = Math.min(480, Math.round(store.size * 1.15));
@@ -101,6 +104,9 @@
 {/if}
 {#if store.settingsOpen && store.settings}
   <Settings />
+{/if}
+{#if store.exportDialog}
+  <ExportDialog ids={store.exportDialog.ids} />
 {/if}
 {#if store.confirmation}
   <Confirm />

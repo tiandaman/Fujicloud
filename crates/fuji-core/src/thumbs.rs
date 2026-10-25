@@ -255,6 +255,34 @@ pub fn render(
     render_rgb(rgb, w, h, long_edge, quality)
 }
 
+/// A camera JPEG as upright sRGB pixels, at least `long_edge` on its long
+/// side where the decoder can scale.
+pub(crate) fn upright(jpeg: &[u8], long_edge: u32) -> Result<decode::Rgb, Error> {
+    let orientation = exif::Reader::new()
+        .read_from_container(&mut Cursor::new(jpeg))
+        .map_or(1, |e| meta::orientation(&e));
+    let adobe_rgb = exif::Reader::new()
+        .read_from_container(&mut Cursor::new(jpeg))
+        .ok()
+        .and_then(|e| {
+            e.get_field(exif::Tag::ColorSpace, exif::In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0))
+        })
+        == Some(0xFFFF);
+    let (mut rgb, dw, dh) = decode_scaled(jpeg, long_edge)?;
+    match decode::jpeg_icc(jpeg) {
+        Some(icc) => decode::to_srgb(&mut rgb, &icc),
+        None if adobe_rgb => decode::adobe_rgb_to_srgb(&mut rgb),
+        None => {}
+    }
+    let (data, width, height) = orient(rgb, dw, dh, orientation);
+    Ok(decode::Rgb {
+        data,
+        width,
+        height,
+    })
+}
+
 /// Decodes a JPEG to RGB, letting the decoder skip most of the work when
 /// the result only needs to cover `long_edge`. Returns pixels and size.
 pub(crate) fn decode_scaled(jpeg: &[u8], long_edge: u32) -> Result<(Vec<u8>, u32, u32), Error> {
@@ -288,6 +316,18 @@ pub fn render_rgb(
     quality: u8,
 ) -> Result<Rendered, Error> {
     let (width, height) = fit(w, h, long_edge);
+    resize_encode(rgb, (w, h), (width, height), quality, None)
+}
+
+/// Resizes upright sRGB pixels to exactly `size` and encodes them as JPEG,
+/// with an EXIF block (`Exif\0\0` + TIFF) when one is given.
+pub(crate) fn resize_encode(
+    rgb: Vec<u8>,
+    (w, h): (u32, u32),
+    (width, height): (u32, u32),
+    quality: u8,
+    exif: Option<&[u8]>,
+) -> Result<Rendered, Error> {
     let rgb = if (width, height) == (w, h) {
         rgb
     } else {
@@ -304,6 +344,11 @@ pub fn render_rgb(
     let mut jpeg = Vec::with_capacity((width * height / 4) as usize);
     let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg, quality);
     encoder.set_progressive(false);
+    if let Some(exif) = exif {
+        encoder
+            .add_app_segment(1, exif.to_vec())
+            .map_err(|e| Error::Decode(e.to_string()))?;
+    }
     encoder
         .encode(
             &rgb,

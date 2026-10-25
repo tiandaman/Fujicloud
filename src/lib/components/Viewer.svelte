@@ -236,7 +236,7 @@
   // ---- keyboard ---------------------------------------------------------------------
 
   async function onKey(e: KeyboardEvent) {
-    if (store.settingsOpen || store.compare || store.confirmation || (e.target as HTMLElement).closest('input, textarea')) return;
+    if (store.settingsOpen || store.compare || store.confirmation || store.exportDialog || (e.target as HTMLElement).closest('input, textarea')) return;
     switch (e.key) {
       case 'ArrowRight':
       case 'ArrowDown':
@@ -425,6 +425,9 @@
         </button>
         <button class="icon-btn" title="Add to album" onclick={(e) => (store.albumPicker = { x: e.clientX - 120, y: e.clientY + 16, ids: [photo.id] })}>
           <Icon name="album" size={17} />
+        </button>
+        <button class="icon-btn" title="Export (Ctrl+Shift+E)" onclick={() => (store.exportDialog = { ids: [photo.id] })}>
+          <Icon name="export" size={17} />
         </button>
         <span class="sep"></span>
         <button class="icon-btn" title="Zoom (Z)" onclick={() => toggleZoom()}><Icon name="search" size={17} /></button>

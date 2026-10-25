@@ -8,6 +8,7 @@ pub mod discard;
 pub mod dng;
 #[cfg(feature = "smart-search")]
 pub mod embed;
+pub mod export;
 pub mod fuji;
 pub mod geo;
 pub mod ingest;

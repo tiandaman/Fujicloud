@@ -144,7 +144,35 @@
     store.focusId = id;
   }
 
+  // ---- drag out: photos dropped on Explorer, Photoshop or a browser ----------------
+
+  let press: { x: number; y: number; id: number } | null = null;
+  let dragged = false;
+
+  function onTilePointerDown(e: PointerEvent, p: Photo) {
+    dragged = false;
+    if (e.button === 0 && api.native) press = { x: e.clientX, y: e.clientY, id: p.id };
+  }
+
+  function onWindowPointerMove(e: PointerEvent) {
+    if (!press) return;
+    if (!(e.buttons & 1)) {
+      press = null;
+      return;
+    }
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 8) return;
+    const ids = store.selection.has(press.id) ? [...store.selection] : [press.id];
+    press = null;
+    dragged = true;
+    api.dragOut(ids).catch((err) => store.toast(String(err), 'error'));
+  }
+
   function onTileClick(e: MouseEvent, p: Photo) {
+    // The click that ends a drag out isn't a click on the photo.
+    if (dragged) {
+      dragged = false;
+      return;
+    }
     if (e.shiftKey) selectRange(p.id);
     else if (e.ctrlKey || e.metaKey || store.selection.size) toggle(p.id);
     else store.open(p.id);
@@ -190,6 +218,7 @@
         { label: p.flag === -1 && !many ? 'Unreject' : 'Reject', icon: 'x', hint: 'X', action: () => store.flag(p.flag === -1 && !many ? 0 : -1, ids) },
         { labels: true, value: many ? null : p.label, onlabel: (l) => store.label(l, ids) },
         { separator: true },
+        { label: many ? `Export ${ids.length} photos…` : 'Export…', icon: 'export', hint: 'Ctrl+Shift+E', action: () => (store.exportDialog = { ids }) },
         { label: many ? `Delete ${ids.length} photos…` : 'Delete…', icon: 'trash', hint: 'Del', action: () => store.deletePhotos(ids) },
       ],
     };
@@ -198,7 +227,7 @@
   // ---- keyboard ------------------------------------------------------------------
 
   function onKey(e: KeyboardEvent) {
-    if (store.viewerId != null || store.compare || store.settingsOpen || store.confirmation || menu) return;
+    if (store.viewerId != null || store.compare || store.settingsOpen || store.confirmation || store.exportDialog || menu) return;
     const t = e.target as HTMLElement;
     if (t.closest('input, textarea, select, [contenteditable]')) return;
     const flat = layout.flat;
@@ -255,7 +284,7 @@
   }
 </script>
 
-<svelte:window onkeydown={onKey} />
+<svelte:window onkeydown={onKey} onpointermove={onWindowPointerMove} onpointerup={() => (press = null)} />
 
 <div class="wrap">
   <div
@@ -292,6 +321,7 @@
           role="button"
           tabindex="-1"
           aria-label={p.name}
+          onpointerdown={(e) => onTilePointerDown(e, p)}
           onclick={(e) => onTileClick(e, p)}
           oncontextmenu={(e) => onContextMenu(e, p)}
           onkeydown={() => {}}

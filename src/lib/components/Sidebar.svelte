@@ -264,6 +264,14 @@
           <div class="bar"><i style:width="{store.scan.progress.total ? (store.scan.progress.done / store.scan.progress.total) * 100 : 8}%" class:indeterminate={!store.scan.progress.total}></i></div>
         </div>
       </div>
+    {:else if store.exporting}
+      <div class="status">
+        <span class="ico small"><Icon name="export" size={14} /></span>
+        <div class="grow">
+          <div class="line"><span>Exporting</span><span class="faint tabular">{store.exporting.done} of {store.exporting.total}</span></div>
+          <div class="bar"><i style:width="{(store.exporting.done / Math.max(1, store.exporting.total)) * 100}%"></i></div>
+        </div>
+      </div>
     {:else if store.warm}
       <div class="status">
         <span class="ico small"><Icon name="photos" size={14} /></span>

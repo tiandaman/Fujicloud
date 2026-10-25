@@ -6,6 +6,7 @@ import type {
   Album,
   BackupStatus,
   Collection,
+  ExportPreset,
   GroupKey,
   Hit,
   Kind,
@@ -26,6 +27,7 @@ export interface Toast {
   id: number;
   text: string;
   tone: 'info' | 'error';
+  action?: { label: string; run: () => void };
 }
 
 /** What the grid exposes so the viewer can animate to and from tiles. */
@@ -110,6 +112,10 @@ class Store {
   settingsOpen = $state(false);
   /** The "add to album" popover. */
   albumPicker = $state.raw<{ x: number; y: number; ids: number[] } | null>(null);
+  /** The export sheet, for these photos. */
+  exportDialog = $state.raw<{ ids: number[] } | null>(null);
+  /** Export progress while one runs. */
+  exporting = $state.raw<{ done: number; total: number } | null>(null);
   /** A question waiting for an answer (see `ask`). */
   confirmation = $state.raw<{ title: string; body: string; action: string; resolve: (ok: boolean) => void } | null>(null);
   /** Before/after comparison, shown over everything else. */
@@ -452,6 +458,9 @@ class Store {
       // Retries repeat the same problem; say it once.
       if (s.error && !before?.error) this.toast(s.error, 'error');
     });
+    await api.listen<{ done: number; total: number }>('export', (p) => {
+      if (this.exporting) this.exporting = p;
+    });
     await api.listen<BackupStatus>('backup', (b) => {
       const before = this.backup;
       this.backup = b;
@@ -488,10 +497,10 @@ class Store {
 
   // ---- actions ----
 
-  toast(text: string, tone: Toast['tone'] = 'info') {
-    const t = { id: ++this.#toastId, text, tone };
+  toast(text: string, tone: Toast['tone'] = 'info', action?: Toast['action']) {
+    const t = { id: ++this.#toastId, text, tone, action };
     this.toasts = [...this.toasts.slice(-2), t];
-    setTimeout(() => (this.toasts = this.toasts.filter((x) => x !== t)), tone === 'error' ? 6000 : 2600);
+    setTimeout(() => (this.toasts = this.toasts.filter((x) => x !== t)), tone === 'error' || action ? 6000 : 2600);
   }
 
   /** Optimistically patches photos (and their RAW+JPEG twins). */
@@ -724,6 +733,26 @@ class Store {
       this.photos.filter((p) => p.flag === -1 && !this.folded(p)).map((p) => p.id),
       'rejected photo',
     );
+  }
+
+  /** Asks where, then exports copies of photos. */
+  async exportPhotos(ids: number[], preset: ExportPreset, location: boolean) {
+    const folder = await api.pickFolder(`Export ${plural(ids.length, 'photo')} to`);
+    if (!folder) return;
+    this.exportDialog = null;
+    this.exporting = { done: 0, total: ids.length };
+    try {
+      const r = await api.exportPhotos(ids, preset, location, folder);
+      const show = { label: 'Show folder', run: () => api.openFolder(folder) };
+      if (r.files) this.toast(`Exported ${plural(r.files, 'file')}`, 'info', show);
+      if (r.failed.length) {
+        this.toast(`${plural(r.failed.length, 'photo')} couldn't be exported: ${r.failed.slice(0, 3).join(', ')}${r.failed.length > 3 ? '…' : ''}`, 'error');
+      }
+    } catch (e) {
+      this.toast(String(e), 'error');
+    } finally {
+      this.exporting = null;
+    }
   }
 
   async rebuildThumbnails() {

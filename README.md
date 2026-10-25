@@ -97,6 +97,11 @@ thousands of images.
   photo is analysed once from its cached thumbnail, and a search over 100k photos takes
   about 20 ms. Right-click any photo to *Find similar photos*. Nothing leaves your
   network.
+- **Export and share:** right-click → *Export…* (`Ctrl+Shift+E`) for JPEGs sized for the
+  web (2048 px) or Instagram (1080 px wide), full-size JPEGs or the original files.
+  Exports are upright sRGB, keep the date and camera, and leave the location out unless
+  you ask. Or drag photos straight out of the grid into Explorer, Photoshop, a browser
+  upload or a chat.
 - Histogram, full EXIF, drag a folder onto the window to add it, and Windows 11 Mica.
 
 ## Install (Windows)

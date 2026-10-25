@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use fuji_core::db::{AlbumRow, PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
 use fuji_core::thumbs::{self, Size};
-use fuji_core::{Kind, Library, discard, meta, scan, xmp};
+use fuji_core::{Kind, Library, discard, export, meta, scan, xmp};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use settings::Settings;
@@ -482,6 +482,119 @@ fn recycles(_: &Path) -> bool {
 
 // ---- hand-off to other apps -------------------------------------------------
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Exported {
+    /// Files written.
+    files: usize,
+    /// Names of photos that couldn't be exported.
+    failed: Vec<String>,
+}
+
+/// Exports photos into `folder` (see [`export::Preset`]), two at a time so
+/// big decodes don't swamp memory. Emits `export` progress.
+#[tauri::command]
+async fn export_photos(
+    app: AppHandle,
+    state: Shared<'_>,
+    ids: Vec<i64>,
+    preset: export::Preset,
+    location: bool,
+    folder: String,
+) -> CmdResult<Exported> {
+    let state = state.inner().clone();
+    let folder = PathBuf::from(folder);
+    tauri::async_runtime::spawn_blocking(move || {
+        use rayon::prelude::*;
+        let rows = state.lib.photos().map_err(err)?;
+        let by_id: std::collections::HashMap<i64, &PhotoRow> =
+            rows.iter().map(|p| (p.id, p)).collect();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .map_err(err)?;
+        let done = AtomicUsize::new(0);
+        let total = ids.len();
+        let results: Vec<Result<usize, String>> = pool.install(|| {
+            ids.par_iter()
+                .map(|id| {
+                    let row = by_id.get(id).ok_or_else(|| format!("photo {id}"))?;
+                    let path = PathBuf::from(&row.folder).join(&row.name);
+                    let name = row.name.clone();
+                    reachable(&state, &path).map_err(|_| name.clone())?;
+                    let twin = row
+                        .pair_id
+                        .and_then(|t| by_id.get(&t))
+                        .map(|t| PathBuf::from(&t.folder).join(&t.name));
+                    let item = export::Item {
+                        path,
+                        kind: row.kind,
+                        info: export::Info::from(*row),
+                        twin,
+                    };
+                    let result = export::export(&item, preset, location, &folder)
+                        .map(|files| files.len())
+                        .map_err(|e| {
+                            log::warn!("export {name}: {e}");
+                            name
+                        });
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    let _ = app.emit("export", Warm { done: n, total });
+                    result
+                })
+                .collect()
+        });
+        Ok(Exported {
+            files: results.iter().filter_map(|r| r.as_ref().ok()).sum(),
+            failed: results.into_iter().filter_map(Result::err).collect(),
+        })
+    })
+    .await
+    .map_err(err)?
+}
+
+#[derive(Serialize)]
+struct DragFiles {
+    paths: Vec<String>,
+    /// A thumbnail shown under the pointer while dragging.
+    icon: String,
+}
+
+/// The files behind photos dragged out of the window, and an image to show.
+#[tauri::command]
+async fn drag_files(state: Shared<'_>, ids: Vec<i64>) -> CmdResult<DragFiles> {
+    let mut paths = Vec::new();
+    let mut icon = None;
+    for id in ids {
+        let (path, kind, size, mtime) = state.lib.file_of(id).map_err(err)?;
+        reachable(&state, &path)?;
+        if icon.is_none() {
+            let src = thumbs::Source {
+                path: &path,
+                kind,
+                size,
+                mtime,
+            };
+            icon = state
+                .cache
+                .get(&src, Size::Thumb)
+                .or_else(|| state.cache.ensure(&src, Size::Thumb).ok());
+        }
+        paths.push(path.to_string_lossy().into_owned());
+    }
+    Ok(DragFiles {
+        paths,
+        icon: icon
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+fn open_folder(path: String) -> CmdResult<()> {
+    tauri_plugin_opener::open_path(path, None::<&str>).map_err(err)
+}
+
 /// Opens photos in Photoshop (Camera Raw for RAFs), falling back to the
 /// default app. For RAW+JPEG pairs the RAW is opened if `edit_raw` is set.
 #[tauri::command]
@@ -728,6 +841,7 @@ fn open_log_folder(app: AppHandle) -> CmdResult<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol("fuji", |ctx, request, responder| {
             let Some(state) = ctx.app_handle().try_state::<Arc<AppState>>() else {
@@ -821,6 +935,9 @@ pub fn run() {
             cache_info,
             rebuild_thumbnails,
             delete_photos,
+            export_photos,
+            drag_files,
+            open_folder,
             open_log_folder,
             list_recipes,
             name_recipe,

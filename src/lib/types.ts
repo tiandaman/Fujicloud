@@ -179,6 +179,16 @@ export interface SyncStatus {
   error?: string | null;
 }
 
+/** Sizes for exported copies (see the Rust `export::Preset`). */
+export type ExportPreset = 'original' | 'full' | 'web' | 'instagram';
+
+export interface Exported {
+  /** Files written. */
+  files: number;
+  /** Names of photos that couldn't be exported. */
+  failed: string[];
+}
+
 /** What `deletePhotos` did. */
 export interface Deleted {
   /** Photos taken out of the library, RAW+JPEG twins included. */

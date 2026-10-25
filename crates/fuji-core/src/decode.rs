@@ -31,11 +31,17 @@ fn err(msg: impl Into<String>) -> Error {
 /// Decodes a PSD/PSB, TIFF, HEIF, PNG, a DNG's preview or a movie's poster
 /// frame to upright sRGB pixels.
 pub fn image(path: &Path, kind: Kind) -> Result<Rgb, Error> {
+    image_at(path, kind, crate::thumbs::Size::Preview.long_edge())
+}
+
+/// Like [`image`], but a DNG preview or movie frame is made at least
+/// `long_edge` on its long side where it can be (exports want full size).
+pub fn image_at(path: &Path, kind: Kind, long_edge: u32) -> Result<Rgb, Error> {
     match kind {
         Kind::Heif => heif(&std::fs::read(path)?),
         Kind::Png => png(&std::fs::read(path)?),
-        Kind::Dng => dng(path),
-        Kind::Video => crate::video::poster(path, crate::thumbs::Size::Preview.long_edge()),
+        Kind::Dng => dng(path, long_edge),
+        Kind::Video => crate::video::poster(path, long_edge),
         Kind::Psd | Kind::Tiff => {
             let _one_at_a_time = BIG_DECODE.lock().unwrap_or_else(|e| e.into_inner());
             if kind == Kind::Psd {
@@ -49,10 +55,9 @@ pub fn image(path: &Path, kind: Kind) -> Result<Rgb, Error> {
 }
 
 /// A DNG's JPEG preview, colour-managed and turned upright.
-fn dng(path: &Path) -> Result<Rgb, Error> {
+fn dng(path: &Path, long_edge: u32) -> Result<Rgb, Error> {
     let (jpeg, orientation) = crate::dng::preview(path)?;
-    let (mut data, w, h) =
-        crate::thumbs::decode_scaled(&jpeg, crate::thumbs::Size::Preview.long_edge())?;
+    let (mut data, w, h) = crate::thumbs::decode_scaled(&jpeg, long_edge)?;
     if let Some(icc) = jpeg_icc(&jpeg) {
         to_srgb(&mut data, &icc);
     }

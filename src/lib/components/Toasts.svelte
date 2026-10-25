@@ -4,7 +4,18 @@
 
 <div class="toasts" aria-live="polite">
   {#each store.toasts as t (t.id)}
-    <div class="toast" class:error={t.tone === 'error'}>{t.text}</div>
+    <div class="toast" class:error={t.tone === 'error'}>
+      {t.text}
+      {#if t.action}
+        <button
+          class="action"
+          onclick={() => {
+            t.action?.run();
+            store.toasts = store.toasts.filter((x) => x !== t);
+          }}>{t.action.label}</button
+        >
+      {/if}
+    </div>
   {/each}
 </div>
 
@@ -30,6 +41,20 @@
     box-shadow: var(--shadow-md);
     font-weight: 500;
     animation: in 260ms var(--ease-out);
+  }
+  .action {
+    margin-left: 10px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-weight: 600;
+    pointer-events: auto;
+    cursor: default;
+  }
+  .action:hover {
+    text-decoration: underline;
   }
   .toast.error {
     background: rgba(90, 24, 22, 0.94);

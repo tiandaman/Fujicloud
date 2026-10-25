@@ -34,7 +34,7 @@ pub fn to_trash_folder(root: &Path, file: &Path) -> io::Result<PathBuf> {
 }
 
 /// `path`, or the first of `name (2).ext`, `name (3).ext`, … that is free.
-fn free_name(path: &Path) -> PathBuf {
+pub(crate) fn free_name(path: &Path) -> PathBuf {
     if !path.exists() {
         return path.to_path_buf();
     }

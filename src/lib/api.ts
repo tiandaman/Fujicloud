@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -25,6 +25,11 @@ export interface Api {
   removeFromAlbum(id: number, ids: number[]): Promise<void>;
   /** Moves photos (with their twins and sidecars) to the Recycle Bin. */
   deletePhotos(ids: number[]): Promise<Deleted>;
+  /** Exports copies into `folder`; progress arrives as `export` events. */
+  exportPhotos(ids: number[], preset: ExportPreset, location: boolean, folder: string): Promise<Exported>;
+  /** Starts dragging the photos' files out of the window, into another app. */
+  dragOut(ids: number[]): Promise<void>;
+  openFolder(path: string): Promise<void>;
   openInEditor(ids: number[]): Promise<string>;
   reveal(id: number): Promise<void>;
   openDefault(id: number): Promise<void>;
@@ -81,6 +86,13 @@ function tauriApi(): Api {
     addToAlbum: (id, ids) => invoke('add_to_album', { id, ids }),
     removeFromAlbum: (id, ids) => invoke('remove_from_album', { id, ids }),
     deletePhotos: (ids) => invoke('delete_photos', { ids }),
+    exportPhotos: (ids, preset, location, folder) => invoke('export_photos', { ids, preset, location, folder }),
+    async dragOut(ids) {
+      const files = await invoke<{ paths: string[]; icon: string }>('drag_files', { ids });
+      const { startDrag } = await import('@crabnebula/tauri-plugin-drag');
+      await startDrag({ item: files.paths, icon: files.icon });
+    },
+    openFolder: (path) => invoke('open_folder', { path }),
     openInEditor: (ids) => invoke('open_in_editor', { ids }),
     reveal: (id) => invoke('reveal', { id }),
     openDefault: (id) => invoke('open_default', { id }),
