@@ -836,6 +836,7 @@ async fn cache_info(state: Shared<'_>) -> CmdResult<CacheInfo> {
 #[tauri::command]
 fn rebuild_thumbnails(app: AppHandle, state: Shared) -> CmdResult<u32> {
     state.cache.clear().map_err(err)?;
+    protocol::forget_failures();
     let version = {
         let mut settings = state.settings.write();
         settings.cache_version += 1;

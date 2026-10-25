@@ -151,7 +151,8 @@
 
   function onTilePointerDown(e: PointerEvent, p: Photo) {
     dragged = false;
-    if (e.button === 0 && api.native) press = { x: e.clientX, y: e.clientY, id: p.id };
+    // Touch drags scroll the grid; only a mouse or pen drags photos out.
+    if (e.button === 0 && e.pointerType !== 'touch' && api.native) press = { x: e.clientX, y: e.clientY, id: p.id };
   }
 
   function onWindowPointerMove(e: PointerEvent) {

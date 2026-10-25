@@ -12,7 +12,7 @@
 //!
 //! URLs: `/t/<id>` thumbnail, `/p/<id>` preview, `/o/<id>` full resolution.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -100,6 +100,27 @@ impl Queue {
     }
 }
 
+/// Renditions that couldn't be made this session (a damaged file, a movie
+/// Windows has no codec for), by photo and version, so scrolling past them
+/// again doesn't read the file again.
+static FAILED: Mutex<Option<HashSet<(i64, i64)>>> = Mutex::new(None);
+
+fn failed_before(id: i64, mtime: i64) -> bool {
+    FAILED
+        .lock()
+        .as_ref()
+        .is_some_and(|f| f.contains(&(id, mtime)))
+}
+
+fn remember_failure(id: i64, mtime: i64) {
+    FAILED.lock().get_or_insert_default().insert((id, mtime));
+}
+
+/// Gives every rendition another chance (after "Rebuild thumbnails").
+pub fn forget_failures() {
+    *FAILED.lock() = None;
+}
+
 pub fn lane_for(request: &Request<Vec<u8>>) -> Lane {
     match request.uri().path().as_bytes().get(1) {
         Some(b't') => Lane::Normal,
@@ -155,6 +176,10 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
         return movie(&file, request);
     }
 
+    if kind != "o" && failed_before(id, mtime) {
+        return status(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
     let mut mime = "image/jpeg";
     let bytes = match kind {
         "t" => state
@@ -195,8 +220,16 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
     match bytes {
         Ok(bytes) => image(bytes, mime, true),
         Err(fuji_core::Error::Unsupported(_)) => status(StatusCode::UNSUPPORTED_MEDIA_TYPE),
+        Err(fuji_core::Error::Io(e)) => {
+            // Possibly the network: worth trying again later.
+            log::warn!("{path}: {e}");
+            status(StatusCode::INTERNAL_SERVER_ERROR)
+        }
         Err(e) => {
             log::warn!("{path}: {e}");
+            if kind != "o" {
+                remember_failure(id, mtime);
+            }
             status(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
