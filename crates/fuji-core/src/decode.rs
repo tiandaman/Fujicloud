@@ -104,6 +104,21 @@ pub fn disguised(bytes: &[u8]) -> Result<Rgb, Error> {
 fn heif(bytes: &[u8]) -> Result<Rgb, Error> {
     let heif_err = |e: heic_decoder::HeifError| err(format!("HEIF: {e}"));
     let image = heic_decoder::decode(bytes).map_err(heif_err)?;
+    // Fujifilm's HLG mode (and PQ files) are HDR: tone-map them to sRGB.
+    if let Some(info) = image.color_info
+        && crate::hdr::is_hdr(info.transfer_characteristics)
+    {
+        let rgb = image.to_rgb16().map_err(heif_err)?;
+        return Ok(Rgb {
+            data: crate::hdr::to_sdr(
+                &rgb.data,
+                info.transfer_characteristics,
+                info.color_primaries,
+            ),
+            width: rgb.width as u32,
+            height: rgb.height as u32,
+        });
+    }
     let rgb = image.to_rgb8().map_err(heif_err)?;
     let mut data = rgb.data;
     // iPhones shoot in Display P3.

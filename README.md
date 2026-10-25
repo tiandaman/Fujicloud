@@ -73,7 +73,9 @@ thousands of images.
 - **HEIC and HEIF:** iPhone photos and Fujifilm's HEIF mode (`.HEIC`, `.HIF`) get
   thumbnails and previews with a built-in decoder, so no Microsoft Store codec is
   needed. Rotation and the iPhone's Display P3 colour are handled, and HEIC or PNG
-  pictures that were saved with a `.jpg` name show up too.
+  pictures that were saved with a `.jpg` name show up too. Fujifilm's **HLG** HEIFs (and
+  PQ HDR files) are tone-mapped for ordinary screens, with highlights rolled off
+  instead of looking flat and grey.
 - **The rest of the iPhone:** Live Photos (the still and its movie as one tile, with
   *LIVE* in the viewer to play it), videos (`.MOV`, `.MP4`) with their length, date and
   place, ProRAW `.DNG` and PNG screenshots. Video thumbnails come from Windows, so iPhone

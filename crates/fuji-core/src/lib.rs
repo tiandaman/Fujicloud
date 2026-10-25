@@ -12,6 +12,7 @@ pub mod embed;
 pub mod export;
 pub mod fuji;
 pub mod geo;
+pub mod hdr;
 pub mod ingest;
 pub mod meta;
 pub mod raf;
