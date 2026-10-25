@@ -42,6 +42,14 @@ export function formatEv(ev: number | null): string | null {
   return `${ev > 0 ? '+' : '−'}${Math.abs(ev).toFixed(1)} EV`;
 }
 
+/** 75 → "1:15", 3725 → "1:02:05". */
+export function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  const [h, m, sec] = [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60];
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];

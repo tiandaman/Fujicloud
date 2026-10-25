@@ -361,9 +361,9 @@ impl Library {
                 "INSERT INTO photos (source_id, path, folder, name, kind, pair_key, size, mtime, taken_at,
                     width, height, orientation, camera, lens, focal_length, aperture, shutter, iso,
                     exposure_comp, film_sim, grain, dynamic_range, recipe, recipe_key,
-                    lat, lon, altitude, gps_estimated, town, region, country)
+                    lat, lon, altitude, gps_estimated, town, region, country, duration)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                    ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, 0, ?28, ?29, ?30)
+                    ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, 0, ?28, ?29, ?30, ?31)
                  ON CONFLICT(path) DO UPDATE SET
                     source_id = excluded.source_id, size = excluded.size, mtime = excluded.mtime,
                     taken_at = excluded.taken_at, width = excluded.width, height = excluded.height,
@@ -374,7 +374,7 @@ impl Library {
                     recipe = excluded.recipe, recipe_key = excluded.recipe_key,
                     lat = excluded.lat, lon = excluded.lon, altitude = excluded.altitude,
                     gps_estimated = 0, town = excluded.town, region = excluded.region,
-                    country = excluded.country",
+                    country = excluded.country, duration = excluded.duration",
             )?;
             for p in photos {
                 let m = &p.meta;
@@ -424,6 +424,7 @@ impl Library {
                     p.place.as_ref().and_then(|pl| pl.town.clone()),
                     p.place.as_ref().and_then(|pl| pl.region.clone()),
                     p.place.as_ref().map(|pl| pl.country.clone()),
+                    m.duration,
                 ])?;
             }
         }
@@ -1006,7 +1007,7 @@ impl Library {
         let mut originals: HashMap<(String, String), (i64, bool)> = HashMap::new();
         for (id, folder, name, kind, _) in &rows {
             let is_jpeg = kind == "jpeg";
-            if is_jpeg || kind == "raf" || kind == "heif" {
+            if is_jpeg || matches!(kind.as_str(), "raf" | "heif" | "dng") {
                 originals
                     .entry((folder_key(folder), stem(name)))
                     .and_modify(|e| {
@@ -1085,16 +1086,17 @@ impl Library {
 
     // ---- smart search embeddings --------------------------------------------
 
-    /// Photos still needing an embedding for `model`, newest first. A RAF
-    /// stacked under its JPEG twin is skipped: the JPEG stands for both.
+    /// Photos still needing an embedding for `model`, newest first. A RAW or
+    /// Live Photo movie stacked under its picture is skipped: the picture
+    /// stands for both.
     pub fn missing_embeddings(&self, model: &str) -> Result<Vec<i64>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT p.id FROM photos p
-             WHERE p.kind IN ('jpeg', 'raf', 'heif', 'tiff', 'psd')
-               AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model = ?1)
-               AND NOT (p.kind = 'raf' AND EXISTS
-                    (SELECT 1 FROM photos j WHERE j.pair_key = p.pair_key AND j.kind = 'jpeg'))
+             WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model = ?1)
+               AND NOT (p.kind IN ('raf', 'dng', 'video') AND EXISTS
+                    (SELECT 1 FROM photos j WHERE j.pair_key = p.pair_key
+                       AND j.kind IN ('jpeg', 'heif', 'png')))
              ORDER BY p.taken_at DESC",
         )?;
         let rows = stmt.query_map([model], |r| r.get(0))?;

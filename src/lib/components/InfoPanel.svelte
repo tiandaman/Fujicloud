@@ -4,12 +4,14 @@
   import {
     formatAperture,
     formatBytes,
+    formatDuration,
     formatEv,
     formatFocal,
     formatLongDate,
     formatMegapixels,
     formatShutter,
     formatTime,
+    kindLabel,
     plural,
   } from '../format';
   import { store } from '../store.svelte';
@@ -201,8 +203,11 @@
     <section class="file">
       <dl>
         {#if formatMegapixels(photo)}<dt>Size</dt><dd class="tabular">{formatMegapixels(photo)}</dd>{/if}
+        {#if photo.duration}<dt>Length</dt><dd class="tabular">{formatDuration(photo.duration)}</dd>{/if}
         <dt>File</dt>
-        <dd class="tabular">{formatBytes(photo.size)}{twin ? ` + ${formatBytes(twin.size)} RAF` : ''}</dd>
+        <dd class="tabular">
+          {formatBytes(photo.size)}{twin ? ` + ${formatBytes(twin.size)} ${twin.kind === 'video' ? 'Live movie' : kindLabel[twin.kind]}` : ''}
+        </dd>
         <dt>Folder</dt>
         <dd class="path" title={photo.folder}>{photo.folder}</dd>
       </dl>

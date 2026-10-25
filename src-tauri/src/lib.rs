@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use fuji_core::db::{AlbumRow, PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
 use fuji_core::thumbs::{self, Size};
-use fuji_core::{Library, discard, meta, scan, xmp};
+use fuji_core::{Kind, Library, discard, meta, scan, xmp};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use settings::Settings;
@@ -239,9 +239,10 @@ fn spawn_warm(app: AppHandle, state: Arc<AppState>) {
     let photos = state.lib.photos().unwrap_or_default();
     let missing: Vec<i64> = photos
         .iter()
-        // A RAF stacked under its JPEG twin isn't shown in the grid; build
-        // its thumbnail on demand rather than pulling it over the network now.
-        .filter(|p| !(p.kind.is_raw() && p.pair_id.is_some()))
+        // A RAW or Live Photo movie stacked under its picture isn't shown in
+        // the grid; build its thumbnail on demand rather than pulling it
+        // over the network now.
+        .filter(|p| !((p.kind.is_raw() || p.kind == Kind::Video) && p.pair_id.is_some()))
         .filter(|p| {
             let path = PathBuf::from(&p.folder).join(&p.name);
             if state.reach.covers(&path) {

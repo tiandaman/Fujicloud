@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { api } from '../api';
   import { labelColors } from '../film';
+  import { formatDuration } from '../format';
   import { computeLayout, firstRowAfter, headerAt, verticalNeighbor, type Row } from '../layout';
   import { store } from '../store.svelte';
   import type { Photo } from '../types';
@@ -337,8 +338,9 @@
                 {#if p.editOf == null && store.editsOf.has(p.id)}
                   <span class="badge" title="Edited · press C to compare"><Icon name="compare" size={11} stroke={2} /></span>
                 {/if}
-                {#if p.pairId != null && store.stack}<span class="badge">RAW+JPG</span>
-                {:else if p.kind === 'raf'}<span class="badge">RAW</span>{/if}
+                {#if p.kind === 'video'}
+                  <span class="badge movie"><Icon name="play" size={9} fill stroke={0} />{p.duration ? formatDuration(p.duration) : ''}</span>
+                {:else if store.stackBadge(p)}<span class="badge">{store.stackBadge(p)}</span>{/if}
               </span>
               {#if p.editOf != null}
                 <span class="badge edit" title="Edit · press C to compare with the original">{p.kind === 'psd' ? 'PSD' : p.kind === 'tiff' ? 'TIFF' : 'EDIT'}</span>
@@ -614,6 +616,15 @@
   }
   .kinds {
     display: flex;
+    gap: 3px;
+  }
+  /* A movie's length is always shown, like in Photos. */
+  .kinds:has(.movie) {
+    opacity: 1;
+  }
+  .badge.movie {
+    display: inline-flex;
+    align-items: center;
     gap: 3px;
   }
   .kinds .badge,

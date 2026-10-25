@@ -34,6 +34,8 @@ pub struct PhotoMeta {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub altitude: Option<f64>,
+    /// Length in seconds, for movies.
+    pub duration: Option<f64>,
 }
 
 /// Reads metadata touching as few bytes as possible: for JPEG the reader stops
@@ -59,6 +61,9 @@ pub fn read(path: &Path, kind: Kind) -> Result<PhotoMeta, Error> {
                 }
             }),
         Kind::Heif => heif(path),
+        Kind::Png => png(path),
+        Kind::Dng => dng(path),
+        Kind::Video => crate::video::read(path),
         // Edits can be hundreds of MB; read just the header. Date, camera and
         // place come from the original they're linked to.
         Kind::Tiff | Kind::Psd => {
@@ -88,17 +93,43 @@ fn heif(path: &Path) -> Result<PhotoMeta, Error> {
     Ok(meta)
 }
 
-/// A PNG saved as .jpg: only its size is known.
+/// PNG, e.g. a screenshot: the size, plus EXIF when there is any (a date
+/// and the device). Without it, the file's date stands in.
 fn png(path: &Path) -> Result<PhotoMeta, Error> {
     let reader = png::Decoder::new(BufReader::new(File::open(path)?))
         .read_info()
         .map_err(|e| Error::Decode(format!("PNG: {e}")))?;
-    Ok(PhotoMeta {
-        width: reader.info().width,
-        height: reader.info().height,
-        orientation: 1,
-        ..Default::default()
-    })
+    let mut meta = exif::Reader::new()
+        .read_from_container(&mut BufReader::new(File::open(path)?))
+        .map(|exif| from_exif(&exif))
+        .unwrap_or_default();
+    (meta.width, meta.height, meta.orientation) = (reader.info().width, reader.info().height, 1);
+    Ok(meta)
+}
+
+/// DNG (iPhone ProRAW): EXIF from the start of the file, which is where
+/// cameras put it, and the developed size from the raw's own directory.
+fn dng(path: &Path) -> Result<PhotoMeta, Error> {
+    let mut head = Vec::new();
+    File::open(path)?.take(1 << 20).read_to_end(&mut head)?;
+    let exif = exif::Reader::new().read_raw(head).or_else(|_| {
+        exif::Reader::new().read_from_container(&mut BufReader::new(File::open(path)?))
+    });
+    let found = exif.map(|e| from_exif(&e));
+    let info = match (crate::dng::info(path), found.is_ok()) {
+        (Ok(info), _) => info,
+        // An unusual layout: what EXIF says will do.
+        (Err(_), true) => return Ok(found.unwrap_or_default()),
+        (Err(e), false) => return Err(e),
+    };
+    let mut meta = found.unwrap_or_default();
+    meta.orientation = info.orientation;
+    (meta.width, meta.height) = if swaps_axes(info.orientation) {
+        (info.height, info.width)
+    } else {
+        (info.width, info.height)
+    };
+    Ok(meta)
 }
 
 pub fn from_jpeg_bytes(bytes: &[u8]) -> Result<PhotoMeta, Error> {
@@ -185,17 +216,7 @@ fn from_exif(exif: &Exif) -> PhotoMeta {
             _ => None,
         });
 
-    let make = text(Tag::Make);
-    let model = text(Tag::Model);
-    let camera = match (make, model) {
-        // "FUJIFILM" + "X-T5" reads better as just the model.
-        (Some(make), Some(model)) if model.to_lowercase().contains(&make.to_lowercase()) => {
-            Some(model)
-        }
-        (Some(make), Some(model)) if make.eq_ignore_ascii_case("fujifilm") => Some(model),
-        (Some(make), Some(model)) => Some(format!("{make} {model}")),
-        (make, model) => model.or(make),
-    };
+    let camera = camera_name(text(Tag::Make), text(Tag::Model));
 
     let recipe = match field(Tag::MakerNote) {
         Some(Value::Undefined(bytes, _)) => fuji::parse_makernote(bytes),
@@ -224,6 +245,20 @@ fn from_exif(exif: &Exif) -> PhotoMeta {
         lat,
         lon,
         altitude,
+        duration: None,
+    }
+}
+
+/// "FUJIFILM" + "X-T5" reads better as just the model; "Apple" +
+/// "iPhone 16 Pro" as both.
+pub(crate) fn camera_name(make: Option<String>, model: Option<String>) -> Option<String> {
+    match (make, model) {
+        (Some(make), Some(model)) if model.to_lowercase().contains(&make.to_lowercase()) => {
+            Some(model)
+        }
+        (Some(make), Some(model)) if make.eq_ignore_ascii_case("fujifilm") => Some(model),
+        (Some(make), Some(model)) => Some(format!("{make} {model}")),
+        (make, model) => model.or(make),
     }
 }
 
@@ -274,7 +309,7 @@ fn parse_exif_datetime(s: &[u8]) -> Option<i64> {
 /// Every EXIF field rendered for humans, for the info panel.
 pub fn all_fields(path: &Path, kind: Kind) -> Result<Vec<(String, String)>, Error> {
     let exif = match kind {
-        Kind::Tiff | Kind::Psd => return Ok(Vec::new()),
+        Kind::Tiff | Kind::Psd | Kind::Video => return Ok(Vec::new()),
         Kind::Raf => exif::Reader::new()
             .read_from_container(&mut Cursor::new(raf::read_embedded_jpeg(path)?))?,
         _ => exif::Reader::new().read_from_container(&mut BufReader::new(File::open(path)?))?,

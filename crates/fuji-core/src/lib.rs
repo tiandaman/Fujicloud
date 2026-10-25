@@ -4,6 +4,7 @@
 pub mod db;
 pub mod decode;
 pub mod discard;
+pub mod dng;
 #[cfg(feature = "smart-search")]
 pub mod embed;
 pub mod fuji;
@@ -14,6 +15,7 @@ pub mod raf;
 pub mod scan;
 pub mod search;
 pub mod thumbs;
+pub mod video;
 pub mod xmp;
 
 use std::path::Path;
@@ -31,6 +33,12 @@ pub enum Kind {
     Tiff,
     /// Photoshop document (PSD or PSB), usually an edit of a camera file.
     Psd,
+    /// Screenshots and other PNG pictures.
+    Png,
+    /// Adobe DNG raw, e.g. iPhone ProRAW.
+    Dng,
+    /// QuickTime or MP4 movie, including the moving part of a Live Photo.
+    Video,
 }
 
 impl Kind {
@@ -42,6 +50,9 @@ impl Kind {
             "hif" | "heif" | "heic" => Kind::Heif,
             "tif" | "tiff" => Kind::Tiff,
             "psd" | "psb" => Kind::Psd,
+            "png" => Kind::Png,
+            "dng" => Kind::Dng,
+            "mov" | "mp4" | "m4v" => Kind::Video,
             _ => return None,
         })
     }
@@ -53,6 +64,9 @@ impl Kind {
             "heif" => Kind::Heif,
             "tiff" => Kind::Tiff,
             "psd" => Kind::Psd,
+            "png" => Kind::Png,
+            "dng" => Kind::Dng,
+            "video" => Kind::Video,
             _ => return None,
         })
     }
@@ -64,11 +78,14 @@ impl Kind {
             Kind::Heif => "heif",
             Kind::Tiff => "tiff",
             Kind::Psd => "psd",
+            Kind::Png => "png",
+            Kind::Dng => "dng",
+            Kind::Video => "video",
         }
     }
 
     pub fn is_raw(self) -> bool {
-        self == Kind::Raf
+        matches!(self, Kind::Raf | Kind::Dng)
     }
 
     /// Formats edits are saved in, as opposed to straight-from-camera files.
@@ -441,6 +458,70 @@ mod tests {
         let [thumb, _] = renditions(&png, Kind::Jpeg).try_into().unwrap();
         assert_eq!((thumb.0, thumb.1), (40, 30));
         assert!((thumb.2[0] as i32 - 200).abs() < 12);
+    }
+
+    #[test]
+    fn iphone_live_photos_screenshots_and_proraw_are_indexed_and_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let roll = dir.path().join("iCloud Photos");
+        std::fs::create_dir_all(&roll).unwrap();
+        std::fs::write(
+            roll.join("IMG_0005.HEIC"),
+            heic_fixture("rgb-strips-96.heic"),
+        )
+        .unwrap();
+        std::fs::write(roll.join("IMG_0005.MOV"), video::tests::iphone_clip()).unwrap();
+        let mut screenshot = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut screenshot, 40, 30);
+            enc.set_color(png::ColorType::Rgb);
+            let mut w = enc.write_header().unwrap();
+            w.write_image_data(&[30u8, 200, 90].repeat(40 * 30))
+                .unwrap();
+        }
+        std::fs::write(roll.join("IMG_0007.PNG"), &screenshot).unwrap();
+        // A ProRAW shot in portrait: its 64×48 preview is stored sideways.
+        let mut preview = Vec::new();
+        jpeg_encoder::Encoder::new(&mut preview, 90)
+            .encode(
+                &[220u8, 60, 40].repeat(64 * 48),
+                64,
+                48,
+                jpeg_encoder::ColorType::Rgb,
+            )
+            .unwrap();
+        std::fs::write(roll.join("IMG_0006.DNG"), dng::tests::sample(&preview, 6)).unwrap();
+
+        let lib = Library::open_in_memory().unwrap();
+        let source = lib.add_source(&roll).unwrap();
+        let summary = scan::scan_source(&lib, &source, false, &|_| {}).unwrap();
+        assert_eq!((summary.added, summary.failed), (4, 0));
+        let photos = lib.photos().unwrap();
+        let find = |name: &str| photos.iter().find(|p| p.name == name).unwrap();
+
+        // The Live Photo's movie is stacked under its picture.
+        let (still, movie) = (find("IMG_0005.HEIC"), find("IMG_0005.MOV"));
+        assert_eq!(movie.kind, Kind::Video);
+        assert_eq!(movie.pair_id, Some(still.id));
+        assert_eq!(still.pair_id, Some(movie.id));
+        assert_eq!(movie.duration, Some(1.5));
+        assert_eq!(movie.camera.as_deref(), Some("Apple iPhone 16 Pro"));
+
+        let raw = find("IMG_0006.DNG");
+        assert_eq!((raw.kind, raw.width, raw.height), (Kind::Dng, 3024, 4032));
+        let [thumb, _] = renditions(&roll.join("IMG_0006.DNG"), Kind::Dng)
+            .try_into()
+            .unwrap();
+        assert_eq!((thumb.0, thumb.1), (48, 64), "turned upright");
+        assert!((thumb.2[0] as i32 - 220).abs() < 16);
+
+        let shot = find("IMG_0007.PNG");
+        assert_eq!((shot.kind, shot.width, shot.height), (Kind::Png, 40, 30));
+        let [thumb, _] = renditions(&roll.join("IMG_0007.PNG"), Kind::Png)
+            .try_into()
+            .unwrap();
+        assert_eq!((thumb.0, thumb.1), (40, 30));
+        assert!((thumb.2[1] as i32 - 200).abs() < 12);
     }
 
     #[test]

@@ -400,7 +400,7 @@ fn render_local(file: &Path, kind: Kind) -> Option<Renditions> {
     let jpeg = match kind {
         Kind::Jpeg => std::fs::read(file).ok()?,
         Kind::Raf => raf::read_embedded_jpeg(file).ok()?,
-        Kind::Heif => {
+        Kind::Heif | Kind::Png | Kind::Dng => {
             let image = decode::image(file, kind).ok()?;
             return thumbs::render_rgb_all(image).ok();
         }

@@ -25,6 +25,10 @@
   const order = $derived(store.navOrder);
   const idx = $derived(order.findIndex((p) => p.id === id));
   const pair = $derived(store.comparisonFor(photo));
+  /** The moving half when this is a Live Photo. */
+  const live = $derived(store.liveMovie(photo));
+  let playingLive = $state(false);
+  let movieFailed = $state(false);
   const stageW = $derived(vw - (store.showInfo ? INFO_W : 0));
 
   /** Where the photo sits at "fit" zoom, in window coordinates. */
@@ -145,6 +149,8 @@
     untrack(() => {
       resetZoom(false);
       wantOriginal = false;
+      playingLive = false;
+      movieFailed = false;
       for (const d of [1, -1, 2]) {
         const p = order[idx + d];
         if (p) new Image().src = api.previewUrl(p);
@@ -320,14 +326,58 @@
       >
         {#key id}
           <img class="layer base" src={api.thumbUrl(photo)} alt="" draggable="false" />
-          <img class="layer" src={api.previewUrl(photo)} alt={photo.name} draggable="false" decoding="async" use:fadeIn />
-          {#if wantOriginal && (photo.kind === 'jpeg' || photo.kind === 'raf')}
-            <img class="layer" src={api.originalUrl(photo)} alt="" draggable="false" decoding="async" use:fadeIn />
+          {#if photo.kind === 'video'}
+            <!-- Home movies have no captions. -->
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video
+              class="layer movie"
+              src={api.originalUrl(photo)}
+              poster={api.previewUrl(photo)}
+              controls
+              autoplay
+              playsinline
+              onpointerdown={(e) => e.stopPropagation()}
+              ondblclick={(e) => e.stopPropagation()}
+              onerror={() => (movieFailed = true)}
+            ></video>
+          {:else}
+            <img class="layer" src={api.previewUrl(photo)} alt={photo.name} draggable="false" decoding="async" use:fadeIn />
+            {#if wantOriginal && (photo.kind === 'jpeg' || photo.kind === 'raf' || photo.kind === 'png')}
+              <img class="layer" src={api.originalUrl(photo)} alt="" draggable="false" decoding="async" use:fadeIn />
+            {/if}
+            {#if live && playingLive}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video
+                class="layer movie"
+                src={api.originalUrl(live)}
+                autoplay
+                playsinline
+                onended={() => (playingLive = false)}
+                onerror={() => {
+                  playingLive = false;
+                  movieFailed = true;
+                }}
+              ></video>
+            {/if}
           {/if}
         {/key}
       </div>
     {/if}
   </div>
+
+  {#if photo && movieFailed}
+    <div class="movie-failed" style:width="{stageW}px">
+      <div>
+        <strong>This movie can't play here</strong>
+        <p class="muted">
+          iPhone movies are HEVC. Windows plays them once Microsoft's <em>HEVC Video Extensions</em> are installed from the Microsoft Store.
+        </p>
+        <button class="btn" onclick={() => api.openDefault((live ?? photo).id).catch((e) => store.toast(String(e), 'error'))}>
+          <Icon name="open" size={14} /> Open in another app
+        </button>
+      </div>
+    </div>
+  {/if}
 
   {#if photo}
     <header
@@ -350,6 +400,18 @@
         </span>
       </div>
       <div class="actions">
+        {#if live}
+          <button
+            class="btn live"
+            class:on={playingLive}
+            title="Play the Live Photo"
+            onclick={() => (playingLive = !playingLive)}
+            onpointerenter={() => (playingLive = true)}
+          >
+            <Icon name="live" size={15} /> LIVE
+          </button>
+          <span class="sep"></span>
+        {/if}
         <Stars value={photo.rating} size={17} onrate={(r) => store.rate(r, [photo.id])} />
         <span class="sep"></span>
         <button class="icon-btn" class:pick={photo.flag === 1} title="Pick (P)" onclick={() => store.flag(photo.flag === 1 ? 0 : 1, [photo.id])}>
@@ -374,9 +436,11 @@
             <Icon name="compare" size={15} /> Before / After
           </button>
         {/if}
-        <button class="btn edit" title="Edit in Photoshop (Ctrl+E)" onclick={() => store.edit([photo.id])}>
-          <Icon name="edit" size={15} /> Edit
-        </button>
+        {#if photo.kind !== 'video'}
+          <button class="btn edit" title="Edit in Photoshop (Ctrl+E)" onclick={() => store.edit([photo.id])}>
+            <Icon name="edit" size={15} /> Edit
+          </button>
+        {/if}
       </div>
     </header>
 
@@ -470,6 +534,43 @@
   }
   .layer:global(.loaded) {
     opacity: 1;
+  }
+  .layer.movie {
+    opacity: 1;
+    background: #000;
+  }
+  .movie-failed {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .movie-failed > div {
+    max-width: 360px;
+    padding: 18px 20px;
+    border-radius: 14px;
+    background: rgba(30, 30, 33, 0.92);
+    box-shadow: var(--shadow-lg);
+    text-align: center;
+    pointer-events: auto;
+  }
+  .movie-failed p {
+    margin: 6px 0 14px;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .btn.live {
+    gap: 5px;
+    font-size: 11.5px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+  }
+  .btn.live.on {
+    color: #ffd60a;
   }
 
   .bar {

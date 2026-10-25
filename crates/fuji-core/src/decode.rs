@@ -28,10 +28,14 @@ fn err(msg: impl Into<String>) -> Error {
     Error::Decode(msg.into())
 }
 
-/// Decodes a PSD/PSB, TIFF or HEIF to upright sRGB pixels.
+/// Decodes a PSD/PSB, TIFF, HEIF, PNG, a DNG's preview or a movie's poster
+/// frame to upright sRGB pixels.
 pub fn image(path: &Path, kind: Kind) -> Result<Rgb, Error> {
     match kind {
         Kind::Heif => heif(&std::fs::read(path)?),
+        Kind::Png => png(&std::fs::read(path)?),
+        Kind::Dng => dng(path),
+        Kind::Video => crate::video::poster(path, crate::thumbs::Size::Preview.long_edge()),
         Kind::Psd | Kind::Tiff => {
             let _one_at_a_time = BIG_DECODE.lock().unwrap_or_else(|e| e.into_inner());
             if kind == Kind::Psd {
@@ -42,6 +46,22 @@ pub fn image(path: &Path, kind: Kind) -> Result<Rgb, Error> {
         }
         other => Err(Error::Unsupported(other)),
     }
+}
+
+/// A DNG's JPEG preview, colour-managed and turned upright.
+fn dng(path: &Path) -> Result<Rgb, Error> {
+    let (jpeg, orientation) = crate::dng::preview(path)?;
+    let (mut data, w, h) =
+        crate::thumbs::decode_scaled(&jpeg, crate::thumbs::Size::Preview.long_edge())?;
+    if let Some(icc) = jpeg_icc(&jpeg) {
+        to_srgb(&mut data, &icc);
+    }
+    let (data, width, height) = crate::thumbs::orient(data, w, h, orientation);
+    Ok(Rgb {
+        data,
+        width,
+        height,
+    })
 }
 
 /// What a file really holds when it isn't what its name says. Phones and

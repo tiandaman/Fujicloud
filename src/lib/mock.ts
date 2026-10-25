@@ -146,6 +146,24 @@ function buildLibrary(days = 140): Photo[] {
         jpg.pairId = raf.id;
         photos.push(raf);
       }
+      // Now and then the phone came out too: Live Photos, clips, ProRAW and screenshots.
+      if (id % 41 === 0) {
+        const phone = { ...base, camera: 'Apple iPhone 16 Pro', lens: null, filmSim: null, recipeKey: null, editOf: null, favorite: false, mtime: Math.round(t) };
+        const n = 4000 + id;
+        const pick = id % 4;
+        if (pick === 0) {
+          const still: Photo = { ...phone, id: id++, name: `IMG_${n}.HEIC`, kind: 'heif', size: 2.4e6, pairId: null, duration: null };
+          const movie: Photo = { ...phone, id: id++, name: `IMG_${n}.MOV`, kind: 'video', size: 3.1e6, pairId: still.id, duration: 2.6 };
+          still.pairId = movie.id;
+          photos.push(still, movie);
+        } else if (pick === 1) {
+          photos.push({ ...phone, id: id++, name: `IMG_${n}.MOV`, kind: 'video', size: 8.6e7, pairId: null, duration: 12 + (n % 90) });
+        } else if (pick === 2) {
+          photos.push({ ...phone, id: id++, name: `IMG_${n}.DNG`, kind: 'dng', size: 7.4e7, pairId: null, duration: null });
+        } else {
+          photos.push({ ...phone, id: id++, name: `IMG_${n}.PNG`, kind: 'png', size: 1.9e6, pairId: null, duration: null, lat: null, lon: null, town: null, region: null, country: null });
+        }
+      }
       // The keepers get taken into Photoshop.
       if (kind === 'jpeg' && r() < (rating >= 3 ? 0.35 : 0.03)) {
         const x = r();

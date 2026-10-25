@@ -242,6 +242,22 @@ pub fn render(
         (1, false)
     };
 
+    let (mut rgb, dw, dh) = decode_scaled(jpeg, long_edge)?;
+    if from_camera {
+        match decode::jpeg_icc(jpeg) {
+            Some(icc) => decode::to_srgb(&mut rgb, &icc),
+            None if adobe_rgb => decode::adobe_rgb_to_srgb(&mut rgb),
+            None => {}
+        }
+    }
+    let (rgb, w, h) = orient(rgb, dw, dh, orientation);
+    let long_edge = long_edge.min(w.max(h));
+    render_rgb(rgb, w, h, long_edge, quality)
+}
+
+/// Decodes a JPEG to RGB, letting the decoder skip most of the work when
+/// the result only needs to cover `long_edge`. Returns pixels and size.
+pub(crate) fn decode_scaled(jpeg: &[u8], long_edge: u32) -> Result<(Vec<u8>, u32, u32), Error> {
     let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(jpeg));
     decoder.read_info().map_err(decode_err)?;
     let info = decoder
@@ -254,23 +270,13 @@ pub fn render(
         )));
     }
     let (target_w, target_h) = fit(info.width as u32, info.height as u32, long_edge);
-    // Let the decoder skip most of the IDCT work; it picks the smallest
-    // factor that is still at least as large as what we asked for.
+    // The decoder picks the smallest factor that is still at least as large
+    // as what we asked for.
     let (dw, dh) = decoder
         .scale(target_w as u16, target_h as u16)
         .map_err(decode_err)?;
     let pixels = decoder.decode().map_err(decode_err)?;
-    let mut rgb = to_rgb(pixels, info.pixel_format);
-    if from_camera {
-        match decode::jpeg_icc(jpeg) {
-            Some(icc) => decode::to_srgb(&mut rgb, &icc),
-            None if adobe_rgb => decode::adobe_rgb_to_srgb(&mut rgb),
-            None => {}
-        }
-    }
-    let (rgb, w, h) = orient(rgb, dw as u32, dh as u32, orientation);
-    let long_edge = long_edge.min(w.max(h));
-    render_rgb(rgb, w, h, long_edge, quality)
+    Ok((to_rgb(pixels, info.pixel_format), dw as u32, dh as u32))
 }
 
 /// Fits upright sRGB pixels inside `long_edge` and encodes them as JPEG.

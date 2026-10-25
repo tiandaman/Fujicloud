@@ -197,6 +197,22 @@ class Store {
 
   albumById = $derived(new Map(this.albums.map((a) => [a.id, a])));
 
+  /** The moving half of a Live Photo, if `p` is the still. */
+  liveMovie(p: Photo | undefined): Photo | undefined {
+    const twin = p?.pairId != null && p.kind !== 'video' ? this.byId.get(p.pairId) : undefined;
+    return twin?.kind === 'video' ? twin : undefined;
+  }
+
+  /** What a tile's corner badge says about the files behind it. */
+  stackBadge(p: Photo): string | null {
+    const twin = p.pairId != null ? this.byId.get(p.pairId) : undefined;
+    if (twin && this.stack) {
+      if (twin.kind === 'video' || p.kind === 'video') return 'LIVE';
+      return `RAW+${p.kind === 'heif' ? 'HEIF' : 'JPG'}`;
+    }
+    return p.kind === 'raf' ? 'RAW' : p.kind === 'dng' ? 'DNG' : null;
+  }
+
   /** Photos in the current collection, before toolbar filters (for counts). */
   inCollection = $derived.by(() => {
     const c = this.collection;

@@ -13,6 +13,9 @@
 //! URLs: `/t/<id>` thumbnail, `/p/<id>` preview, `/o/<id>` full resolution.
 
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 use std::sync::Arc;
 
 use fuji_core::thumbs::{self, Size};
@@ -142,11 +145,17 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
             .or_else(|| state.cache.get(&src, other))
             .and_then(|p| std::fs::read(p).ok())
         {
-            Some(bytes) => jpeg(bytes, exact),
+            Some(bytes) => image(bytes, "image/jpeg", exact),
             None => status(StatusCode::SERVICE_UNAVAILABLE),
         };
     }
 
+    // Movies stream in pieces as the player asks for them.
+    if kind == "o" && file_kind == Kind::Video {
+        return movie(&file, request);
+    }
+
+    let mut mime = "image/jpeg";
     let bytes = match kind {
         "t" => state
             .cache
@@ -169,9 +178,13 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
                 }
             }),
             Kind::Raf => raf::read_embedded_jpeg(&file).map_err(Into::into),
-            // The webview can't show HEIF, PSD or TIFF; the 2560px rendition
-            // stands in.
-            Kind::Heif | Kind::Psd | Kind::Tiff => state
+            Kind::Png => {
+                mime = "image/png";
+                std::fs::read(&file).map_err(Into::into)
+            }
+            // The webview can't show HEIF, PSD, TIFF or raw DNG data; the
+            // 2560px rendition stands in.
+            Kind::Heif | Kind::Psd | Kind::Tiff | Kind::Dng | Kind::Video => state
                 .cache
                 .ensure(&src, Size::Preview)
                 .and_then(|p| Ok(std::fs::read(p)?)),
@@ -180,7 +193,7 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
     };
 
     match bytes {
-        Ok(bytes) => jpeg(bytes, true),
+        Ok(bytes) => image(bytes, mime, true),
         Err(fuji_core::Error::Unsupported(_)) => status(StatusCode::UNSUPPORTED_MEDIA_TYPE),
         Err(e) => {
             log::warn!("{path}: {e}");
@@ -191,9 +204,9 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
 
 /// `immutable` is false for a stand-in (a thumbnail served for a preview
 /// while offline), which mustn't be remembered for that URL.
-fn jpeg(bytes: Vec<u8>, immutable: bool) -> Response<Vec<u8>> {
+fn image(bytes: Vec<u8>, mime: &str, immutable: bool) -> Response<Vec<u8>> {
     Response::builder()
-        .header(header::CONTENT_TYPE, "image/jpeg")
+        .header(header::CONTENT_TYPE, mime)
         // URLs carry the file's mtime, so a given URL never changes.
         .header(
             header::CACHE_CONTROL,
@@ -209,10 +222,107 @@ fn jpeg(bytes: Vec<u8>, immutable: bool) -> Response<Vec<u8>> {
         .unwrap()
 }
 
+/// Answers a `<video>` range request with up to [`CHUNK`] bytes.
+fn movie(file: &Path, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+    let Ok(mut f) = File::open(file) else {
+        return status(StatusCode::NOT_FOUND);
+    };
+    let len = f.metadata().map_or(0, |m| m.len());
+    let range = request
+        .headers()
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map_or(Some((0, u64::MAX)), |r| byte_range(r, len));
+    let Some((start, end)) = range.filter(|&(start, _)| start < len) else {
+        return Response::builder()
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+            .body(Vec::new())
+            .unwrap();
+    };
+    let end = end.min(len - 1).min(start + CHUNK - 1);
+    let mut body = vec![0; (end - start + 1) as usize];
+    if f.seek(SeekFrom::Start(start))
+        .and_then(|_| f.read_exact(&mut body))
+        .is_err()
+    {
+        return status(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    Response::builder()
+        .status(StatusCode::PARTIAL_CONTENT)
+        // Chromium's demuxer reads QuickTime files served as MP4.
+        .header(header::CONTENT_TYPE, "video/mp4")
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"))
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(body)
+        .unwrap()
+}
+
+/// Bytes handed to the player per request: enough to keep it busy, small
+/// enough not to hold a multi-gigabyte clip in memory.
+const CHUNK: u64 = 4 << 20;
+
+/// `bytes=START-END`, `bytes=START-` or `bytes=-SUFFIX` → inclusive range.
+fn byte_range(header: &str, len: u64) -> Option<(u64, u64)> {
+    let spec = header
+        .trim()
+        .strip_prefix("bytes=")?
+        .split(',')
+        .next()?
+        .trim();
+    let (a, b) = spec.split_once('-')?;
+    match (a.trim(), b.trim()) {
+        ("", suffix) => {
+            let n: u64 = suffix.parse().ok()?;
+            Some((len.saturating_sub(n), u64::MAX))
+        }
+        (start, "") => Some((start.parse().ok()?, u64::MAX)),
+        (start, end) => {
+            let (start, end) = (start.parse().ok()?, end.parse().ok()?);
+            (start <= end).then_some((start, end))
+        }
+    }
+}
+
 fn status(code: StatusCode) -> Response<Vec<u8>> {
     Response::builder()
         .status(code)
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(Vec::new())
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn players_get_the_bytes_they_ask_for() {
+        assert_eq!(byte_range("bytes=0-", 100), Some((0, u64::MAX)));
+        assert_eq!(byte_range("bytes=10-19", 100), Some((10, 19)));
+        assert_eq!(byte_range("bytes=-30", 100), Some((70, u64::MAX)));
+        assert_eq!(byte_range("bytes=20-10", 100), None);
+        assert_eq!(byte_range("items=0-1", 100), None);
+
+        let path = std::env::temp_dir().join(format!("fuji-movie-{}.mov", std::process::id()));
+        std::fs::write(&path, (0..=255u8).collect::<Vec<_>>()).unwrap();
+        let ask = |range: &str| {
+            let request = Request::builder()
+                .uri("fuji://localhost/o/1")
+                .header(header::RANGE, range)
+                .body(Vec::new())
+                .unwrap();
+            movie(&path, &request)
+        };
+        let r = ask("bytes=250-");
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(r.headers()[header::CONTENT_RANGE], "bytes 250-255/256");
+        assert_eq!(r.body(), &[250, 251, 252, 253, 254, 255]);
+        assert_eq!(
+            ask("bytes=300-").status(),
+            StatusCode::RANGE_NOT_SATISFIABLE
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
 }

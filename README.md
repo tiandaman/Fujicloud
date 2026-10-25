@@ -31,15 +31,30 @@ thousands of images.
 - **RAW + JPEG as one photo:** pairs are stacked into one tile, and ratings and labels
   apply to both.
 - **Culling:** `1`–`5` stars, `P` pick, `X` reject, `6`–`9` colour labels, and
-  multi-select with Ctrl / Shift click.
+  multi-select with Ctrl / Shift click. `Ctrl+Z` undoes ratings, flags, labels and
+  favourites. *Delete all rejected…* (or `Del`) moves photos to the Recycle Bin, RAW
+  twins and sidecars included. Windows has no Recycle Bin for network drives, so from
+  the Shield they go to a `.fujicloud-trash` folder in the library instead.
+- **Favourites and albums:** press `.` or the heart to favourite, separate from stars.
+  Albums live in the sidebar; add photos from the right-click menu, the viewer or the
+  info panel.
 - **Works with Adobe:** "Edit in Photoshop" (`Ctrl+E`) finds the newest Photoshop
   install and opens the RAF in Camera Raw when there is one. Ratings and labels are
   written to `.xmp` sidecars so Lightroom and Bridge see them. Existing sidecars are
   edited in place, so develop settings are kept.
-- **Camera sync over your network:** new shots that land in the inbox folder are copied
-  to the Shield's SSD, filed as `YYYY/YYYY-MM-DD/`, several files at a time. Thumbnails
-  and previews are rendered from the local copy *while* it uploads, so a new photo can
-  be browsed the moment it arrives.
+- **Laptops stay in sync:** ratings, picks, labels, favourites and albums travel in the
+  sidecars next to the photos, so every laptop that opens the Shield library sees the
+  same choices. Changes made while the Shield is unreachable are saved once it's back.
+- **Camera and phone sync over your network:** new shots that land in an inbox folder
+  (the camera's PC AutoSave folder, iCloud for Windows' *iCloud Photos* folder, or any
+  other) are copied to the Shield's SSD, filed as `YYYY/YYYY-MM-DD/`, several files at
+  a time. Every copy is checked against the original. Thumbnails and previews are
+  rendered from the local copy *while* it uploads, so a new photo can be browsed the
+  moment it arrives. Optionally the inbox file goes to the Recycle Bin once its copy
+  checks out (never for iCloud, where that would delete it from the phone).
+- **When the Shield is off:** the library stays browsable from the thumbnail cache,
+  new shots wait on the PC and are copied when it's back, and nothing is removed from
+  the library because a share went quiet.
 - **Before and after:** edits are matched to the shot they came from: a PSD, a TIFF, or
   an `-Edit.jpg` next to the original or in a subfolder. Press `C` (or *Before / After*
   in the viewer) to see the camera's version and your edit **side by side**, or on
@@ -51,6 +66,10 @@ thousands of images.
   thumbnails and previews with a built-in decoder, so no Microsoft Store codec is
   needed. Rotation and the iPhone's Display P3 colour are handled, and HEIC or PNG
   pictures that were saved with a `.jpg` name show up too.
+- **The rest of the iPhone:** Live Photos (the still and its movie as one tile, with
+  *LIVE* in the viewer to play it), videos (`.MOV`, `.MP4`) with their length, date and
+  place, ProRAW `.DNG` and PNG screenshots. Video thumbnails come from Windows, so iPhone
+  HEVC clips need Microsoft's free *HEVC Video Extensions* to show and play.
 - **Photoshop files in the grid:** layered PSD/PSB and TIFF files get thumbnails and
   previews from their flattened image (8- or 16-bit, compressed or not). Colour is
   managed, so Adobe RGB and ProPhoto edits look the same as they do in Photoshop
@@ -92,8 +111,10 @@ the repo's *Actions* tab, download **Fujicloud-Windows-installer**, and run the
    the background, and whatever is on screen always goes first.
 3. **Send photos from the camera.** Install FUJIFILM **PC AutoSave**, pair the camera,
    and note the folder it saves into.
-4. **Turn on sync.** In *Settings → Camera sync*, set the *Inbox folder* to the PC
-   AutoSave folder and *Copy new photos to* to the Shield library folder.
+4. **Turn on sync.** In *Settings → Camera and phone sync*, add the PC AutoSave folder
+   (and *iCloud Photos* if iCloud for Windows is installed; Fujicloud offers the ones it
+   finds) under *Inbox folders*, and set *Copy new photos to* to the Shield library
+   folder.
 
 **For speed:** put the Shield on Ethernet, keep laptops on 5/6 GHz Wi-Fi, and raise
 *Parallel copies* (4–6 works well over SMB). The first full thumbnail build over the
@@ -119,9 +140,11 @@ Then switch smart search off and on in Settings. It uses the files it finds ther
 
 ### If something goes wrong
 
-Fujicloud keeps a log at `%LOCALAPPDATA%\app.fujicloud.desktop\logs\fujicloud.log`.
-A photo it can't read is skipped and noted there, with the reason, instead of
-stopping the app. Include that file when reporting a problem.
+Fujicloud keeps a log at `%LOCALAPPDATA%\app.fujicloud.desktop\logs\fujicloud.log`
+(*Settings → Help → Open log folder*). A photo it can't read is skipped and noted
+there, with the reason, instead of stopping the app. Include that file when reporting
+a problem. If thumbnails look wrong after an update, *Settings → Rebuild thumbnails*
+makes them all again.
 
 ## Why it's fast
 
@@ -180,8 +203,6 @@ cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
 
 ## Roadmap ideas
 
-- Read ratings back from `.xmp` sidecars during scans, so every laptop sees the same
-  stars.
 - Direct camera import over PTP/IP (no PC AutoSave needed).
 - Group bursts into stacks using smart search vectors.
 - Import a phone's location history (GPX / Google Takeout) for shots taken without
