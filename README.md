@@ -96,6 +96,23 @@ the repo's *Actions* tab, download **Fujicloud-Windows-installer**, and run the
 network takes a while for a big library; after that, everything comes from the local
 cache.
 
+### If the smart search model won't download
+
+Fujicloud fetches the model from huggingface.co the first time you turn on smart
+search, and resumes if the connection drops. If your network blocks Hugging Face
+(some antivirus web filters, routers and ISPs do), download the files in a browser
+instead, from a network that allows it, and put them in
+`%LOCALAPPDATA%\app.fujicloud.desktop\models\siglip-base-patch16-224\`:
+
+- [tokenizer.json](https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/tokenizer.json)
+- [text_model_quantized.onnx](https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/onnx/text_model_quantized.onnx)
+- [vision_model_fp16.onnx](https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/onnx/vision_model_fp16.onnx)
+  for the graphics card, and/or
+  [vision_model_quantized.onnx](https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/onnx/vision_model_quantized.onnx)
+  for the CPU
+
+Then switch smart search off and on in Settings. It uses the files it finds there.
+
 ## Why it's fast
 
 | Layer | Choice | Why |

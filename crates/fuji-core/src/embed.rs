@@ -243,6 +243,25 @@ fn agent(stall: Duration) -> ureq::Agent {
 /// A file's size, from a one-byte ranged request (a HEAD wouldn't survive
 /// the redirect to a signed CDN link).
 fn remote_len(agent: &ureq::Agent, url: &str) -> Result<u64, ureq::Error> {
+    // A dropped connection or a server hiccup is worth another go; a file
+    // that isn't there (404) isn't, so the caller can try the next variant.
+    const ATTEMPTS: u32 = 5;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match size_of(agent, url) {
+            Err(ureq::Error::StatusCode(code)) if code < 500 => {
+                return Err(ureq::Error::StatusCode(code));
+            }
+            Err(_) if attempt < ATTEMPTS => {
+                std::thread::sleep(Duration::from_millis(250 << attempt));
+            }
+            result => return result,
+        }
+    }
+}
+
+fn size_of(agent: &ureq::Agent, url: &str) -> Result<u64, ureq::Error> {
     let response = agent.get(url).header("Range", "bytes=0-0").call()?;
     let header = |name: &str| {
         response
@@ -896,6 +915,48 @@ mod tests {
         );
         // Nothing is left behind.
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// Asking for a file's size survives a dropped connection, but a missing
+    /// file is reported straight away.
+    #[test]
+    fn sizing_retries_dropped_connections() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            for (n, stream) in listener.incoming().take(4).enumerate() {
+                let mut stream = stream.unwrap();
+                let mut req = [0u8; 4096];
+                let got = stream.read(&mut req).unwrap();
+                let req = String::from_utf8_lossy(&req[..got]).into_owned();
+                paths.push(req.split_whitespace().nth(1).unwrap_or("").to_owned());
+                let reply = match n {
+                    // Hang up without answering, twice.
+                    0 | 1 => continue,
+                    2 => {
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\nContent-Range: bytes 0-0/123456\r\nConnection: close\r\n\r\nx"
+                    }
+                    _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                };
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+            paths
+        });
+        let agent = agent(STALL);
+        assert_eq!(
+            remote_len(&agent, &format!("{base}/model.onnx")).unwrap(),
+            123_456
+        );
+        assert!(matches!(
+            remote_len(&agent, &format!("{base}/missing.onnx")),
+            Err(ureq::Error::StatusCode(404))
+        ));
+        assert_eq!(
+            server.join().unwrap(),
+            ["/model.onnx", "/model.onnx", "/model.onnx", "/missing.onnx"]
+        );
     }
 
     /// A connection that goes quiet is dropped and resumed rather than

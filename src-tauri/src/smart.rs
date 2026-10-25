@@ -252,7 +252,11 @@ fn download(app: &AppHandle, state: &AppState, device: Device) -> Result<(), Str
                 smart.update(app, state, |s| (s.done, s.total) = (done, total));
             }
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            format!(
+                "{e}. Check that this PC can reach huggingface.co, then switch smart search off and on to try again."
+            )
+        })
 }
 
 fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
