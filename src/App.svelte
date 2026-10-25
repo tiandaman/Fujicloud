@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import AlbumPicker from './lib/components/AlbumPicker.svelte';
   import Compare from './lib/components/Compare.svelte';
   import Grid from './lib/components/Grid.svelte';
   import InfoPanel from './lib/components/InfoPanel.svelte';
@@ -31,7 +32,10 @@
     if (store.settingsOpen || store.compare || (e.target as HTMLElement).closest('input, textarea, select')) return;
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl) {
-      if (e.key === 'f') toolbar.focusSearch();
+      if (e.key === 'z' && !e.shiftKey) store.undo();
+      else if ((e.key === 'z' || e.key === 'Z') && e.shiftKey) store.redo();
+      else if (e.key === 'y') store.redo();
+      else if (e.key === 'f') toolbar.focusSearch();
       else if (e.key === 'e') store.edit();
       else if (e.key === ',') store.settingsOpen = true;
       else if (e.key === '=' || e.key === '+') store.size = Math.min(480, Math.round(store.size * 1.15));
@@ -48,6 +52,7 @@
     else if (key === 'x') store.flag(-1);
     else if (key === 'u') store.flag(0);
     else if (key === 'i') store.showInfo = !store.showInfo;
+    else if (e.key === '.') store.favorite();
     else if (key === 'c') store.openCompare(store.comparisonOf(store.viewerId != null ? [store.viewerId] : store.targets));
     else if (key === '/') toolbar.focusSearch();
     else return;
@@ -88,6 +93,9 @@
 {/if}
 {#if store.compare}
   <Compare />
+{/if}
+{#if store.albumPicker}
+  <AlbumPicker {...store.albumPicker} />
 {/if}
 {#if store.settingsOpen && store.settings}
   <Settings />

@@ -26,6 +26,7 @@
   const twin = $derived(photo?.pairId != null ? store.byId.get(photo.pairId) : undefined);
   const many = $derived(ids.length > 1 ? ids.map((id) => store.byId.get(id)).filter((p) => !!p) : []);
   const pair = $derived(store.comparisonOf(ids));
+  const inAlbums = $derived(photo ? store.albums.filter((a) => a.ids.includes(photo.id)) : []);
   const edits = $derived(photo ? (store.editsOf.get(photo.id) ?? (twin ? store.editsOf.get(twin.id) : undefined) ?? []) : []);
 
   let detail = $state<Detail | null>(null);
@@ -165,6 +166,9 @@
           <button class="icon-btn" class:reject={photo.flag === -1} title="Reject (X)" onclick={() => store.flag(photo.flag === -1 ? 0 : -1, [photo.id])}>
             <Icon name="x" size={16} />
           </button>
+          <button class="icon-btn" class:fav={photo.favorite} title="Favourite (.)" onclick={() => store.favorite([photo.id])}>
+            <Icon name="heart" size={16} fill={photo.favorite} />
+          </button>
         </div>
       </div>
       <div class="labels">
@@ -178,6 +182,19 @@
             onclick={() => store.label(name as Label, [photo.id])}
           ></button>
         {/each}
+      </div>
+      <div class="albums">
+        {#each inAlbums as a (a.id)}
+          <span class="album-chip">
+            <button class="truncate" title="Show this album" onclick={() => store.setCollection({ type: 'album', id: a.id })}>{a.name}</button>
+            <button class="remove" title="Remove from {a.name}" aria-label="Remove from {a.name}" onclick={() => store.removeFromAlbum(a.id, [photo.id])}>
+              <Icon name="x" size={11} stroke={2.2} />
+            </button>
+          </span>
+        {/each}
+        <button class="add-album" onclick={(e) => (store.albumPicker = { x: e.clientX - 200, y: e.clientY + 12, ids: [photo.id] })}>
+          <Icon name="plus" size={12} stroke={2.2} /> Album
+        </button>
       </div>
     </section>
 
@@ -234,6 +251,7 @@
           <button class="btn" onclick={() => store.openCompare(pair)}><Icon name="compare" size={15} /> Compare side by side</button>
         {/if}
         <button class="btn" onclick={() => store.flag(1, ids)}><Icon name="flag" size={15} /> Pick all</button>
+        <button class="btn" onclick={(e) => (store.albumPicker = { x: e.clientX - 120, y: e.clientY + 12, ids })}><Icon name="album" size={15} /> Add to album</button>
         <button class="btn subtle" onclick={() => (store.selection = new Set())}>Clear selection</button>
       </div>
     </section>
@@ -541,6 +559,57 @@
   .chip:hover {
     background: var(--hover);
     color: var(--text);
+  }
+  .fav {
+    color: #ff5a7a;
+  }
+  .albums {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 12px;
+  }
+  .album-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    height: 24px;
+    padding: 0 3px 0 9px;
+    border-radius: 12px;
+    background: var(--bg-input);
+    font-size: 12px;
+  }
+  .album-chip button.truncate {
+    min-width: 0;
+    color: var(--text);
+  }
+  .album-chip .remove {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    margin-left: 3px;
+    border-radius: 50%;
+    color: var(--text-3);
+  }
+  .album-chip .remove:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .add-album {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 9px;
+    border-radius: 12px;
+    color: var(--text-2);
+    font-size: 12px;
+    box-shadow: inset 0 0 0 1px var(--sep);
+  }
+  .add-album:hover {
+    color: var(--text);
+    background: var(--hover);
   }
   .multi {
     display: flex;

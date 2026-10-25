@@ -2,6 +2,7 @@ import { api } from './api';
 import { formatDay, formatMonth, plural } from './format';
 import { countryName, placeName, recipeSummary, recipeTitle } from './recipe';
 import type {
+  Album,
   Collection,
   GroupKey,
   Hit,
@@ -32,7 +33,21 @@ export interface GridHandle {
 }
 
 const PREFS_KEY = 'fujicloud.prefs.v1';
-const ALL_KINDS: Kind[] = ['jpeg', 'raf', 'heif', 'tiff', 'psd'];
+const ALL_KINDS: Kind[] = ['jpeg', 'raf', 'heif', 'tiff', 'psd', 'png', 'dng', 'video'];
+
+/** Kinds that stand in for a pair when stacked (the picture you look at). */
+const PRIMARY: Kind[] = ['jpeg', 'heif', 'png'];
+/** Kinds folded under a primary twin: RAWs, and the movie of a Live Photo. */
+const SECONDARY: Kind[] = ['raf', 'dng', 'video'];
+
+/** Rating, pick/reject, colour label and favourite: what Ctrl+Z can undo. */
+type Field = 'rating' | 'flag' | 'label' | 'favorite';
+interface Change {
+  field: Field;
+  ids: number[];
+  before: Map<number, Photo[Field]>;
+  after: Photo[Field];
+}
 
 const sortKeys: Record<SortKey, (p: Photo) => number | string | null> = {
   taken: (p) => p.takenAt,
@@ -61,6 +76,7 @@ class Store {
   photos = $state.raw<Photo[]>([]);
   sources = $state.raw<Source[]>([]);
   recipes = $state.raw<RecipeRow[]>([]);
+  albums = $state.raw<Album[]>([]);
   settings = $state.raw<Settings | null>(null);
   editor = $state<string | null>(null);
   effects = $state(false);
@@ -90,6 +106,8 @@ class Store {
   /** Tile hidden while the viewer animates out of / back into it. */
   hiddenId = $state<number | null>(null);
   settingsOpen = $state(false);
+  /** The "add to album" popover. */
+  albumPicker = $state.raw<{ x: number; y: number; ids: number[] } | null>(null);
   /** Before/after comparison, shown over everything else. */
   compare = $state.raw<{ before: number; after: number } | null>(null);
   compareMode = $state<'split' | 'slider'>('split');
@@ -110,6 +128,8 @@ class Store {
 
   grid: GridHandle | null = null;
   #toastId = 0;
+  #undo: Change[] = [];
+  #redo: Change[] = [];
 
   constructor() {
     const prefs = loadPrefs();
@@ -163,18 +183,29 @@ class Store {
   /** True while results are ordered by relevance rather than the sort menu. */
   ranked = $derived(this.collection.type === 'similar' || (!!this.smartHits && this.smartHits.query === this.query.trim()));
 
+  /** True for a RAW or Live Photo movie shown as part of its twin's tile. */
+  folded(p: Photo, kinds?: Set<Kind>): boolean {
+    if (!this.stack || p.pairId == null || !SECONDARY.includes(p.kind)) return false;
+    const twin = this.byId.get(p.pairId);
+    return !!twin && PRIMARY.includes(twin.kind) && (!kinds || kinds.has(twin.kind));
+  }
+
+  albumById = $derived(new Map(this.albums.map((a) => [a.id, a])));
+
   /** Photos in the current collection, before toolbar filters (for counts). */
   inCollection = $derived.by(() => {
     const c = this.collection;
     const recent = Date.now() / 1000 - 7 * 86400;
     const similar = this.similarHits?.scores;
-    const ids = c.type === 'ids' ? new Set(c.ids) : null;
+    const ids = c.type === 'ids' ? new Set(c.ids) : c.type === 'album' ? new Set(this.albumById.get(c.id)?.ids ?? []) : null;
     const test: (p: Photo) => boolean =
       c.type === 'all' || c.type === 'map' ? (p) => p.flag !== -1
       : c.type === 'picks' ? (p) => p.flag === 1
       : c.type === 'rated' ? (p) => p.rating > 0
       : c.type === 'rejected' ? (p) => p.flag === -1
       : c.type === 'recent' ? (p) => p.addedAt >= recent
+      : c.type === 'favorites' ? (p) => p.favorite
+      : c.type === 'album' ? (p) => ids!.has(p.id)
       : c.type === 'source' ? (p) => p.sourceId === c.id
       : c.type === 'film' ? (p) => p.filmSim === c.value
       : c.type === 'camera' ? (p) => p.camera === c.value
@@ -198,8 +229,8 @@ class Store {
     let list = this.inCollection.filter((p) => {
       if (!kinds.has(p.kind)) return false;
       if (p.rating < this.minRating) return false;
-      // A RAF whose JPEG twin is shown is folded into that tile.
-      if (this.stack && p.kind === 'raf' && p.pairId != null && byId.get(p.pairId)?.kind === 'jpeg' && kinds.has('jpeg')) return false;
+      // A RAW (or a Live Photo's movie) whose twin is shown is folded into that tile.
+      if (this.folded(p, kinds)) return false;
       if (q) {
         const recipe = p.recipeKey ? this.recipeByKey.get(p.recipeKey)?.name : null;
         const hay = `${p.name} ${p.camera ?? ''} ${p.lens ?? ''} ${p.filmSim ?? ''} ${recipe ?? ''} ${p.folder} ${placeName(p) ?? ''}`.toLowerCase();
@@ -305,7 +336,7 @@ class Store {
     const count = (key: (p: Photo) => string | null) => {
       const m = new Map<string, number>();
       for (const p of this.photos) {
-        if (p.flag === -1 || (this.stack && p.kind === 'raf' && p.pairId != null)) continue;
+        if (p.flag === -1 || this.folded(p)) continue;
         const k = key(p);
         if (k) m.set(k, (m.get(k) ?? 0) + 1);
       }
@@ -320,18 +351,19 @@ class Store {
   });
 
   counts = $derived.by(() => {
-    let picks = 0, rated = 0, rejected = 0, recent = 0, all = 0, places = 0;
+    let picks = 0, rated = 0, rejected = 0, recent = 0, all = 0, places = 0, favorites = 0;
     const since = Date.now() / 1000 - 7 * 86400;
     for (const p of this.photos) {
-      if (this.stack && p.kind === 'raf' && p.pairId != null) continue;
+      if (this.folded(p)) continue;
       if (p.flag === -1) rejected++;
       else all++;
       if (p.flag === 1) picks++;
       if (p.rating > 0) rated++;
       if (p.addedAt >= since) recent++;
       if (p.lat != null && p.flag !== -1) places++;
+      if (p.favorite) favorites++;
     }
-    return { all, picks, rated, rejected, recent, places };
+    return { all, picks, rated, rejected, recent, places, favorites };
   });
 
   collectionTitle = $derived.by(() => {
@@ -342,6 +374,9 @@ class Store {
       case 'rated': return 'Rated';
       case 'rejected': return 'Rejected';
       case 'recent': return 'Recently Added';
+      case 'favorites': return 'Favourites';
+      case 'album': return this.albumById.get(c.id)?.name ?? 'Album';
+      case 'duplicates': return 'Duplicates';
       case 'map': return 'Places';
       case 'source': return this.sources.find((s) => s.id === c.id)?.label ?? 'Folder';
       case 'recipe': {
@@ -402,10 +437,11 @@ class Store {
   }
 
   async refresh() {
-    const [photos, sources, recipes] = await Promise.all([api.listPhotos(), api.listSources(), api.listRecipes()]);
+    const [photos, sources, recipes, albums] = await Promise.all([api.listPhotos(), api.listSources(), api.listRecipes(), api.listAlbums()]);
     this.photos = photos;
     this.sources = sources;
     this.recipes = recipes;
+    this.albums = albums;
   }
 
   // ---- actions ----
@@ -428,41 +464,129 @@ class Store {
     return () => (this.photos = before);
   }
 
-  async rate(rating: number, ids = this.targets) {
+  /** Sets one field on photos (and their twins), with undo. */
+  async #set(field: Field, ids: number[], value: Photo[Field], message: string | null) {
     if (!ids.length) return;
-    const undo = this.#patch(ids, { rating });
+    const all = [...new Set(ids.flatMap((id) => [id, this.byId.get(id)?.pairId ?? id]))];
+    const before = new Map(all.map((id) => [id, this.byId.get(id)?.[field] ?? null] as [number, Photo[Field]]));
+    const revert = this.#patch(ids, { [field]: value });
     try {
-      await api.setRating(ids, rating);
-      this.toast(rating ? `${'★'.repeat(rating)}${ids.length > 1 ? ` · ${ids.length} photos` : ''}` : 'Rating cleared');
+      await this.#send(field, ids, value);
+      this.#undo = [...this.#undo.slice(-99), { field, ids: all, before, after: value }];
+      this.#redo = [];
+      if (message) this.toast(message);
     } catch (e) {
-      undo();
+      revert();
       this.toast(String(e), 'error');
     }
   }
 
-  async flag(flag: number, ids = this.targets) {
-    if (!ids.length) return;
-    const undo = this.#patch(ids, { flag });
-    try {
-      await api.setFlag(ids, flag);
-      this.toast(flag === 1 ? 'Marked as pick' : flag === -1 ? 'Rejected' : 'Flag cleared');
-    } catch (e) {
-      undo();
-      this.toast(String(e), 'error');
+  #send(field: Field, ids: number[], value: Photo[Field]) {
+    switch (field) {
+      case 'rating': return api.setRating(ids, value as number);
+      case 'flag': return api.setFlag(ids, value as number);
+      case 'label': return api.setLabel(ids, value as Label | null);
+      case 'favorite': return api.setFavorite(ids, value as boolean);
     }
   }
 
-  async label(label: Label | null, ids = this.targets) {
-    if (!ids.length) return;
+  async undo() {
+    const change = this.#undo.pop();
+    if (!change) return this.toast('Nothing to undo');
+    // Put each photo back how it was, in one call per earlier value.
+    const groups = new Map<Photo[Field], number[]>();
+    for (const [id, v] of change.before) groups.set(v, [...(groups.get(v) ?? []), id]);
+    try {
+      for (const [value, ids] of groups) {
+        this.#patch(ids, { [change.field]: value });
+        await this.#send(change.field, ids, value);
+      }
+      this.#redo.push(change);
+      this.toast(`Undid ${describe(change)}`);
+    } catch (e) {
+      this.toast(String(e), 'error');
+      await this.refresh();
+    }
+  }
+
+  async redo() {
+    const change = this.#redo.pop();
+    if (!change) return this.toast('Nothing to redo');
+    try {
+      this.#patch(change.ids, { [change.field]: change.after });
+      await this.#send(change.field, change.ids, change.after);
+      this.#undo.push(change);
+      this.toast(`Redid ${describe(change)}`);
+    } catch (e) {
+      this.toast(String(e), 'error');
+      await this.refresh();
+    }
+  }
+
+  rate(rating: number, ids = this.targets) {
+    return this.#set('rating', ids, rating, rating ? `${'★'.repeat(rating)}${ids.length > 1 ? ` · ${ids.length} photos` : ''}` : 'Rating cleared');
+  }
+
+  flag(flag: number, ids = this.targets) {
+    return this.#set('flag', ids, flag, flag === 1 ? 'Marked as pick' : flag === -1 ? 'Rejected' : 'Flag cleared');
+  }
+
+  label(label: Label | null, ids = this.targets) {
     const current = ids.length === 1 ? this.byId.get(ids[0])?.label : undefined;
-    const next = current === label ? null : label;
-    const undo = this.#patch(ids, { label: next });
+    return this.#set('label', ids, current === label ? null : label, null);
+  }
+
+  /** Toggles: favourites them unless they all already are. */
+  favorite(ids = this.targets) {
+    if (!ids.length) return;
+    const on = !ids.every((id) => this.byId.get(id)?.favorite);
+    return this.#set('favorite', ids, on, on ? 'Added to Favourites' : 'Removed from Favourites');
+  }
+
+  // ---- albums ----
+
+  async createAlbum(name: string, ids: number[] = []) {
     try {
-      await api.setLabel(ids, next);
+      const id = await api.createAlbum(name, ids);
+      this.albums = await api.listAlbums();
+      this.toast(ids.length ? `Added ${plural(ids.length, 'photo')} to “${name.trim()}”` : `Created “${name.trim()}”`);
+      return id;
     } catch (e) {
-      undo();
+      this.toast(String(e), 'error');
+      return null;
+    }
+  }
+
+  async addToAlbum(id: number, ids = this.targets) {
+    if (!ids.length) return;
+    await api.addToAlbum(id, ids);
+    this.albums = await api.listAlbums();
+    this.toast(`Added ${plural(ids.length, 'photo')} to “${this.albumById.get(id)?.name ?? 'album'}”`);
+  }
+
+  async removeFromAlbum(id: number, ids = this.targets) {
+    if (!ids.length) return;
+    await api.removeFromAlbum(id, ids);
+    this.albums = await api.listAlbums();
+    this.toast(`Removed ${plural(ids.length, 'photo')} from “${this.albumById.get(id)?.name ?? 'album'}”`);
+  }
+
+  async renameAlbum(id: number, name: string) {
+    if (!name.trim()) return;
+    try {
+      await api.renameAlbum(id, name.trim());
+      this.albums = await api.listAlbums();
+    } catch (e) {
       this.toast(String(e), 'error');
     }
+  }
+
+  async deleteAlbum(id: number) {
+    const name = this.albumById.get(id)?.name;
+    await api.deleteAlbum(id);
+    this.albums = await api.listAlbums();
+    if (this.collection.type === 'album' && this.collection.id === id) this.setCollection({ type: 'all' });
+    this.toast(`Deleted the album “${name}”. The photos are still in your library.`);
   }
 
   async edit(ids = this.targets) {
@@ -594,6 +718,16 @@ class Store {
     this.focusId = id;
     this.viewerList = list;
     this.viewerId = id;
+  }
+}
+
+function describe(c: Change): string {
+  const n = c.ids.length > 2 ? ` on ${plural(c.ids.length, 'photo')}` : '';
+  switch (c.field) {
+    case 'rating': return `rating${n}`;
+    case 'flag': return `pick/reject${n}`;
+    case 'label': return `colour label${n}`;
+    case 'favorite': return `favourite${n}`;
   }
 }
 

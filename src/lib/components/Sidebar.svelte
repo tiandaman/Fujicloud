@@ -16,6 +16,7 @@
   const library: { c: Collection; label: string; icon: IconName; count: () => number }[] = [
     { c: { type: 'all' }, label: 'All Photos', icon: 'photos', count: () => store.counts.all },
     { c: { type: 'recent' }, label: 'Recently Added', icon: 'clock', count: () => store.counts.recent },
+    { c: { type: 'favorites' }, label: 'Favourites', icon: 'heart', count: () => store.counts.favorites },
     { c: { type: 'map' }, label: 'Places', icon: 'globe', count: () => store.counts.places },
     { c: { type: 'picks' }, label: 'Picks', icon: 'flag', count: () => store.counts.picks },
     { c: { type: 'rated' }, label: 'Rated', icon: 'star', count: () => store.counts.rated },
@@ -50,6 +51,45 @@
   }
 
   const syncing = $derived(!!store.sync?.copying);
+
+  // Typing a new album's name, or renaming one (by id).
+  let naming = $state<number | 'new' | null>(null);
+  let draft = $state('');
+
+  function startNaming(target: number | 'new', current = '') {
+    naming = target;
+    draft = current;
+  }
+
+  async function finishNaming(save: boolean) {
+    const target = naming;
+    naming = null;
+    if (!save || !draft.trim() || target == null) return;
+    if (target === 'new') {
+      const id = await store.createAlbum(draft);
+      if (id != null) store.setCollection({ type: 'album', id });
+    } else {
+      await store.renameAlbum(target, draft);
+    }
+  }
+
+  function focusSelect(el: HTMLInputElement) {
+    el.focus();
+    el.select();
+  }
+
+  function albumMenu(e: MouseEvent, id: number, name: string) {
+    e.preventDefault();
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'Rename', icon: 'edit', action: () => startNaming(id, name) },
+        { separator: true },
+        { label: 'Delete album', icon: 'trash', action: () => store.deleteAlbum(id) },
+      ],
+    };
+  }
 </script>
 
 {#snippet item(c: Collection, label: string, count: number, lead: Snippet)}
@@ -58,6 +98,24 @@
     <span class="label truncate">{label}</span>
     <span class="count tabular">{formatCount(count)}</span>
   </button>
+{/snippet}
+
+{#snippet nameInput()}
+  <div class="item naming">
+    <span class="ico"><Icon name="album" size={16} /></span>
+    <input
+      class="name"
+      placeholder="Album name"
+      bind:value={draft}
+      use:focusSelect
+      onkeydown={(e) => {
+        if (e.key === 'Enter') finishNaming(true);
+        if (e.key === 'Escape') finishNaming(false);
+        e.stopPropagation();
+      }}
+      onblur={() => finishNaming(true)}
+    />
+  </div>
 {/snippet}
 
 {#snippet group(key: 'recipes' | 'films' | 'countries' | 'cameras' | 'lenses', title: string)}
@@ -96,6 +154,29 @@
         <span class="label">Add a folder…</span>
       </button>
     {/if}
+    <div class="heading static">
+      Albums
+      <button class="add" title="New album" onclick={() => startNaming('new')}><Icon name="plus" size={14} stroke={2} /></button>
+    </div>
+    {#each store.albums as a (a.id)}
+      {#if naming === a.id}
+        {@render nameInput()}
+      {:else}
+        <div oncontextmenu={(e) => albumMenu(e, a.id, a.name)} ondblclick={() => startNaming(a.id, a.name)} role="presentation">
+          {#snippet lead()}<span class="ico"><Icon name="album" size={16} /></span>{/snippet}
+          {@render item({ type: 'album', id: a.id }, a.name, a.ids.filter((id) => { const p = store.byId.get(id); return !!p && !store.folded(p); }).length, lead)}
+        </div>
+      {/if}
+    {/each}
+    {#if naming === 'new'}
+      {@render nameInput()}
+    {:else if !store.albums.length}
+      <button class="item ghost" onclick={() => startNaming('new')}>
+        <span class="ico"><Icon name="plus" size={16} /></span>
+        <span class="label">New album…</span>
+      </button>
+    {/if}
+
     {#if store.recipes.length}
       {@render group('recipes', 'Recipes')}
       {#if open.recipes}
@@ -294,6 +375,21 @@
   }
   .item:hover {
     background: var(--hover);
+  }
+  .item.naming:hover {
+    background: none;
+  }
+  .name {
+    flex: 1;
+    min-width: 0;
+    height: 24px;
+    padding: 0 7px;
+    border-radius: 6px;
+    background: var(--bg-input);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    color: var(--text);
+    font: inherit;
+    outline: none;
   }
   .item.active {
     background: var(--active);

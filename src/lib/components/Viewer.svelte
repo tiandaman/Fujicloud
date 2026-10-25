@@ -358,6 +358,12 @@
         <button class="icon-btn" class:reject={photo.flag === -1} title="Reject (X)" onclick={() => store.flag(photo.flag === -1 ? 0 : -1, [photo.id])}>
           <Icon name="x" size={17} />
         </button>
+        <button class="icon-btn" class:fav={photo.favorite} title="Favourite (.)" onclick={() => store.favorite([photo.id])}>
+          <Icon name="heart" size={17} fill={photo.favorite} />
+        </button>
+        <button class="icon-btn" title="Add to album" onclick={(e) => (store.albumPicker = { x: e.clientX - 120, y: e.clientY + 16, ids: [photo.id] })}>
+          <Icon name="album" size={17} />
+        </button>
         <span class="sep"></span>
         <button class="icon-btn" title="Zoom (Z)" onclick={() => toggleZoom()}><Icon name="search" size={17} /></button>
         <button class="icon-btn" class:on={store.showInfo} title="Info (I)" onclick={() => (store.showInfo = !store.showInfo)}>
@@ -531,6 +537,9 @@
     height: 18px;
     margin: 0 6px;
     background: var(--sep);
+  }
+  .fav {
+    color: #ff5a7a !important;
   }
   .pick {
     color: var(--pick) !important;

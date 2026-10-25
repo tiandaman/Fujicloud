@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::fuji::Recipe;
 use crate::geo::Place;
+use crate::xmp::Tags;
 use crate::{Error, Kind, PhotoMeta};
 
 const TABLES: &str = r#"
@@ -55,6 +56,17 @@ CREATE TABLE IF NOT EXISTS embeddings (
     model    TEXT NOT NULL,
     vec      BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS albums (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE TABLE IF NOT EXISTS album_photos (
+    album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+    photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+    added_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (album_id, photo_id)
+);
 "#;
 
 /// Columns added after the first release. Libraries created before them get
@@ -70,6 +82,18 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("region", "TEXT"),
     ("country", "TEXT"),
     ("edit_of", "INTEGER"),
+];
+
+/// Columns added later that hold user data or only matter for new kinds of
+/// file, so existing rows don't need their metadata read again.
+const ADDED_USER_COLUMNS: &[(&str, &str)] = &[
+    ("favorite", "INTEGER NOT NULL DEFAULT 0"),
+    // The sidecar's modified time when we last read or wrote it.
+    ("xmp_mtime", "INTEGER"),
+    // Changed here but not yet saved to the sidecar (e.g. the share was off).
+    ("xmp_dirty", "INTEGER NOT NULL DEFAULT 0"),
+    // Videos: length in seconds.
+    ("duration", "REAL"),
 ];
 
 const INDEXES: &str = r#"
@@ -128,6 +152,9 @@ pub struct PhotoRow {
     pub country: Option<String>,
     /// For an edit (a Photoshop save or export), the camera original.
     pub edit_of: Option<i64>,
+    pub favorite: bool,
+    /// Videos: length in seconds.
+    pub duration: Option<f64>,
 }
 
 /// Everything about one photo, for the info panel.
@@ -151,6 +178,36 @@ pub struct RecipeRow {
     pub name: Option<String>,
     pub recipe: Recipe,
     pub count: i64,
+}
+
+/// An album and the photos in it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlbumRow {
+    pub id: i64,
+    pub name: String,
+    pub created_at: i64,
+    pub ids: Vec<i64>,
+}
+
+/// A photo's sidecar bookkeeping, for syncing between laptops.
+#[derive(Debug, Clone)]
+pub struct SidecarRow {
+    pub id: i64,
+    pub path: PathBuf,
+    pub kind: Kind,
+    pub sidecar: PathBuf,
+    pub xmp_mtime: Option<i64>,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileInfo {
+    pub path: PathBuf,
+    pub kind: Kind,
+    pub size: u64,
+    pub mtime: i64,
+    pub source_id: i64,
 }
 
 /// A file found on disk, ready to be indexed.
@@ -496,6 +553,266 @@ impl Library {
         Ok(touched)
     }
 
+    pub fn set_favorite(&self, ids: &[i64], favorite: bool) -> Result<Vec<Touched>, Error> {
+        self.update_with_pairs(
+            ids,
+            "favorite = ?2",
+            rusqlite::types::Value::Integer(favorite as i64),
+        )
+    }
+
+    /// `ids` plus the other halves of any RAW+JPEG (or Live Photo) pairs.
+    pub fn with_pairs(&self, ids: &[i64]) -> Result<Vec<i64>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id FROM photos WHERE pair_key = (SELECT pair_key FROM photos WHERE id = ?1)",
+        )?;
+        let mut out = Vec::new();
+        for &id in ids {
+            for row in stmt.query_map([id], |r| r.get::<_, i64>(0))? {
+                let row = row?;
+                if !out.contains(&row) {
+                    out.push(row);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    // ---- albums ------------------------------------------------------------
+
+    pub fn albums(&self) -> Result<Vec<AlbumRow>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT a.id, a.name, a.created_at,
+                    (SELECT group_concat(ap.photo_id) FROM album_photos ap WHERE ap.album_id = a.id)
+             FROM albums a ORDER BY a.name COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let ids: Option<String> = r.get(3)?;
+            Ok(AlbumRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                created_at: r.get(2)?,
+                ids: ids
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|v| v.parse().ok())
+                    .collect(),
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Creates an album, or returns the one that already has this name.
+    pub fn create_album(&self, name: &str) -> Result<i64, Error> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT OR IGNORE INTO albums (name) VALUES (?1)",
+            [name.trim()],
+        )?;
+        Ok(conn.query_row(
+            "SELECT id FROM albums WHERE name = ?1",
+            [name.trim()],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Returns the album's photos, whose sidecars need the new name.
+    pub fn rename_album(&self, id: i64, name: &str) -> Result<Vec<i64>, Error> {
+        self.conn.lock().execute(
+            "UPDATE albums SET name = ?2 WHERE id = ?1",
+            params![id, name.trim()],
+        )?;
+        self.album_members(id)
+    }
+
+    /// Returns the photos that were in it, whose sidecars need updating.
+    pub fn delete_album(&self, id: i64) -> Result<Vec<i64>, Error> {
+        let members = self.album_members(id)?;
+        self.conn
+            .lock()
+            .execute("DELETE FROM albums WHERE id = ?1", [id])?;
+        Ok(members)
+    }
+
+    /// Adds photos (with their pair halves); returns the ones affected.
+    pub fn add_to_album(&self, album: i64, ids: &[i64]) -> Result<Vec<i64>, Error> {
+        let ids = self.with_pairs(ids)?;
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO album_photos (album_id, photo_id) VALUES (?1, ?2)",
+            )?;
+            for id in &ids {
+                stmt.execute(params![album, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(ids)
+    }
+
+    pub fn remove_from_album(&self, album: i64, ids: &[i64]) -> Result<Vec<i64>, Error> {
+        let ids = self.with_pairs(ids)?;
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx
+                .prepare_cached("DELETE FROM album_photos WHERE album_id = ?1 AND photo_id = ?2")?;
+            for id in &ids {
+                stmt.execute(params![album, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(ids)
+    }
+
+    fn album_members(&self, album: i64) -> Result<Vec<i64>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare_cached("SELECT photo_id FROM album_photos WHERE album_id = ?1")?;
+        let rows = stmt.query_map([album], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    // ---- sidecar sync --------------------------------------------------------
+
+    /// What a photo's sidecar should say.
+    pub fn tags(&self, id: i64) -> Result<Tags, Error> {
+        let conn = self.conn.lock();
+        let mut tags = conn
+            .query_row(
+                "SELECT rating, label, flag, favorite FROM photos WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(Tags {
+                        rating: r.get(0)?,
+                        label: r.get(1)?,
+                        flag: r.get(2)?,
+                        favorite: r.get::<_, i64>(3)? != 0,
+                        albums: Vec::new(),
+                    })
+                },
+            )
+            .optional()?
+            .ok_or(Error::NotFound(id))?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT a.name FROM albums a JOIN album_photos ap ON ap.album_id = a.id
+             WHERE ap.photo_id = ?1 ORDER BY a.name COLLATE NOCASE",
+        )?;
+        tags.albums = stmt
+            .query_map([id], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(tags)
+    }
+
+    /// Every photo in a source with where its sidecar lives, when we last
+    /// saw it change, and whether a change made here is still unsaved.
+    pub fn sidecars(&self, source_id: i64) -> Result<Vec<SidecarRow>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, path, kind, xmp_mtime, xmp_dirty FROM photos WHERE source_id = ?1",
+        )?;
+        let rows = stmt.query_map([source_id], |r| {
+            let path = PathBuf::from(r.get::<_, String>(1)?);
+            let kind = Kind::parse(&r.get::<_, String>(2)?).unwrap_or(Kind::Jpeg);
+            Ok(SidecarRow {
+                id: r.get(0)?,
+                sidecar: crate::xmp::sidecar_path(&path, kind),
+                path,
+                kind,
+                xmp_mtime: r.get(3)?,
+                dirty: r.get::<_, i64>(4)? != 0,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Applies what other laptops saved in sidecars. Photos with unsaved
+    /// changes made here keep them; those get written out instead.
+    pub fn apply_sidecars(&self, items: &[(i64, Tags, i64)]) -> Result<usize, Error> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let mut applied = 0;
+        {
+            let mut update = tx.prepare_cached(
+                "UPDATE photos SET rating = ?2, label = ?3, flag = ?4, favorite = ?5, xmp_mtime = ?6
+                 WHERE id = ?1 AND xmp_dirty = 0",
+            )?;
+            let mut clear = tx.prepare_cached("DELETE FROM album_photos WHERE photo_id = ?1")?;
+            let mut album = tx.prepare_cached("INSERT OR IGNORE INTO albums (name) VALUES (?1)")?;
+            let mut join = tx.prepare_cached(
+                "INSERT OR IGNORE INTO album_photos (album_id, photo_id)
+                 SELECT id, ?2 FROM albums WHERE name = ?1",
+            )?;
+            for (id, tags, mtime) in items {
+                let changed = update.execute(params![
+                    id,
+                    tags.rating.clamp(0, 5),
+                    tags.label,
+                    tags.flag.clamp(-1, 1),
+                    tags.favorite as i64,
+                    mtime
+                ])?;
+                if changed == 0 {
+                    continue;
+                }
+                applied += 1;
+                clear.execute([id])?;
+                for name in &tags.albums {
+                    album.execute([name.trim()])?;
+                    join.execute(params![name.trim(), id])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(applied)
+    }
+
+    /// Records a sidecar write: `Some(mtime)` saved, `None` still pending.
+    pub fn sidecar_saved(&self, ids: &[i64], mtime: Option<i64>) -> Result<(), Error> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE photos SET xmp_dirty = ?2, xmp_mtime = coalesce(?3, xmp_mtime) WHERE id = ?1",
+            )?;
+            for id in ids {
+                stmt.execute(params![id, mtime.is_none() as i64, mtime])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Photos changed here whose sidecars couldn't be saved yet.
+    pub fn unsaved_sidecars(&self) -> Result<Vec<i64>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached("SELECT id FROM photos WHERE xmp_dirty = 1")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Where a photo's file is and which source it belongs to.
+    pub fn file_info(&self, id: i64) -> Result<FileInfo, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT path, kind, size, mtime, source_id FROM photos WHERE id = ?1",
+        )?;
+        stmt.query_row([id], |r| {
+            Ok(FileInfo {
+                path: PathBuf::from(r.get::<_, String>(0)?),
+                kind: Kind::parse(&r.get::<_, String>(1)?).unwrap_or(Kind::Jpeg),
+                size: r.get::<_, i64>(2)? as u64,
+                mtime: r.get(3)?,
+                source_id: r.get(4)?,
+            })
+        })
+        .optional()?
+        .ok_or(Error::NotFound(id))
+    }
+
     // ---- recipes -----------------------------------------------------------
 
     /// Every recipe in the library, most used first. RAW+JPEG pairs count once.
@@ -783,13 +1100,14 @@ impl Library {
     }
 }
 
-const ROW_COLUMNS: usize = 30;
+const ROW_COLUMNS: usize = 32;
 const ROW_SELECT: &str =
     "SELECT p.id, p.source_id, p.name, p.folder, p.kind, p.size, p.mtime, p.taken_at,
     p.width, p.height, p.camera, p.lens, p.focal_length, p.aperture, p.shutter, p.iso, p.film_sim,
     p.rating, p.flag, p.label, p.added_at,
     (SELECT q.id FROM photos q WHERE q.pair_key = p.pair_key AND q.id <> p.id LIMIT 1),
-    p.recipe_key, p.lat, p.lon, p.gps_estimated, p.town, p.region, p.country, p.edit_of";
+    p.recipe_key, p.lat, p.lon, p.gps_estimated, p.town, p.region, p.country, p.edit_of,
+    p.favorite, p.duration";
 
 fn row_from(r: &rusqlite::Row) -> rusqlite::Result<PhotoRow> {
     Ok(PhotoRow {
@@ -823,6 +1141,8 @@ fn row_from(r: &rusqlite::Row) -> rusqlite::Result<PhotoRow> {
         region: r.get(27)?,
         country: r.get(28)?,
         edit_of: r.get(29)?,
+        favorite: r.get::<_, i64>(30)? != 0,
+        duration: r.get(31)?,
     })
 }
 
@@ -841,6 +1161,11 @@ fn migrate(conn: &Connection) -> Result<(), Error> {
     if added {
         // Make the next scan re-read every file's metadata to fill them in.
         conn.execute_batch("UPDATE photos SET mtime = -1")?;
+    }
+    for (name, decl) in ADDED_USER_COLUMNS {
+        if !existing.iter().any(|c| c == name) {
+            conn.execute_batch(&format!("ALTER TABLE photos ADD COLUMN {name} {decl}"))?;
+        }
     }
     Ok(())
 }

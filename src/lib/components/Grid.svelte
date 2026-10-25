@@ -172,6 +172,19 @@
         { label: 'Show on map', icon: 'globe', action: () => store.showOnMap(p), hidden: many || p.lat == null },
         { separator: true },
         { stars: true, value: many ? 0 : p.rating, onrate: (r: number) => store.rate(r, ids) },
+        {
+          label: ids.every((id) => store.byId.get(id)?.favorite) ? 'Remove from Favourites' : 'Favourite',
+          icon: 'heart',
+          hint: '.',
+          action: () => store.favorite(ids),
+        },
+        { label: 'Add to album…', icon: 'album', action: () => (store.albumPicker = { x: e.clientX, y: e.clientY, ids }) },
+        {
+          label: `Remove from “${store.collection.type === 'album' ? store.albumById.get(store.collection.id)?.name : ''}”`,
+          icon: 'x',
+          action: () => store.collection.type === 'album' && store.removeFromAlbum(store.collection.id, ids),
+          hidden: store.collection.type !== 'album',
+        },
         { label: p.flag === 1 && !many ? 'Unpick' : 'Pick', icon: 'flag', hint: 'P', action: () => store.flag(p.flag === 1 && !many ? 0 : 1, ids) },
         { label: p.flag === -1 && !many ? 'Unreject' : 'Reject', icon: 'x', hint: 'X', action: () => store.flag(p.flag === -1 && !many ? 0 : -1, ids) },
         { labels: true, value: many ? null : p.label, onlabel: (l) => store.label(l, ids) },
@@ -302,6 +315,9 @@
               </span>
             </div>
             <div class="bottom">
+              {#if p.favorite}
+                <span class="fav"><Icon name="heart" size={13} fill stroke={1.6} /></span>
+              {/if}
               {#if p.rating}
                 <span class="stars">{'★'.repeat(p.rating)}</span>
               {/if}
@@ -565,7 +581,12 @@
     color: var(--pick);
     filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
   }
+  .fav {
+    color: #fff;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+  }
   .stars {
+    margin-right: auto;
     color: var(--star);
     font-size: 11px;
     letter-spacing: 1px;

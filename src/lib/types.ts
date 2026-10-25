@@ -1,4 +1,4 @@
-export type Kind = 'jpeg' | 'raf' | 'heif' | 'tiff' | 'psd';
+export type Kind = 'jpeg' | 'raf' | 'heif' | 'tiff' | 'psd' | 'png' | 'dng' | 'video';
 
 /** One indexed file. Mirrors `fuji_core::db::PhotoRow`. */
 export interface Photo {
@@ -38,6 +38,16 @@ export interface Photo {
   country: string | null;
   /** For an edit (Photoshop save or export), the camera original. */
   editOf: number | null;
+  favorite: boolean;
+  /** Videos: length in seconds. */
+  duration: number | null;
+}
+
+export interface Album {
+  id: number;
+  name: string;
+  createdAt: number;
+  ids: number[];
 }
 
 /** The camera's film recipe. Mirrors `fuji_core::fuji::Recipe`. */
@@ -155,6 +165,9 @@ export type Collection =
   | { type: 'rated' }
   | { type: 'rejected' }
   | { type: 'recent' }
+  | { type: 'favorites' }
+  | { type: 'album'; id: number }
+  | { type: 'duplicates' }
   | { type: 'source'; id: number }
   | { type: 'film'; value: string }
   | { type: 'camera'; value: string }

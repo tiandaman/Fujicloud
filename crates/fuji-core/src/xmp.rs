@@ -1,22 +1,54 @@
 //! XMP sidecars, so ratings and colour labels show up in Lightroom, Bridge
-//! and Camera Raw. Existing sidecars (which may hold Lightroom develop
-//! settings) are edited in place: only `xmp:Rating` and `xmp:Label` change.
+//! and Camera Raw, and everything Fujicloud records about a photo (picks,
+//! rejects, favourites, albums) travels with it to other laptops. Existing
+//! sidecars (which may hold Lightroom develop settings) are edited in place:
+//! only the properties below change.
 
 use std::path::{Path, PathBuf};
 
-const XMP_NS: &str = "http://ns.adobe.com/xap/1.0/";
+use crate::Kind;
 
-/// Adobe's convention: `DSCF1234.RAF` → `DSCF1234.xmp`.
-pub fn sidecar_path(raw: &Path) -> PathBuf {
-    raw.with_extension("xmp")
+const XMP_NS: &str = "http://ns.adobe.com/xap/1.0/";
+const OUR_NS: &str = "https://fujicloud.app/ns/1.0/";
+
+/// What a sidecar records about a photo.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tags {
+    pub rating: i32,
+    pub label: Option<String>,
+    /// `1` pick, `-1` reject.
+    pub flag: i32,
+    pub favorite: bool,
+    pub albums: Vec<String>,
 }
 
-pub fn write_sidecar(raw: &Path, rating: i32, label: Option<&str>) -> std::io::Result<()> {
-    let path = sidecar_path(raw);
-    let rating = rating.to_string();
+impl Tags {
+    /// Nothing worth creating a sidecar for.
+    pub fn is_empty(&self) -> bool {
+        *self == Tags::default()
+    }
+}
+
+/// Adobe's convention for camera files: `DSCF1234.RAF` → `DSCF1234.xmp`,
+/// shared by a RAW+JPEG pair. Edits get their own (`DSCF1234.psd.xmp`) so
+/// they don't share one with the original they were made from.
+pub fn sidecar_path(file: &Path, kind: Kind) -> PathBuf {
+    if kind.is_edit_format() {
+        let mut name = file.as_os_str().to_owned();
+        name.push(".xmp");
+        PathBuf::from(name)
+    } else {
+        file.with_extension("xmp")
+    }
+}
+
+/// Saves `tags` to the photo's sidecar, keeping everything else in it. No
+/// sidecar is created for a photo with nothing to record.
+pub fn write(file: &Path, kind: Kind, tags: &Tags) -> std::io::Result<()> {
+    let path = sidecar_path(file, kind);
     let xml = match std::fs::read_to_string(&path) {
         Ok(existing) => {
-            let Some(xml) = update(&existing, &rating, label) else {
+            let Some(xml) = update(&existing, tags) else {
                 log::warn!("leaving unrecognised sidecar alone: {}", path.display());
                 return Ok(());
             };
@@ -25,7 +57,12 @@ pub fn write_sidecar(raw: &Path, rating: i32, label: Option<&str>) -> std::io::R
             }
             xml
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => fresh(&rating, label),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if tags.is_empty() {
+                return Ok(());
+            }
+            update(FRESH, tags).expect("the template has a description")
+        }
         Err(e) => return Err(e),
     };
     let tmp = path.with_extension("xmp.tmp");
@@ -33,34 +70,94 @@ pub fn write_sidecar(raw: &Path, rating: i32, label: Option<&str>) -> std::io::R
     std::fs::rename(&tmp, &path)
 }
 
-fn fresh(rating: &str, label: Option<&str>) -> String {
-    let label = label
-        .map(|l| format!("\n   xmp:Label=\"{}\"", escape(l)))
-        .unwrap_or_default();
-    format!(
-        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Fujicloud">
- <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <rdf:Description rdf:about=""
-    xmlns:xmp="{XMP_NS}"
-   xmp:Rating="{rating}"{label}/>
- </rdf:RDF>
-</x:xmpmeta>
-"#
-    )
+/// Reads what a sidecar records. Lightroom's "rejected" (`xmp:Rating="-1"`)
+/// counts as a reject.
+pub fn read(path: &Path) -> std::io::Result<Tags> {
+    Ok(parse(&std::fs::read_to_string(path)?))
 }
 
+pub fn parse(xml: &str) -> Tags {
+    let rating: i32 = get_property(xml, "xmp:Rating")
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .map_or(0, |r| r.round() as i32);
+    let flag = get_property(xml, "fujicloud:Flag")
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .unwrap_or(if rating < 0 { -1 } else { 0 })
+        .clamp(-1, 1);
+    Tags {
+        rating: rating.clamp(0, 5),
+        label: get_property(xml, "xmp:Label")
+            .map(unescape)
+            .filter(|l| !l.is_empty()),
+        flag,
+        favorite: get_property(xml, "fujicloud:Favorite").is_some_and(|v| v.trim() == "1"),
+        albums: get_property(xml, "fujicloud:Albums")
+            .map(|v| {
+                v.split(';')
+                    .map(|a| unescape(&a.replace("%3B", ";").replace("%25", "%")))
+                    .filter(|a| !a.trim().is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+const FRESH: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Fujicloud">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""/>
+ </rdf:RDF>
+</x:xmpmeta>
+"#;
+
 /// Returns `None` if the document has no `rdf:Description` to attach to.
-pub fn update(xml: &str, rating: &str, label: Option<&str>) -> Option<String> {
+pub fn update(xml: &str, tags: &Tags) -> Option<String> {
     let mut xml = xml.to_owned();
     if !xml.contains("<rdf:Description") {
         return None;
     }
-    set_property(&mut xml, "xmp:Rating", Some(rating));
-    set_property(&mut xml, "xmp:Label", label.map(escape).as_deref());
-    if xml.contains("xmp:") && !xml.contains(&format!("xmlns:xmp=\"{XMP_NS}\"")) {
-        insert_attr(&mut xml, &format!("xmlns:xmp=\"{XMP_NS}\""));
+    let albums = tags
+        .albums
+        .iter()
+        .map(|a| escape(&a.replace('%', "%25").replace(';', "%3B")))
+        .collect::<Vec<_>>()
+        .join(";");
+    set_property(&mut xml, "xmp:Rating", Some(&tags.rating.to_string()));
+    set_property(
+        &mut xml,
+        "xmp:Label",
+        tags.label.as_deref().map(escape).as_deref(),
+    );
+    set_property(
+        &mut xml,
+        "fujicloud:Flag",
+        (tags.flag != 0).then(|| tags.flag.to_string()).as_deref(),
+    );
+    set_property(&mut xml, "fujicloud:Favorite", tags.favorite.then_some("1"));
+    set_property(
+        &mut xml,
+        "fujicloud:Albums",
+        (!albums.is_empty()).then_some(albums.as_str()),
+    );
+    for (prefix, ns) in [("xmp", XMP_NS), ("fujicloud", OUR_NS)] {
+        let used = xml.contains(&format!("{prefix}:"));
+        if used && !xml.contains(&format!("xmlns:{prefix}=\"{ns}\"")) {
+            insert_attr(&mut xml, &format!("xmlns:{prefix}=\"{ns}\""));
+        }
     }
     Some(xml)
+}
+
+/// A simple property's value, written as an attribute or as an element.
+fn get_property<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let attr = format!("{name}=\"");
+    if let Some(start) = find_attr(xml, &attr) {
+        let from = start + attr.len();
+        return xml[from..].find('"').map(|len| &xml[from..from + len]);
+    }
+    let (open, close) = (format!("<{name}>"), format!("</{name}>"));
+    let s = xml.find(&open)? + open.len();
+    let e = xml[s..].find(&close)? + s;
+    Some(&xml[s..e])
 }
 
 /// Sets (or with `None`, removes) a simple property written either as an
@@ -121,6 +218,14 @@ fn escape(s: &str) -> String {
         .replace('<', "&lt;")
 }
 
+fn unescape(s: &str) -> String {
+    s.replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,15 +240,23 @@ mod tests {
  </rdf:RDF>
 </x:xmpmeta>"#;
 
+    fn tags(rating: i32, label: Option<&str>) -> Tags {
+        Tags {
+            rating,
+            label: label.map(str::to_owned),
+            ..Tags::default()
+        }
+    }
+
     #[test]
     fn preserves_develop_settings() {
-        let out = update(LIGHTROOM, "4", Some("Red")).unwrap();
+        let out = update(LIGHTROOM, &tags(4, Some("Red"))).unwrap();
         assert!(out.contains(r#"crs:Exposure2012="+0.35""#));
         assert!(out.contains(r#"xmp:Rating="4""#));
         assert!(out.contains(r#"xmp:Label="Red""#));
         assert!(out.contains(r#"xmlns:xmp="http://ns.adobe.com/xap/1.0/""#));
-
-        let again = update(&out, "2", None).unwrap();
+        assert!(!out.contains("fujicloud"), "nothing of ours to record");
+        let again = update(&out, &tags(2, None)).unwrap();
         assert!(again.contains(r#"xmp:Rating="2""#));
         assert!(!again.contains("xmp:Label"));
         assert_eq!(again.matches("xmlns:xmp=").count(), 1);
@@ -152,22 +265,70 @@ mod tests {
     #[test]
     fn element_form() {
         let xml = r#"<rdf:Description rdf:about=""><xmp:Rating>1</xmp:Rating></rdf:Description>"#;
-        let out = update(xml, "5", None).unwrap();
+        assert_eq!(parse(xml).rating, 1);
+        let out = update(xml, &tags(5, None)).unwrap();
         assert!(out.contains("<xmp:Rating>5</xmp:Rating>"));
     }
 
     #[test]
-    fn writes_fresh_sidecar() {
+    fn everything_round_trips() {
+        let all = Tags {
+            rating: 3,
+            label: Some("Green & \"Blue\"".into()),
+            flag: 1,
+            favorite: true,
+            albums: vec!["Halifax 2026".into(), "Best; of 50%".into()],
+        };
+        let xml = update(LIGHTROOM, &all).unwrap();
+        assert!(xml.contains(r#"xmlns:fujicloud="https://fujicloud.app/ns/1.0/""#));
+        assert_eq!(parse(&xml), all);
+        // Clearing them removes our properties again.
+        let cleared = update(&xml, &Tags::default()).unwrap();
+        assert_eq!(parse(&cleared), Tags::default());
+        assert!(!cleared.contains("fujicloud:"));
+        assert!(cleared.contains(r#"crs:Temperature="5600""#));
+    }
+
+    #[test]
+    fn lightroom_reject_counts_as_reject() {
+        let xml = r#"<rdf:Description rdf:about="" xmp:Rating="-1"/>"#;
+        assert_eq!(
+            parse(xml),
+            Tags {
+                flag: -1,
+                ..Tags::default()
+            }
+        );
+    }
+
+    #[test]
+    fn writes_fresh_sidecars_only_when_needed() {
         let dir = tempfile::tempdir().unwrap();
         let raw = dir.path().join("DSCF0001.RAF");
-        write_sidecar(&raw, 3, Some("Green")).unwrap();
-        let xml = std::fs::read_to_string(dir.path().join("DSCF0001.xmp")).unwrap();
-        assert!(xml.contains(r#"xmp:Rating="3""#) && xml.contains(r#"xmp:Label="Green""#));
-        assert!(update(&xml, "3", Some("Green")).unwrap() == xml);
+        write(&raw, Kind::Raf, &Tags::default()).unwrap();
+        assert!(!dir.path().join("DSCF0001.xmp").exists());
+        write(&raw, Kind::Raf, &tags(3, Some("Green"))).unwrap();
+        assert_eq!(
+            read(&dir.path().join("DSCF0001.xmp")).unwrap(),
+            tags(3, Some("Green"))
+        );
+    }
+
+    #[test]
+    fn edits_get_their_own_sidecar() {
+        let psd = Path::new("/lib/DSCF0001.psd");
+        assert_eq!(
+            sidecar_path(psd, Kind::Psd),
+            Path::new("/lib/DSCF0001.psd.xmp")
+        );
+        assert_eq!(
+            sidecar_path(Path::new("/lib/DSCF0001.JPG"), Kind::Jpeg),
+            Path::new("/lib/DSCF0001.xmp")
+        );
     }
 
     #[test]
     fn unknown_documents_are_untouched() {
-        assert_eq!(update("<nope/>", "1", None), None);
+        assert_eq!(update("<nope/>", &tags(1, None)), None);
     }
 }

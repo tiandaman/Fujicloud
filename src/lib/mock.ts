@@ -2,7 +2,7 @@
 // browser (`npm run dev`) without the Rust backend or a camera.
 
 import type { Api } from './api';
-import type { Bootstrap, Detail, Hit, Kind, Label, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, Bootstrap, Detail, Hit, Kind, Label, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 const FILMS = ['Classic Chrome', 'Classic Neg.', 'Provia', 'Velvia', 'Acros', 'Nostalgic Neg.', 'Reala Ace', 'Eterna', 'Astia', 'Pro Neg. Hi', 'Acros +R', 'Monochrome'];
 const FILM_WEIGHTS = [18, 16, 12, 9, 8, 7, 7, 5, 5, 4, 3, 2];
@@ -139,10 +139,10 @@ function buildLibrary(days = 140): Photo[] {
           : { lat: null, lon: null, gpsEstimated: false, town: null, region: null, country: null }),
       };
       const kind: Kind = r() < 0.04 ? 'heif' : 'jpeg';
-      const jpg: Photo = { ...base, id: id++, name: `${name}.${kind === 'heif' ? 'HIF' : 'JPG'}`, kind, size: 9e6 + r() * 9e6, mtime: Math.round(t), pairId: null, editOf: null };
+      const jpg: Photo = { ...base, id: id++, name: `${name}.${kind === 'heif' ? 'HIF' : 'JPG'}`, kind, size: 9e6 + r() * 9e6, mtime: Math.round(t), pairId: null, editOf: null, favorite: rating === 5 && r() < 0.5, duration: null };
       photos.push(jpg);
       if (rawJpeg && kind === 'jpeg') {
-        const raf: Photo = { ...base, id: id++, name: `${name}.RAF`, kind: 'raf', size: 3.2e7 + r() * 2e7, mtime: Math.round(t), pairId: jpg.id, editOf: null };
+        const raf: Photo = { ...base, id: id++, name: `${name}.RAF`, kind: 'raf', size: 3.2e7 + r() * 2e7, mtime: Math.round(t), pairId: jpg.id, editOf: null, favorite: jpg.favorite, duration: null };
         jpg.pairId = raf.id;
         photos.push(raf);
       }
@@ -165,6 +165,8 @@ function buildLibrary(days = 140): Photo[] {
           recipeKey: null,
           rating: Math.max(rating, 4),
           flag: 0,
+          favorite: false,
+          duration: null,
         });
       }
       t -= 20 + r() * 400;
@@ -263,6 +265,12 @@ export function mockApi(): Api {
     runningOn: null,
     gpuError: null,
   };
+  let albums: Album[] = empty
+    ? []
+    : [
+        { id: 1, name: 'Best of the year', createdAt: Date.now() / 1000, ids: photos.filter((p) => p.rating === 5).slice(0, 40).map((p) => p.id) },
+        { id: 2, name: 'Iceland', createdAt: Date.now() / 1000, ids: photos.filter((p) => p.country === 'IS').slice(0, 60).map((p) => p.id) },
+      ];
   const listeners = new Map<string, Set<(p: unknown) => void>>();
   const emit = (event: string, payload: unknown) => listeners.get(event)?.forEach((cb) => cb(payload));
   const delay = (ms = 0) => new Promise((r) => setTimeout(r, ms));
@@ -330,6 +338,28 @@ export function mockApi(): Api {
     setRating: async (ids, rating) => update(ids, { rating }),
     setFlag: async (ids, flag) => update(ids, { flag }),
     setLabel: async (ids, label) => update(ids, { label }),
+    setFavorite: async (ids, favorite) => update(ids, { favorite }),
+    listAlbums: async () => albums,
+    async createAlbum(name, ids) {
+      const existing = albums.find((a) => a.name.toLowerCase() === name.trim().toLowerCase());
+      const album = existing ?? { id: Math.max(0, ...albums.map((a) => a.id)) + 1, name: name.trim(), createdAt: Date.now() / 1000, ids: [] };
+      album.ids = [...new Set([...album.ids, ...withPairs(ids)])];
+      albums = existing ? albums.map((a) => (a.id === album.id ? album : a)) : [...albums, album];
+      return album.id;
+    },
+    async renameAlbum(id, name) {
+      albums = albums.map((a) => (a.id === id ? { ...a, name } : a));
+    },
+    async deleteAlbum(id) {
+      albums = albums.filter((a) => a.id !== id);
+    },
+    async addToAlbum(id, ids) {
+      albums = albums.map((a) => (a.id === id ? { ...a, ids: [...new Set([...a.ids, ...withPairs(ids)])] } : a));
+    },
+    async removeFromAlbum(id, ids) {
+      const gone = withPairs(ids);
+      albums = albums.map((a) => (a.id === id ? { ...a, ids: a.ids.filter((x) => !gone.has(x)) } : a));
+    },
     openInEditor: async () => 'Photoshop',
     reveal: async () => {},
     openDefault: async () => {},

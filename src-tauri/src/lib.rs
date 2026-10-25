@@ -1,6 +1,7 @@
 mod logfile;
 mod protocol;
 mod settings;
+mod sidecars;
 mod smart;
 mod sync;
 
@@ -9,9 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use fuji_core::db::{PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
+use fuji_core::db::{AlbumRow, PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
 use fuji_core::thumbs::{self, Size};
-use fuji_core::{Library, meta, scan, xmp};
+use fuji_core::{Library, meta, scan};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use settings::Settings;
@@ -142,8 +143,9 @@ fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
                 let _ = app.emit("scan", (&source.label, &p));
             };
             let refresh = Mutex::new(&mut last_refresh);
+            let sidecars = state.settings.read().write_xmp;
             let result = fuji_core::guard(|| {
-                scan::scan_source(&state.lib, source, &|p| {
+                scan::scan_source(&state.lib, source, sidecars, &|p| {
                     progress(p);
                     // Let the grid fill in progressively on big first scans.
                     let mut last = refresh.lock();
@@ -230,42 +232,80 @@ fn spawn_warm(app: AppHandle, state: Arc<AppState>) {
 
 // ---- culling ---------------------------------------------------------------
 
-fn mirror_to_xmp(state: &AppState, touched: &[Touched]) -> Vec<i64> {
-    if state.settings.read().write_xmp {
-        let raws: Vec<Touched> = touched
-            .iter()
-            .filter(|t| t.kind.is_raw())
-            .cloned()
-            .collect();
-        if !raws.is_empty() {
-            std::thread::spawn(move || {
-                for t in raws {
-                    if let Err(e) = xmp::write_sidecar(&t.path, t.rating, t.label.as_deref()) {
-                        log::warn!("xmp {}: {e}", t.path.display());
-                    }
-                }
-            });
-        }
-    }
-    touched.iter().map(|t| t.id).collect()
+fn mirror_to_xmp(touched: &[Touched]) -> Vec<i64> {
+    let ids: Vec<i64> = touched.iter().map(|t| t.id).collect();
+    sidecars::save(&ids);
+    ids
 }
 
 #[tauri::command]
 fn set_rating(state: Shared, ids: Vec<i64>, rating: i32) -> CmdResult<Vec<i64>> {
     let touched = state.lib.set_rating(&ids, rating).map_err(err)?;
-    Ok(mirror_to_xmp(&state, &touched))
+    Ok(mirror_to_xmp(&touched))
 }
 
 #[tauri::command]
 fn set_flag(state: Shared, ids: Vec<i64>, flag: i32) -> CmdResult<Vec<i64>> {
     let touched = state.lib.set_flag(&ids, flag).map_err(err)?;
-    Ok(touched.iter().map(|t| t.id).collect())
+    Ok(mirror_to_xmp(&touched))
 }
 
 #[tauri::command]
 fn set_label(state: Shared, ids: Vec<i64>, label: Option<String>) -> CmdResult<Vec<i64>> {
     let touched = state.lib.set_label(&ids, label.as_deref()).map_err(err)?;
-    Ok(mirror_to_xmp(&state, &touched))
+    Ok(mirror_to_xmp(&touched))
+}
+
+#[tauri::command]
+fn set_favorite(state: Shared, ids: Vec<i64>, favorite: bool) -> CmdResult<Vec<i64>> {
+    let touched = state.lib.set_favorite(&ids, favorite).map_err(err)?;
+    Ok(mirror_to_xmp(&touched))
+}
+
+// ---- albums ----------------------------------------------------------------
+
+#[tauri::command]
+fn list_albums(state: Shared) -> CmdResult<Vec<AlbumRow>> {
+    state.lib.albums().map_err(err)
+}
+
+/// Creates an album (or finds the one with that name) and adds `ids` to it.
+#[tauri::command]
+fn create_album(state: Shared, name: String, ids: Vec<i64>) -> CmdResult<i64> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("An album needs a name".into());
+    }
+    let id = state.lib.create_album(name).map_err(err)?;
+    sidecars::save(&state.lib.add_to_album(id, &ids).map_err(err)?);
+    Ok(id)
+}
+
+#[tauri::command]
+fn rename_album(state: Shared, id: i64, name: String) -> CmdResult<()> {
+    if name.trim().is_empty() {
+        return Err("An album needs a name".into());
+    }
+    sidecars::save(&state.lib.rename_album(id, &name).map_err(err)?);
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_album(state: Shared, id: i64) -> CmdResult<()> {
+    sidecars::save(&state.lib.delete_album(id).map_err(err)?);
+    Ok(())
+}
+
+#[tauri::command]
+fn add_to_album(state: Shared, id: i64, ids: Vec<i64>) -> CmdResult<()> {
+    sidecars::save(&state.lib.add_to_album(id, &ids).map_err(err)?);
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_from_album(state: Shared, id: i64, ids: Vec<i64>) -> CmdResult<()> {
+    sidecars::save(&state.lib.remove_from_album(id, &ids).map_err(err)?);
+    Ok(())
 }
 
 // ---- hand-off to other apps -------------------------------------------------
@@ -513,6 +553,8 @@ pub fn run() {
             }
 
             app.manage(state.clone());
+            sidecars::start(state.clone());
+            sidecars::flush(&state);
             let handle = app.handle().clone();
             if let Err(e) = restart_sync(&handle, &state) {
                 log::warn!("sync: {e}");
@@ -535,6 +577,13 @@ pub fn run() {
             set_rating,
             set_flag,
             set_label,
+            set_favorite,
+            list_albums,
+            create_album,
+            rename_album,
+            delete_album,
+            add_to_album,
+            remove_from_album,
             open_in_editor,
             reveal,
             open_default,

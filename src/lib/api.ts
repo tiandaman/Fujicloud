@@ -1,4 +1,4 @@
-import type { Bootstrap, CacheInfo, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, Bootstrap, CacheInfo, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -14,6 +14,14 @@ export interface Api {
   setRating(ids: number[], rating: number): Promise<number[]>;
   setFlag(ids: number[], flag: number): Promise<number[]>;
   setLabel(ids: number[], label: Label | null): Promise<number[]>;
+  setFavorite(ids: number[], favorite: boolean): Promise<number[]>;
+  listAlbums(): Promise<Album[]>;
+  /** Creates (or reuses) the album with this name and adds `ids`. */
+  createAlbum(name: string, ids: number[]): Promise<number>;
+  renameAlbum(id: number, name: string): Promise<void>;
+  deleteAlbum(id: number): Promise<void>;
+  addToAlbum(id: number, ids: number[]): Promise<void>;
+  removeFromAlbum(id: number, ids: number[]): Promise<void>;
   openInEditor(ids: number[]): Promise<string>;
   reveal(id: number): Promise<void>;
   openDefault(id: number): Promise<void>;
@@ -56,6 +64,13 @@ function tauriApi(): Api {
     setRating: (ids, rating) => invoke('set_rating', { ids, rating }),
     setFlag: (ids, flag) => invoke('set_flag', { ids, flag }),
     setLabel: (ids, label) => invoke('set_label', { ids, label }),
+    setFavorite: (ids, favorite) => invoke('set_favorite', { ids, favorite }),
+    listAlbums: () => invoke('list_albums'),
+    createAlbum: (name, ids) => invoke('create_album', { name, ids }),
+    renameAlbum: (id, name) => invoke('rename_album', { id, name }),
+    deleteAlbum: (id) => invoke('delete_album', { id }),
+    addToAlbum: (id, ids) => invoke('add_to_album', { id, ids }),
+    removeFromAlbum: (id, ids) => invoke('remove_from_album', { id, ids }),
     openInEditor: (ids) => invoke('open_in_editor', { ids }),
     reveal: (id) => invoke('reveal', { id }),
     openDefault: (id) => invoke('open_default', { id }),
