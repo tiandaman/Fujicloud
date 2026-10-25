@@ -139,7 +139,7 @@ pub fn index_files(lib: &Library, source_id: i64, paths: &[PathBuf]) -> Result<u
 }
 
 fn read_one(file: &FoundFile) -> Option<NewPhoto> {
-    let meta = match meta::read(&file.path, file.kind) {
+    let meta = match crate::guard(|| meta::read(&file.path, file.kind)) {
         Ok(m) => m,
         Err(e) => {
             log::warn!("metadata for {}: {e}", file.path.display());

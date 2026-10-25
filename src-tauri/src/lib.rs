@@ -1,3 +1,4 @@
+mod logfile;
 mod protocol;
 mod settings;
 mod smart;
@@ -141,14 +142,16 @@ fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
                 let _ = app.emit("scan", (&source.label, &p));
             };
             let refresh = Mutex::new(&mut last_refresh);
-            let result = scan::scan_source(&state.lib, source, &|p| {
-                progress(p);
-                // Let the grid fill in progressively on big first scans.
-                let mut last = refresh.lock();
-                if last.elapsed() > Duration::from_millis(1500) {
-                    **last = Instant::now();
-                    let _ = app.emit("library-changed", ());
-                }
+            let result = fuji_core::guard(|| {
+                scan::scan_source(&state.lib, source, &|p| {
+                    progress(p);
+                    // Let the grid fill in progressively on big first scans.
+                    let mut last = refresh.lock();
+                    if last.elapsed() > Duration::from_millis(1500) {
+                        **last = Instant::now();
+                        let _ = app.emit("library-changed", ());
+                    }
+                })
             });
             match result {
                 Ok(summary) => log::info!("scanned {}: {summary:?}", source.label),
@@ -482,6 +485,7 @@ pub fn run() {
         })
         .setup(|app| {
             let data = app.path().app_local_data_dir()?;
+            logfile::init(&data.join("logs"));
             let config = app.path().app_config_dir()?;
             let settings_path = config.join("settings.json");
             let workers = std::thread::available_parallelism()

@@ -228,13 +228,20 @@ fn psd_header(b: &[u8; 26]) -> Result<PsdHeader, Error> {
 const RES_ICC: u16 = 1039;
 const RES_THUMBNAIL: u16 = 1036;
 
+/// Composites bigger than this aren't decoded; the full image would need
+/// several GB of memory just to make a 2560px preview.
+const PSD_MAX_PIXELS: u64 = 120_000_000;
+
 /// Reads the flattened composite Photoshop stores after the layers ("Maximize
 /// compatibility"), skipping the layer data without reading it.
 fn psd(path: &Path) -> Result<Rgb, Error> {
-    let mut f = BufReader::with_capacity(1 << 20, File::open(path)?);
+    let file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let mut f = BufReader::with_capacity(1 << 20, file);
     let mut header = [0u8; 26];
     f.read_exact(&mut header)?;
     let h = psd_header(&header)?;
+    let damaged = || err("damaged Photoshop file");
     let wide = h.version == 2;
 
     let skip_section = |f: &mut BufReader<File>, wide: bool| -> Result<(), Error> {
@@ -249,6 +256,9 @@ fn psd(path: &Path) -> Result<Rgb, Error> {
     skip_section(&mut f, false)?; // colour mode data
 
     let res_len = read_u32(&mut f)? as usize;
+    if res_len as u64 > file_len {
+        return Err(damaged());
+    }
     let mut resources = vec![0u8; res_len];
     f.read_exact(&mut resources)?;
     let icc = resource(&resources, RES_ICC).map(<[u8]>::to_vec);
@@ -271,6 +281,11 @@ fn psd(path: &Path) -> Result<Rgb, Error> {
         )));
     }
     let planes = planes.min(h.channels as usize);
+    if h.width as u64 * h.height as u64 > PSD_MAX_PIXELS {
+        return thumb
+            .and_then(thumbnail_rgb)
+            .ok_or_else(|| err("too large to preview, and it has no thumbnail"));
+    }
     let (w, rows) = (h.width as usize, h.height as usize);
     let bps = h.depth as usize / 8;
     let row_bytes = w * bps;
@@ -292,6 +307,9 @@ fn psd(path: &Path) -> Result<Rgb, Error> {
             }
             // Only read the channels we need; extra alpha channels follow.
             let needed: usize = counts[..planes * rows].iter().sum();
+            if needed as u64 > file_len {
+                return Err(damaged());
+            }
             let mut packed = vec![0u8; needed];
             f.read_exact(&mut packed)?;
             let mut src = 0;
@@ -310,7 +328,9 @@ fn psd(path: &Path) -> Result<Rgb, Error> {
             let mut zipped = Vec::new();
             f.read_to_end(&mut zipped)?;
             let mut raw = Vec::new();
-            flate2::read::ZlibDecoder::new(&zipped[..]).read_to_end(&mut raw)?;
+            flate2::read::ZlibDecoder::new(&zipped[..])
+                .take(plane_data.len() as u64)
+                .read_to_end(&mut raw)?;
             let take = plane_data.len().min(raw.len());
             plane_data[..take].copy_from_slice(&raw[..take]);
             if compression == 3 {
@@ -337,18 +357,9 @@ fn psd(path: &Path) -> Result<Rgb, Error> {
     // Without "Maximize compatibility" the composite is blank; the small
     // embedded thumbnail is better than a white rectangle.
     if data.iter().all(|&b| b == 255)
-        && let Some(jpeg) = thumb
+        && let Some(small) = thumb.and_then(thumbnail_rgb)
     {
-        let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(jpeg));
-        if let (Ok(pixels), Some(info)) = (d.decode(), d.info())
-            && info.pixel_format == jpeg_decoder::PixelFormat::RGB24
-        {
-            return Ok(Rgb {
-                data: pixels,
-                width: info.width as u32,
-                height: info.height as u32,
-            });
-        }
+        return Ok(small);
     }
     if let Some(icc) = icc.filter(|_| !cmyk) {
         to_srgb(&mut data, &icc);
@@ -357,6 +368,18 @@ fn psd(path: &Path) -> Result<Rgb, Error> {
         data,
         width: h.width,
         height: h.height,
+    })
+}
+
+/// Photoshop's small embedded JPEG thumbnail.
+fn thumbnail_rgb(jpeg: Vec<u8>) -> Option<Rgb> {
+    let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(jpeg));
+    let pixels = d.decode().ok()?;
+    let info = d.info()?;
+    (info.pixel_format == jpeg_decoder::PixelFormat::RGB24).then_some(Rgb {
+        data: pixels,
+        width: info.width as u32,
+        height: info.height as u32,
     })
 }
 
@@ -500,6 +523,20 @@ mod tests {
         (0..w * h)
             .flat_map(|i| [(i % w * 255 / w) as u8, (i / w * 255 / h) as u8, 77])
             .collect()
+    }
+
+    /// A Photoshop file too big to decode sensibly isn't: it would need
+    /// gigabytes just to make a preview.
+    #[test]
+    fn oversized_photoshop_files_are_not_decoded() {
+        let mut psd = write_test_psd(4, 4, &gradient(4, 4), 8, false, &[]);
+        psd[14..18].copy_from_slice(&30_000u32.to_be_bytes());
+        psd[18..22].copy_from_slice(&30_000u32.to_be_bytes());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.psd");
+        std::fs::write(&path, &psd).unwrap();
+        let err = image(&path, Kind::Psd).err().expect("refused");
+        assert!(err.to_string().contains("too large"), "{err}");
     }
 
     #[test]

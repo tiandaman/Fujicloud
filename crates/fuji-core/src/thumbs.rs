@@ -97,7 +97,10 @@ impl Cache {
         if !src.kind.has_preview() {
             return Err(Error::Unsupported(src.kind));
         }
+        crate::guard(move || self.generate(src, size, path))
+    }
 
+    fn generate(&self, src: &Source, size: Size, path: PathBuf) -> Result<PathBuf, Error> {
         // PSD/TIFF edits are expensive to decode (and may be large network
         // reads): make both renditions from one decode.
         if !matches!(src.kind, Kind::Jpeg | Kind::Raf) {
@@ -185,6 +188,10 @@ pub struct Renditions {
 /// Builds both renditions in memory. Imports use this on the fast local copy
 /// of a file while it is still uploading to the network library.
 pub fn render_all(jpeg: &[u8]) -> Result<Renditions, Error> {
+    crate::guard(|| render_both(jpeg))
+}
+
+fn render_both(jpeg: &[u8]) -> Result<Renditions, Error> {
     let preview = render(
         jpeg,
         Size::Preview.long_edge(),
@@ -230,6 +237,12 @@ pub fn render(
     let info = decoder
         .info()
         .ok_or_else(|| Error::Decode("missing frame header".into()))?;
+    if info.width as u64 * info.height as u64 > crate::MAX_PIXELS {
+        return Err(Error::Decode(format!(
+            "image claims to be {}×{}",
+            info.width, info.height
+        )));
+    }
     let (target_w, target_h) = fit(info.width as u32, info.height as u32, long_edge);
     // Let the decoder skip most of the IDCT work; it picks the smallest
     // factor that is still at least as large as what we asked for.
@@ -385,6 +398,18 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A JPEG whose header claims an enormous size is refused before any big
+    /// buffer is allocated.
+    #[test]
+    fn refuses_absurd_sizes() {
+        let mut jpeg = crate::test_jpeg(40, 30, None);
+        let sof = jpeg.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+        jpeg[sof + 5..sof + 7].copy_from_slice(&60000u16.to_be_bytes());
+        jpeg[sof + 7..sof + 9].copy_from_slice(&60000u16.to_be_bytes());
+        let err = render(&jpeg, 512, 80, true).err().expect("refused");
+        assert!(err.to_string().contains("60000"), "{err}");
+    }
 
     #[test]
     fn fit_keeps_aspect() {

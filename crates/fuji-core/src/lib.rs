@@ -99,6 +99,19 @@ pub enum Error {
     Model(String),
 }
 
+/// The most pixels an image header may claim before we refuse to decode it.
+/// Real photos are far below this; a damaged header can claim billions, and
+/// trying to allocate that ends the app.
+pub(crate) const MAX_PIXELS: u64 = 200_000_000;
+
+/// Runs `f`, turning a panic into an error. Libraries can trip over unusual
+/// or damaged files, and one such photo must not stop a scan, an import or
+/// thumbnail building for the rest. The panic itself is logged by the app.
+pub fn guard<T>(f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .unwrap_or_else(|_| Err(Error::Decode("this file tripped an internal error".into())))
+}
+
 impl From<exif::Error> for Error {
     fn from(e: exif::Error) -> Self {
         Error::Exif(e.to_string())
@@ -240,6 +253,13 @@ impl TestPhoto<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guard_turns_a_panic_into_an_error() {
+        let failed: Result<(), Error> = guard(|| panic!("an unusual file"));
+        assert!(matches!(failed, Err(Error::Decode(_))));
+        assert_eq!(guard(|| Ok(7)).unwrap(), 7);
+    }
 
     #[test]
     fn reads_fuji_metadata_from_jpeg_and_raf() {

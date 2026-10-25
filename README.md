@@ -113,6 +113,12 @@ instead, from a network that allows it, and put them in
 
 Then switch smart search off and on in Settings. It uses the files it finds there.
 
+### If something goes wrong
+
+Fujicloud keeps a log at `%LOCALAPPDATA%\app.fujicloud.desktop\logs\fujicloud.log`.
+A photo it can't read is skipped and noted there, with the reason, instead of
+stopping the app. Include that file when reporting a problem.
+
 ## Why it's fast
 
 | Layer | Choice | Why |

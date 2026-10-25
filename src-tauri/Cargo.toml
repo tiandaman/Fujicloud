@@ -13,8 +13,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 fuji-core = { path = "../crates/fuji-core" }
-log = "0.4"
+log = { version = "0.4", features = ["std"] }
 notify = "8"
 parking_lot = "0.12"
 rayon = "1"

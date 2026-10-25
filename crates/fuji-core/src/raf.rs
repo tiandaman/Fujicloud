@@ -38,6 +38,15 @@ pub fn open_embedded_jpeg(path: &Path) -> io::Result<BufReader<io::Take<File>>> 
     let mut header = [0u8; HEADER_LEN];
     file.read_exact(&mut header)?;
     let (offset, len) = parse_header(&header)?;
+    // A damaged or half-copied file can claim more than it holds.
+    let size = file.metadata()?.len();
+    if offset >= size {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "RAF preview is past the end of the file",
+        ));
+    }
+    let len = len.min(size - offset);
     file.seek(SeekFrom::Start(offset))?;
     Ok(BufReader::with_capacity(64 * 1024, file.take(len)))
 }
@@ -80,6 +89,27 @@ pub fn wrap_jpeg_for_tests(jpeg: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A damaged or half-copied RAF can claim a preview far bigger than the
+    /// file. Only what's actually there is read, so nothing huge is
+    /// allocated.
+    #[test]
+    fn damaged_lengths_are_capped_by_the_file() {
+        let jpeg = crate::test_jpeg(40, 30, None);
+        let mut raf = wrap_jpeg_for_tests(&jpeg);
+        raf[JPEG_LENGTH_AT..JPEG_LENGTH_AT + 4].copy_from_slice(&0xFFFF_FF00u32.to_be_bytes());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.RAF");
+        std::fs::write(&path, &raf).unwrap();
+        let got = read_embedded_jpeg(&path).unwrap();
+        assert!(got.len() <= raf.len());
+        assert!(got.starts_with(&jpeg));
+
+        // A preview that would start past the end of the file.
+        raf[JPEG_OFFSET_AT..JPEG_OFFSET_AT + 4].copy_from_slice(&0x7FFF_0000u32.to_be_bytes());
+        std::fs::write(&path, &raf).unwrap();
+        assert!(read_embedded_jpeg(&path).is_err());
+    }
 
     #[test]
     fn rejects_non_raf() {

@@ -11,7 +11,8 @@ license = "MIT"
 codegen-units = 1
 lto = "fat"
 opt-level = 3
-panic = "abort"
+# Not "abort": one photo that trips a bug in a decoder must fail on its own
+# (see fuji_core::guard), not close the app.
 strip = true
 
 # Image decoding is hot even in debug builds; keep dependencies optimised.

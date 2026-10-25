@@ -217,7 +217,17 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
             let smart = &state.smart;
             loop {
                 smart.again.store(false, Ordering::Release);
-                if let Err(e) = run(&app, &state) {
+                // A bug tripped mid-run must not leave smart search stuck
+                // "analysing" forever.
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&app, &state)))
+                        .unwrap_or_else(|_| {
+                            Err(
+                                "Smart search hit an internal error. Details are in the log file."
+                                    .into(),
+                            )
+                        });
+                if let Err(e) = result {
                     log::warn!("smart search: {e}");
                     smart.update(&app, &state, |s| {
                         s.phase = Phase::Error;
@@ -306,14 +316,15 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                 }
             }
         }
-        let vectors = match engine.embed_images(&jpegs) {
+        let embed = |jpegs: &[Vec<u8>]| fuji_core::guard(|| engine.embed_images(jpegs));
+        let vectors = match embed(&jpegs) {
             Ok(v) => v,
             // One bad image shouldn't sink its batch: retry individually.
             Err(_) => {
                 let mut ok = Vec::new();
                 let mut kept = Vec::new();
                 for (id, jpeg) in ids.iter().zip(&jpegs) {
-                    match engine.embed_images(std::slice::from_ref(jpeg)) {
+                    match embed(std::slice::from_ref(jpeg)) {
                         Ok(mut v) => {
                             kept.push(*id);
                             ok.push(v.remove(0));
