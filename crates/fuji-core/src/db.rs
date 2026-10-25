@@ -738,7 +738,7 @@ impl Library {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT p.id FROM photos p
-             WHERE p.kind IN ('jpeg', 'raf', 'tiff', 'psd')
+             WHERE p.kind IN ('jpeg', 'raf', 'heif', 'tiff', 'psd')
                AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.photo_id = p.id AND e.model = ?1)
                AND NOT (p.kind = 'raf' AND EXISTS
                     (SELECT 1 FROM photos j WHERE j.pair_key = p.pair_key AND j.kind = 'jpeg'))

@@ -223,30 +223,40 @@
     for (const c of clusters) {
       const props = c.properties as Partial<ClusterProps> & { cluster?: boolean; cluster_id?: number; point_count?: number };
       const key = props.cluster ? `c${props.cluster_id}` : `p${props.id}`;
-      const [lon, lat] = c.geometry.coordinates;
-      if (map.getZoom() < 5 && !facing(lon, lat)) continue;
+      const existing = markers.get(key)?.getLngLat();
+      const at: [number, number] = existing
+        ? [existing.lng, existing.lat]
+        : props.cluster
+          ? anchor(props.cluster_id!, c.geometry.coordinates as [number, number])
+          : (c.geometry.coordinates as [number, number]);
+      if (map.getZoom() < 5 && !facing(at[0], at[1])) continue;
       seen.add(key);
-      if (markers.has(key)) continue;
+      if (existing) continue;
       const cover = store.byId.get(props.cluster ? props.best! : props.id!);
       if (!cover) continue;
-      const el = document.createElement('button');
-      el.className = props.cluster ? 'bubble cluster' : 'bubble';
-      el.setAttribute('aria-label', props.cluster ? `${props.point_count} photos` : cover.name);
+      // MapLibre positions the outer element with a transform; the bubble
+      // inside can be styled and animated without moving it off its spot.
+      const el = document.createElement('div');
+      el.className = 'pin';
+      const bubble = document.createElement('button');
+      bubble.className = props.cluster ? 'bubble cluster' : 'bubble';
+      bubble.setAttribute('aria-label', props.cluster ? `${props.point_count} photos` : cover.name);
       const img = document.createElement('img');
       img.src = api.thumbUrl(cover);
       img.alt = '';
       img.draggable = false;
-      el.appendChild(img);
+      bubble.appendChild(img);
       if (props.cluster) {
         const n = document.createElement('span');
         n.textContent = formatCount(props.point_count!);
-        el.appendChild(n);
+        bubble.appendChild(n);
       }
+      el.appendChild(bubble);
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        open(c.geometry.coordinates as [number, number], props.cluster ? props.cluster_id! : null, cover.id);
+        open(at, props.cluster ? props.cluster_id! : null, cover.id);
       });
-      markers.set(key, new maplibre.Marker({ element: el, anchor: 'center', opacityWhenCovered: '0' }).setLngLat(c.geometry.coordinates as [number, number]).addTo(map));
+      markers.set(key, new maplibre.Marker({ element: el, anchor: 'center', opacityWhenCovered: '0' }).setLngLat(at).addTo(map));
     }
     for (const [key, m] of markers) {
       if (!seen.has(key)) {
@@ -254,6 +264,25 @@
         markers.delete(key);
       }
     }
+  }
+
+  /** Where a group's bubble goes: on the photo nearest the group's middle.
+   * The middle itself is an average, and photos from both sides of a bay
+   * or from a coast and an island average out to somewhere in the sea. */
+  function anchor(clusterId: number, middle: [number, number]): [number, number] {
+    const leaves = index!.getLeaves(clusterId, Infinity);
+    const cos = Math.cos((middle[1] * Math.PI) / 180);
+    let best = middle;
+    let bestD = Infinity;
+    for (const leaf of leaves) {
+      const [lon, lat] = leaf.geometry.coordinates;
+      const d = ((lon - middle[0]) * cos) ** 2 + (lat - middle[1]) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = [lon, lat];
+      }
+    }
+    return best;
   }
 
   function open(center: [number, number], clusterId: number | null, id: number) {
@@ -462,12 +491,14 @@
     height: 56px;
     border-radius: 14px;
   }
-  .wrap :global(.bubble.maplibregl-marker-covered) {
+  .wrap :global(.pin.maplibregl-marker-covered) {
     pointer-events: none;
+  }
+  .wrap :global(.pin:hover) {
+    z-index: 5;
   }
   .wrap :global(.bubble:hover) {
     transform: scale(1.1);
-    z-index: 5;
   }
   .wrap :global(.bubble img) {
     width: 100%;

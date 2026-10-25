@@ -1,7 +1,7 @@
 //! Metadata extraction for every supported file kind.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Cursor, Seek};
+use std::io::{BufRead, BufReader, Cursor, Read, Seek};
 use std::path::Path;
 
 use exif::{Exif, In, Tag, Value};
@@ -47,12 +47,18 @@ pub fn read(path: &Path, kind: Kind) -> Result<PhotoMeta, Error> {
             from_jpeg_stream(&mut Cursor::new(prefix))
                 .or_else(|_| from_jpeg_stream(&mut Cursor::new(raf::read_embedded_jpeg(path)?)))
         }
-        Kind::Jpeg => from_jpeg_stream(&mut BufReader::with_capacity(64 * 1024, File::open(path)?)),
-        Kind::Heif => {
-            let exif =
-                exif::Reader::new().read_from_container(&mut BufReader::new(File::open(path)?))?;
-            Ok(from_exif(&exif))
-        }
+        Kind::Jpeg => from_jpeg_stream(&mut BufReader::with_capacity(64 * 1024, File::open(path)?))
+            .or_else(|e| {
+                // A HEIC or PNG saved under a .jpg name.
+                let mut head = [0u8; 16];
+                File::open(path)?.read_exact(&mut head)?;
+                match crate::decode::disguise(&head) {
+                    Some(crate::decode::Disguise::Heif) => heif(path),
+                    Some(crate::decode::Disguise::Png) => png(path),
+                    None => Err(e),
+                }
+            }),
+        Kind::Heif => heif(path),
         // Edits can be hundreds of MB; read just the header. Date, camera and
         // place come from the original they're linked to.
         Kind::Tiff | Kind::Psd => {
@@ -65,6 +71,34 @@ pub fn read(path: &Path, kind: Kind) -> Result<PhotoMeta, Error> {
             })
         }
     }
+}
+
+/// HEIC/HEIF: EXIF for the date, camera and place, and the size as shown.
+/// The decoder applies the container's rotation, so the EXIF orientation
+/// mustn't be applied again.
+fn heif(path: &Path) -> Result<PhotoMeta, Error> {
+    let mut meta = exif::Reader::new()
+        .read_from_container(&mut BufReader::new(File::open(path)?))
+        .map(|exif| from_exif(&exif))
+        .unwrap_or_default();
+    if meta.width == 0 || meta.height == 0 {
+        (meta.width, meta.height) = crate::decode::heif_size(&std::fs::read(path)?)?;
+    }
+    meta.orientation = 1;
+    Ok(meta)
+}
+
+/// A PNG saved as .jpg: only its size is known.
+fn png(path: &Path) -> Result<PhotoMeta, Error> {
+    let reader = png::Decoder::new(BufReader::new(File::open(path)?))
+        .read_info()
+        .map_err(|e| Error::Decode(format!("PNG: {e}")))?;
+    Ok(PhotoMeta {
+        width: reader.info().width,
+        height: reader.info().height,
+        orientation: 1,
+        ..Default::default()
+    })
 }
 
 pub fn from_jpeg_bytes(bytes: &[u8]) -> Result<PhotoMeta, Error> {

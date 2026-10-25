@@ -1,4 +1,6 @@
-//! Decoding for edited files (Photoshop PSD/PSB, TIFF) and colour management.
+//! Decoding for formats other than camera JPEGs: edits (Photoshop PSD/PSB,
+//! TIFF), HEIC/HEIF, and pictures saved under the wrong name; plus colour
+//! management.
 //!
 //! Edits are often saved in a wide-gamut space such as Adobe RGB. Shown as
 //! if they were sRGB they look dull, which would make a before/after
@@ -26,14 +28,109 @@ fn err(msg: impl Into<String>) -> Error {
     Error::Decode(msg.into())
 }
 
-/// Decodes a PSD/PSB or TIFF to upright sRGB pixels.
+/// Decodes a PSD/PSB, TIFF or HEIF to upright sRGB pixels.
 pub fn image(path: &Path, kind: Kind) -> Result<Rgb, Error> {
-    let _one_at_a_time = BIG_DECODE.lock().unwrap_or_else(|e| e.into_inner());
     match kind {
-        Kind::Psd => psd(path),
-        Kind::Tiff => tiff(path),
+        Kind::Heif => heif(&std::fs::read(path)?),
+        Kind::Psd | Kind::Tiff => {
+            let _one_at_a_time = BIG_DECODE.lock().unwrap_or_else(|e| e.into_inner());
+            if kind == Kind::Psd {
+                psd(path)
+            } else {
+                tiff(path)
+            }
+        }
         other => Err(Error::Unsupported(other)),
     }
+}
+
+/// What a file really holds when it isn't what its name says. Phones and
+/// transfer tools sometimes save HEIC or PNG pictures as `.jpg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disguise {
+    Heif,
+    Png,
+}
+
+/// Recognises a disguised picture from its first bytes.
+pub fn disguise(head: &[u8]) -> Option<Disguise> {
+    if head.get(4..8) == Some(b"ftyp") {
+        Some(Disguise::Heif)
+    } else if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(Disguise::Png)
+    } else {
+        None
+    }
+}
+
+/// Decodes a HEIC or PNG that was saved under a `.jpg` name.
+pub fn disguised(bytes: &[u8]) -> Result<Rgb, Error> {
+    match disguise(bytes) {
+        Some(Disguise::Heif) => heif(bytes),
+        Some(Disguise::Png) => png(bytes),
+        None => Err(err("not a JPEG, HEIC or PNG picture")),
+    }
+}
+
+/// HEIC/HEIF, from iPhones and Fujifilm cameras' HEIF mode. The decoder
+/// applies the container's rotation and mirroring, which is what HEIF
+/// viewers must go by; applying the EXIF orientation as well would turn
+/// iPhone photos sideways.
+fn heif(bytes: &[u8]) -> Result<Rgb, Error> {
+    let heif_err = |e: heic_decoder::HeifError| err(format!("HEIF: {e}"));
+    let image = heic_decoder::decode(bytes).map_err(heif_err)?;
+    let rgb = image.to_rgb8().map_err(heif_err)?;
+    let mut data = rgb.data;
+    // iPhones shoot in Display P3.
+    if let Some(icc) = &image.metadata.icc_profile {
+        to_srgb(&mut data, icc);
+    }
+    Ok(Rgb {
+        data,
+        width: rgb.width as u32,
+        height: rgb.height as u32,
+    })
+}
+
+/// Width and height of a HEIF as shown, after rotation.
+pub fn heif_size(bytes: &[u8]) -> Result<(u32, u32), Error> {
+    let info = heic_decoder::probe(bytes).map_err(|e| err(format!("HEIF: {e}")))?;
+    Ok((info.width as u32, info.height as u32))
+}
+
+fn png(bytes: &[u8]) -> Result<Rgb, Error> {
+    let png_err = |e: png::DecodingError| err(format!("PNG: {e}"));
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().map_err(png_err)?;
+    let (w, h) = (reader.info().width, reader.info().height);
+    if w as u64 * h as u64 > crate::MAX_PIXELS {
+        return Err(err(format!("PNG claims to be {w}×{h}")));
+    }
+    let mut buf = vec![
+        0;
+        reader
+            .output_buffer_size()
+            .ok_or_else(|| err("PNG too large"))?
+    ];
+    let frame = reader.next_frame(&mut buf).map_err(png_err)?;
+    buf.truncate(frame.buffer_size());
+    let channels = frame.color_type.samples();
+    let data = match channels {
+        3 => buf,
+        _ => buf
+            .chunks_exact(channels)
+            .flat_map(|px| match px.len() {
+                1 | 2 => [px[0]; 3],
+                _ => [px[0], px[1], px[2]],
+            })
+            .collect(),
+    };
+    Ok(Rgb {
+        data,
+        width: frame.width,
+        height: frame.height,
+    })
 }
 
 /// Width, height and EXIF orientation, reading only the file header.

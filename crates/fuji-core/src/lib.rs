@@ -70,11 +70,6 @@ impl Kind {
         self == Kind::Raf
     }
 
-    /// Whether we can build thumbnails and previews for this kind.
-    pub fn has_preview(self) -> bool {
-        !matches!(self, Kind::Heif)
-    }
-
     /// Formats edits are saved in, as opposed to straight-from-camera files.
     pub fn is_edit_format(self) -> bool {
         matches!(self, Kind::Tiff | Kind::Psd)
@@ -340,6 +335,111 @@ mod tests {
             (d.info().unwrap().width, d.info().unwrap().height),
             (512, 341)
         );
+    }
+
+    fn heic_fixture(name: &str) -> Vec<u8> {
+        std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/heic")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    /// Thumbnails and previews of `path`, decoded back to (width, height, pixels).
+    fn renditions(path: &Path, kind: Kind) -> Vec<(u32, u32, Vec<u8>)> {
+        let cache = thumbs::Cache::new(path.parent().unwrap().join("cache")).unwrap();
+        let src = thumbs::Source {
+            path,
+            kind,
+            size: 1,
+            mtime: 1,
+        };
+        [thumbs::Size::Thumb, thumbs::Size::Preview]
+            .into_iter()
+            .map(|size| {
+                let jpeg = std::fs::read(cache.ensure(&src, size).unwrap()).unwrap();
+                let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(jpeg));
+                let pixels = d.decode().unwrap();
+                let info = d.info().unwrap();
+                (info.width as u32, info.height as u32, pixels)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn heic_photos_get_true_colour_previews() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("IMG_0001.HEIC");
+        std::fs::write(&path, heic_fixture("rgb-strips-96.heic")).unwrap();
+        let m = meta::read(&path, Kind::Heif).unwrap();
+        assert_eq!((m.width, m.height, m.orientation), (96, 32, 1));
+
+        let image = decode::image(&path, Kind::Heif).unwrap();
+        assert_eq!((image.width, image.height), (96, 32));
+        let at = |x: usize| &image.data[(16 * 96 + x) * 3..][..3];
+        for (x, want) in [(16, [255, 0, 0]), (48, [0, 255, 0]), (80, [0, 0, 255])] {
+            let got = at(x);
+            assert!(
+                got.iter()
+                    .zip(want)
+                    .all(|(&g, w): (&u8, i32)| (g as i32 - w).abs() < 24),
+                "strip at x={x}: {got:?}"
+            );
+        }
+        for (w, h, _) in renditions(&path, Kind::Heif) {
+            assert_eq!((w, h), (96, 32));
+        }
+    }
+
+    /// iPhones store a photo as a grid of 512px tiles; they must line up.
+    #[test]
+    fn tiled_heic_photos_are_assembled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("IMG_0002.HEIC");
+        std::fs::write(&path, heic_fixture("checker-1024.heic")).unwrap();
+        let [thumb, preview] = renditions(&path, Kind::Heif).try_into().unwrap();
+        assert_eq!((thumb.0, thumb.1), (512, 512));
+        assert_eq!((preview.0, preview.1), (1024, 1024));
+        // 64px cells, top-left white, on both sides of the tile seams.
+        let px = |x: usize, y: usize| preview.2[(y * 1024 + x) * 3];
+        for (x, y, white) in [
+            (32, 32, true),
+            (96, 32, false),
+            (544, 32, true),
+            (32, 544, true),
+            (608, 608, true),
+            (544, 608, false),
+        ] {
+            assert_eq!(px(x, y) > 128, white, "cell at {x},{y}");
+        }
+    }
+
+    /// Phones and transfer tools sometimes save HEIC or PNG pictures as .jpg.
+    #[test]
+    fn pictures_saved_under_the_wrong_name_still_show() {
+        let dir = tempfile::tempdir().unwrap();
+        let heic = dir.path().join("IMG_0003.jpg");
+        std::fs::write(&heic, heic_fixture("checker-1024.heic")).unwrap();
+        let m = meta::read(&heic, Kind::Jpeg).unwrap();
+        assert_eq!((m.width, m.height), (1024, 1024));
+        assert_eq!(renditions(&heic, Kind::Jpeg)[1].0, 1024);
+
+        let png = dir.path().join("Screenshot.jpg");
+        let mut bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut bytes, 40, 30);
+            enc.set_color(png::ColorType::Rgba);
+            let mut w = enc.write_header().unwrap();
+            w.write_image_data(&[200u8, 40, 90, 255].repeat(40 * 30))
+                .unwrap();
+        }
+        std::fs::write(&png, bytes).unwrap();
+        let m = meta::read(&png, Kind::Jpeg).unwrap();
+        assert_eq!((m.width, m.height), (40, 30));
+        let [thumb, _] = renditions(&png, Kind::Jpeg).try_into().unwrap();
+        assert_eq!((thumb.0, thumb.1), (40, 30));
+        assert!((thumb.2[0] as i32 - 200).abs() < 12);
     }
 
     #[test]

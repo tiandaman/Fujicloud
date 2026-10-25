@@ -94,31 +94,14 @@ impl Cache {
         if path.is_file() {
             return Ok(path);
         }
-        if !src.kind.has_preview() {
-            return Err(Error::Unsupported(src.kind));
-        }
         crate::guard(move || self.generate(src, size, path))
     }
 
     fn generate(&self, src: &Source, size: Size, path: PathBuf) -> Result<PathBuf, Error> {
-        // PSD/TIFF edits are expensive to decode (and may be large network
-        // reads): make both renditions from one decode.
+        // HEIF and PSD/TIFF edits are expensive to decode (and may be large
+        // network reads): make both renditions from one decode.
         if !matches!(src.kind, Kind::Jpeg | Kind::Raf) {
-            let image = decode::image(src.path, src.kind)?;
-            let preview = render_rgb(
-                image.data,
-                image.width,
-                image.height,
-                Size::Preview.long_edge(),
-                Size::Preview.quality(),
-            )?;
-            let thumb = render(
-                &preview.jpeg,
-                Size::Thumb.long_edge(),
-                Size::Thumb.quality(),
-                false,
-            )?;
-            self.store(src, &Renditions { preview, thumb })?;
+            self.store_decoded(src, decode::image(src.path, src.kind)?)?;
             return Ok(path);
         }
 
@@ -131,9 +114,31 @@ impl Cache {
             Some(p) => fs::read(p)?,
             None => source_jpeg(src)?,
         };
+        if preview.is_none() && decode::disguise(&bytes).is_some() {
+            self.store_decoded(src, decode::disguised(&bytes)?)?;
+            return Ok(path);
+        }
         let out = render(&bytes, size.long_edge(), size.quality(), preview.is_none())?;
         write_atomic(&path, &out.jpeg)?;
         Ok(path)
+    }
+
+    /// Stores both renditions of an already-decoded, upright image.
+    fn store_decoded(&self, src: &Source, image: decode::Rgb) -> Result<(), Error> {
+        let preview = render_rgb(
+            image.data,
+            image.width,
+            image.height,
+            Size::Preview.long_edge(),
+            Size::Preview.quality(),
+        )?;
+        let thumb = render(
+            &preview.jpeg,
+            Size::Thumb.long_edge(),
+            Size::Thumb.quality(),
+            false,
+        )?;
+        Ok(self.store(src, &Renditions { preview, thumb })?)
     }
 
     /// Stores renditions built ahead of time (see [`render_all`]).

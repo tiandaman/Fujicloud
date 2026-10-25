@@ -132,14 +132,24 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
             .ensure(&src, Size::Preview)
             .and_then(|p| Ok(std::fs::read(p)?)),
         "o" => match file_kind {
-            Kind::Jpeg => std::fs::read(&file).map_err(Into::into),
+            Kind::Jpeg => std::fs::read(&file).map_err(Into::into).and_then(|bytes| {
+                // A HEIC or PNG saved as .jpg: show the rendition instead.
+                if fuji_core::decode::disguise(&bytes).is_some() {
+                    state
+                        .cache
+                        .ensure(&src, Size::Preview)
+                        .and_then(|p| Ok(std::fs::read(p)?))
+                } else {
+                    Ok(bytes)
+                }
+            }),
             Kind::Raf => raf::read_embedded_jpeg(&file).map_err(Into::into),
-            // The webview can't show PSD/TIFF; the 2560px rendition stands in.
-            Kind::Psd | Kind::Tiff => state
+            // The webview can't show HEIF, PSD or TIFF; the 2560px rendition
+            // stands in.
+            Kind::Heif | Kind::Psd | Kind::Tiff => state
                 .cache
                 .ensure(&src, Size::Preview)
                 .and_then(|p| Ok(std::fs::read(p)?)),
-            other => Err(fuji_core::Error::Unsupported(other)),
         },
         _ => return status(StatusCode::NOT_FOUND),
     };

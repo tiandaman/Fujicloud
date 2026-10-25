@@ -47,6 +47,10 @@ thousands of images.
   so you can compare the same eye or the same sky at 100%. Edits get a badge in the
   grid and inherit the original's date, camera and location. Select any two photos and
   right-click to compare them, too.
+- **HEIC and HEIF:** iPhone photos and Fujifilm's HEIF mode (`.HEIC`, `.HIF`) get
+  thumbnails and previews with a built-in decoder, so no Microsoft Store codec is
+  needed. Rotation and the iPhone's Display P3 colour are handled, and HEIC or PNG
+  pictures that were saved with a `.jpg` name show up too.
 - **Photoshop files in the grid:** layered PSD/PSB and TIFF files get thumbnails and
   previews from their flattened image (8- or 16-bit, compressed or not). Colour is
   managed, so Adobe RGB and ProPhoto edits look the same as they do in Photoshop
@@ -176,8 +180,6 @@ cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
 
 ## Roadmap ideas
 
-- HEIF (`.HIF`) previews through Windows' WIC codecs (today HIF files are indexed but
-  show a placeholder).
 - Read ratings back from `.xmp` sidecars during scans, so every laptop sees the same
   stars.
 - Direct camera import over PTP/IP (no PC AutoSave needed).
@@ -190,4 +192,6 @@ cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
 Place names © [GeoNames](https://www.geonames.org) (CC BY 4.0). Map data ©
 OpenStreetMap contributors, tiles by [OpenFreeMap](https://openfreemap.org). Country
 borders from Natural Earth via `world-atlas`. Smart search uses Google's SigLIP model,
-via the [Xenova ONNX export](https://huggingface.co/Xenova/siglip-base-patch16-224).
+via the [Xenova ONNX export](https://huggingface.co/Xenova/siglip-base-patch16-224). HEIC decoding by
+[heic-decoder](https://github.com/Multipad-cyber/heic-decoder-rust); test images from
+[heic-rs](https://github.com/tbraun96/heic-rs).
