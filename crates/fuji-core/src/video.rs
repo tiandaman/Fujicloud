@@ -309,7 +309,9 @@ pub fn poster(path: &Path, long_edge: u32) -> Result<crate::decode::Rgb, Error> 
                 return Err(bad("Windows gave an empty preview"));
             }
             let data = bgra
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|p| [p[2], p[1], p[0]])
                 .collect();
             Ok(crate::decode::Rgb {
