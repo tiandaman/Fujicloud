@@ -236,6 +236,16 @@
     reveal(id);
   }
 
+  // Thumbnails that failed while the Shield was off load once it's back.
+  $effect(() => {
+    if (!store.reachEpoch || !scroller) return;
+    for (const tile of scroller.querySelectorAll<HTMLElement>('.failed')) {
+      tile.classList.remove('failed');
+      const img = tile.querySelector('img');
+      if (img) img.src = img.src;
+    }
+  });
+
   function fadeIn(img: HTMLImageElement) {
     if (img.complete && img.naturalWidth) img.classList.add('loaded');
     else img.addEventListener('load', () => img.classList.add('loaded'), { once: true });

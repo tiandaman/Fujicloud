@@ -65,4 +65,13 @@ export function exposureLine(p: Photo): string[] {
   );
 }
 
-export const kindLabel: Record<Kind, string> = { jpeg: 'JPEG', raf: 'RAF', heif: 'HEIF', tiff: 'TIFF', psd: 'PSD' };
+export const kindLabel: Record<Kind, string> = {
+  jpeg: 'JPEG',
+  raf: 'RAF',
+  heif: 'HEIF',
+  tiff: 'TIFF',
+  psd: 'PSD',
+  png: 'PNG',
+  dng: 'DNG',
+  video: 'Video',
+};

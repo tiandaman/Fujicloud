@@ -90,4 +90,6 @@ jobs:
         env:
           FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
       - name: Clippy
-        run: cargo clippy -p fujicloud -- -D warnings
+        run: cargo clippy -p fujicloud --all-targets -- -D warnings
+      - name: App tests on Windows
+        run: cargo test -p fujicloud --lib

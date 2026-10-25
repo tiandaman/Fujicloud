@@ -122,6 +122,31 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
         mtime,
     };
 
+    // While the Shield is off, serve what the cache holds and fail fast
+    // otherwise, so the window shows a placeholder instead of waiting.
+    if state.reach.covers(&file) {
+        let wanted = if kind == "t" {
+            Size::Thumb
+        } else {
+            Size::Preview
+        };
+        let other = if kind == "t" {
+            Size::Preview
+        } else {
+            Size::Thumb
+        };
+        let exact = kind != "o" && state.cache.get(&src, wanted).is_some();
+        return match state
+            .cache
+            .get(&src, wanted)
+            .or_else(|| state.cache.get(&src, other))
+            .and_then(|p| std::fs::read(p).ok())
+        {
+            Some(bytes) => jpeg(bytes, exact),
+            None => status(StatusCode::SERVICE_UNAVAILABLE),
+        };
+    }
+
     let bytes = match kind {
         "t" => state
             .cache
@@ -155,20 +180,33 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
     };
 
     match bytes {
-        Ok(bytes) => Response::builder()
-            .header(header::CONTENT_TYPE, "image/jpeg")
-            // URLs carry the file's mtime, so a given URL never changes.
-            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
-            // Lets the histogram read pixels from a canvas without tainting it.
-            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .body(bytes)
-            .unwrap(),
+        Ok(bytes) => jpeg(bytes, true),
         Err(fuji_core::Error::Unsupported(_)) => status(StatusCode::UNSUPPORTED_MEDIA_TYPE),
         Err(e) => {
             log::warn!("{path}: {e}");
             status(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+/// `immutable` is false for a stand-in (a thumbnail served for a preview
+/// while offline), which mustn't be remembered for that URL.
+fn jpeg(bytes: Vec<u8>, immutable: bool) -> Response<Vec<u8>> {
+    Response::builder()
+        .header(header::CONTENT_TYPE, "image/jpeg")
+        // URLs carry the file's mtime, so a given URL never changes.
+        .header(
+            header::CACHE_CONTROL,
+            if immutable {
+                "public, max-age=31536000, immutable"
+            } else {
+                "no-store"
+            },
+        )
+        // Lets the histogram read pixels from a canvas without tainting it.
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(bytes)
+        .unwrap()
 }
 
 fn status(code: StatusCode) -> Response<Vec<u8>> {

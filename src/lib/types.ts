@@ -114,11 +114,21 @@ export interface Source {
   path: string;
   label: string;
   count: number;
+  /** Can't be reached right now (the Shield is off); browsing from the cache. */
+  offline?: boolean;
+}
+
+/** A folder new shots arrive in: PC AutoSave, iCloud Photos, … */
+export interface Inbox {
+  path: string;
+  /** Recycle the inbox file once the library's copy has been checked. */
+  cleanup: boolean;
 }
 
 export interface Settings {
-  inbox: string | null;
+  inboxes: Inbox[];
   importTo: string | null;
+  backupTo: string | null;
   parallelCopies: number;
   writeXmp: boolean;
   editorPath: string | null;
@@ -144,12 +154,14 @@ export interface ScanProgress {
 
 export interface SyncStatus {
   active: boolean;
-  inbox?: string;
+  inboxes?: string[];
   library?: string;
   copying?: number;
   done?: number;
   total?: number;
   lastImported?: number;
+  /** Photos waiting for the library to be reachable. */
+  waiting?: number;
   error?: string | null;
 }
 

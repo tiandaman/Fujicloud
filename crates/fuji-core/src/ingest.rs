@@ -72,10 +72,57 @@ pub fn copy(src: &Path, dest: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// A checksum of a file's contents (xxh3, read in 1 MB chunks).
+pub fn checksum(path: &Path) -> std::io::Result<u128> {
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            return Ok(hasher.digest128());
+        }
+        hasher.update(&buf[..n]);
+    }
+}
+
+/// Whether two files hold exactly the same bytes.
+pub fn same_content(a: &Path, b: &Path) -> std::io::Result<bool> {
+    if fs::metadata(a)?.len() != fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    Ok(checksum(a)? == checksum(b)?)
+}
+
+/// Copies like [`copy`], then reads the copy back and compares it with the
+/// original before giving it its real name. A bad copy (a flaky network
+/// write) is thrown away and tried once more.
+pub fn copy_verified(src: &Path, dest: &Path) -> Result<(), Error> {
+    if let Some(dir) = dest.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let part = dest.with_extension("fujicloud-part");
+    let want = checksum(src)?;
+    for attempt in 1..=2 {
+        fs::copy(src, &part)?;
+        if checksum(&part)? == want {
+            fs::rename(&part, dest)?;
+            return Ok(());
+        }
+        let _ = fs::remove_file(&part);
+        log::warn!("copy of {} didn't match (attempt {attempt})", src.display());
+    }
+    Err(Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("the copy of {} didn't match the original", src.display()),
+    )))
+}
+
 pub fn import(src: &Path, library: &Path) -> Result<Target, Error> {
     let target = target(src, library)?;
     if let Target::New(dest) = &target {
-        copy(src, dest)?;
+        copy_verified(src, dest)?;
     }
     Ok(target)
 }
@@ -83,6 +130,24 @@ pub fn import(src: &Path, library: &Path) -> Result<Target, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verified_copies_match_and_differences_are_caught() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.JPG");
+        fs::write(&src, b"some photo bytes").unwrap();
+        let dest = dir.path().join("lib/2026/a.JPG");
+        copy_verified(&src, &dest).unwrap();
+        assert!(same_content(&src, &dest).unwrap());
+        assert!(!dir.path().join("lib/2026/a.fujicloud-part").exists());
+
+        let other = dir.path().join("b.JPG");
+        fs::write(&other, b"some photo bytez").unwrap();
+        assert!(
+            !same_content(&src, &other).unwrap(),
+            "same size, different bytes"
+        );
+    }
 
     #[test]
     fn files_by_date_and_dedupes() {

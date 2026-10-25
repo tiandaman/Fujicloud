@@ -240,10 +240,13 @@ export function mockApi(): Api {
   // `?days=3000` builds a ~50k photo library for performance testing.
   const days = Number(new URLSearchParams(location.search).get('days')) || 140;
   let photos = empty ? [] : buildLibrary(days);
-  let sources: Source[] = empty ? [] : [{ id: 1, path: '\\\\SHIELD\\Samsung_T7\\Photos', label: 'Shield · Samsung T7', count: photos.length }];
+  // `?offline` shows the library as if the Shield were switched off.
+  const offline = new URLSearchParams(location.search).has('offline');
+  let sources: Source[] = empty ? [] : [{ id: 1, path: '\\\\SHIELD\\Samsung_T7\\Photos', label: 'Shield · Samsung T7', count: photos.length, offline }];
   let settings: Settings = {
-    inbox: 'C:\\Users\\me\\Pictures\\FUJIFILM PC AutoSave',
+    inboxes: [{ path: 'C:\\Users\\me\\Pictures\\FUJIFILM PC AutoSave', cleanup: false }],
     importTo: '\\\\SHIELD\\Samsung_T7\\Photos',
+    backupTo: null,
     parallelCopies: 4,
     writeXmp: true,
     editorPath: null,
@@ -285,7 +288,21 @@ export function mockApi(): Api {
     return [...set];
   };
 
-  setTimeout(() => emit('sync', { active: true, inbox: settings.inbox, library: settings.importTo, copying: 0, done: 0, total: 0, lastImported: 0 }), 300);
+  setTimeout(
+    () =>
+      emit('sync', {
+        active: true,
+        inboxes: settings.inboxes.map((i) => i.path),
+        library: settings.importTo,
+        copying: 0,
+        done: 0,
+        total: 0,
+        lastImported: 0,
+        waiting: offline ? 3 : 0,
+        error: null,
+      }),
+    300,
+  );
 
   return {
     native: false,
@@ -366,6 +383,7 @@ export function mockApi(): Api {
     async saveSettings(s) {
       settings = s;
     },
+    suggestInboxes: async () => ['C:\\Users\\me\\Pictures\\FUJIFILM PC AutoSave', 'C:\\Users\\me\\Pictures\\iCloud Photos\\Photos'],
     async listRecipes(): Promise<RecipeRow[]> {
       const counts = new Map<string, number>();
       for (const p of photos) if (p.recipeKey && p.kind !== 'raf' && p.flag !== -1) counts.set(p.recipeKey, (counts.get(p.recipeKey) ?? 0) + 1);

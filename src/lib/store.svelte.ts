@@ -125,6 +125,8 @@ class Store {
   warm = $state.raw<{ done: number; total: number } | null>(null);
   sync = $state.raw<SyncStatus | null>(null);
   toasts = $state.raw<Toast[]>([]);
+  /** Bumped when an offline source comes back, so missing thumbnails retry. */
+  reachEpoch = $state(0);
 
   grid: GridHandle | null = null;
   #toastId = 0;
@@ -220,7 +222,6 @@ class Store {
   visible = $derived.by(() => {
     const kinds = new Set(this.kinds);
     const q = this.query.trim().toLowerCase();
-    const byId = this.byId;
     const smart = this.smartHits && this.smartHits.query.toLowerCase() === q ? this.smartHits.scores : null;
     const similar = this.collection.type === 'similar' ? this.similarHits?.scores : null;
     const scoreOf = (scores: Map<number, number>, p: Photo) => scores.get(p.id) ?? (p.pairId != null ? scores.get(p.pairId) : undefined);
@@ -421,10 +422,23 @@ class Store {
     await api.listen<string>('scan-error', (msg) => this.toast(msg, 'error'));
     await api.listen<{ done: number; total: number }>('warm', (w) => (this.warm = w.done >= w.total ? null : w));
     await api.listen<SyncStatus>('sync', (s) => {
-      const finished = this.sync?.copying && !s.copying && s.lastImported;
+      const before = this.sync;
+      const finished = before?.copying && !s.copying && s.lastImported;
       this.sync = s;
-      if (finished) this.toast(`Imported ${plural(s.lastImported!, 'new photo')} from your camera`);
-      if (s.error) this.toast(s.error, 'error');
+      if (finished) this.toast(`Imported ${plural(s.lastImported!, 'new photo')}`);
+      // Retries repeat the same problem; say it once.
+      if (s.error && !before?.error) this.toast(s.error, 'error');
+    });
+    await api.listen('sources-changed', async () => {
+      const before = new Set(this.sources.filter((s) => s.offline).map((s) => s.id));
+      this.sources = await api.listSources();
+      for (const s of this.sources) {
+        if (s.offline && !before.has(s.id)) this.toast(`${s.label} can't be reached. Browsing from the cache until it's back.`, 'error');
+        if (!s.offline && before.has(s.id)) {
+          this.toast(`${s.label} is back`);
+          this.reachEpoch++;
+        }
+      }
     });
     await api.listen<SmartStatus>('smart', (s) => {
       const finished = this.smart?.phase === 'indexing' && s.phase === 'ready';

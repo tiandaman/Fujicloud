@@ -1,11 +1,12 @@
 mod logfile;
 mod protocol;
+mod reach;
 mod settings;
 mod sidecars;
 mod smart;
 mod sync;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -30,6 +31,7 @@ pub struct AppState {
     sync: Mutex<Option<sync::InboxSync>>,
     pub models_dir: PathBuf,
     pub smart: smart::Smart,
+    pub reach: reach::Reach,
 }
 
 type Shared<'a> = State<'a, Arc<AppState>>;
@@ -39,12 +41,29 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// Refuses to touch a file whose source is offline (it would hang for half
+/// a minute and then fail anyway).
+fn reachable(state: &AppState, path: &Path) -> CmdResult<()> {
+    if !state.reach.covers(path) {
+        return Ok(());
+    }
+    let label = state
+        .lib
+        .source_for(path)
+        .ok()
+        .flatten()
+        .map_or_else(|| "its folder".to_owned(), |s| s.label);
+    Err(format!(
+        "{label} can't be reached right now. Is the Shield switched on?"
+    ))
+}
+
 // ---- library ---------------------------------------------------------------
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Bootstrap {
-    sources: Vec<SourceRow>,
+    sources: Vec<SourceInfo>,
     settings: Settings,
     effects: bool,
     editor: Option<String>,
@@ -59,7 +78,7 @@ fn bootstrap(state: Shared) -> CmdResult<Bootstrap> {
         .clone()
         .or_else(settings::find_photoshop);
     Ok(Bootstrap {
-        sources: state.lib.sources().map_err(err)?,
+        sources: sources(&state)?,
         settings,
         effects: state.effects.load(Ordering::Relaxed),
         editor: editor.map(|p| p.to_string_lossy().into_owned()),
@@ -72,9 +91,31 @@ async fn list_photos(state: Shared<'_>) -> CmdResult<Vec<PhotoRow>> {
     state.lib.photos().map_err(err)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceInfo {
+    #[serde(flatten)]
+    row: SourceRow,
+    /// Can't be reached right now; its photos browse from the cache.
+    offline: bool,
+}
+
+fn sources(state: &AppState) -> CmdResult<Vec<SourceInfo>> {
+    Ok(state
+        .lib
+        .sources()
+        .map_err(err)?
+        .into_iter()
+        .map(|row| SourceInfo {
+            offline: state.reach.is_offline(row.id),
+            row,
+        })
+        .collect())
+}
+
 #[tauri::command]
-fn list_sources(state: Shared) -> CmdResult<Vec<SourceRow>> {
-    state.lib.sources().map_err(err)
+fn list_sources(state: Shared) -> CmdResult<Vec<SourceInfo>> {
+    sources(&state)
 }
 
 #[derive(Serialize)]
@@ -90,6 +131,12 @@ async fn photo_detail(state: Shared<'_>, id: i64) -> CmdResult<DetailWithExif> {
     let detail = state.lib.photo(id).map_err(err)?;
     let path = PathBuf::from(&detail.path);
     let kind = detail.row.kind;
+    if state.reach.covers(&path) {
+        return Ok(DetailWithExif {
+            detail,
+            exif: Vec::new(),
+        });
+    }
     // Reading EXIF touches the network share, so keep it off the IPC thread.
     let exif = tauri::async_runtime::spawn_blocking(move || {
         meta::all_fields(&path, kind).unwrap_or_default()
@@ -100,7 +147,7 @@ async fn photo_detail(state: Shared<'_>, id: i64) -> CmdResult<DetailWithExif> {
 }
 
 #[tauri::command]
-fn add_source(app: AppHandle, state: Shared, path: String) -> CmdResult<SourceRow> {
+fn add_source(app: AppHandle, state: Shared, path: String) -> CmdResult<SourceInfo> {
     let path = PathBuf::from(path.trim());
     if !path.is_dir() {
         return Err(format!(
@@ -108,9 +155,12 @@ fn add_source(app: AppHandle, state: Shared, path: String) -> CmdResult<SourceRo
             path.display()
         ));
     }
-    let source = state.lib.add_source(&path).map_err(err)?;
+    let row = state.lib.add_source(&path).map_err(err)?;
     spawn_scan(app, state.inner().clone());
-    Ok(source)
+    Ok(SourceInfo {
+        row,
+        offline: false,
+    })
 }
 
 #[tauri::command]
@@ -131,7 +181,7 @@ fn rescan(app: AppHandle, state: Shared) {
 }
 
 /// Rescans every source in the background, then warms the thumbnail cache.
-fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
+pub(crate) fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
     if state.scanning.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -139,6 +189,10 @@ fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
         let sources = state.lib.sources().unwrap_or_default();
         let mut last_refresh = Instant::now();
         for source in &sources {
+            // An offline source keeps its photos; it's rescanned when it's back.
+            if !reach::check(&app, &state, source.id, Path::new(&source.path)) {
+                continue;
+            }
             let progress = |p: scan::Progress| {
                 let _ = app.emit("scan", (&source.label, &p));
             };
@@ -190,6 +244,9 @@ fn spawn_warm(app: AppHandle, state: Arc<AppState>) {
         .filter(|p| !(p.kind.is_raw() && p.pair_id.is_some()))
         .filter(|p| {
             let path = PathBuf::from(&p.folder).join(&p.name);
+            if state.reach.covers(&path) {
+                return false;
+            }
             let src = thumbs::Source {
                 path: &path,
                 kind: p.kind,
@@ -318,6 +375,7 @@ fn open_in_editor(state: Shared, ids: Vec<i64>) -> CmdResult<String> {
     let mut paths = Vec::new();
     for id in ids {
         let detail = state.lib.photo(id).map_err(err)?;
+        reachable(&state, Path::new(&detail.path))?;
         let mut path = detail.path.clone();
         if settings.edit_raw
             && !detail.row.kind.is_raw()
@@ -352,12 +410,14 @@ fn open_in_editor(state: Shared, ids: Vec<i64>) -> CmdResult<String> {
 #[tauri::command]
 fn reveal(state: Shared, id: i64) -> CmdResult<()> {
     let detail = state.lib.photo(id).map_err(err)?;
+    reachable(&state, Path::new(&detail.path))?;
     tauri_plugin_opener::reveal_item_in_dir(&detail.path).map_err(err)
 }
 
 #[tauri::command]
 fn open_default(state: Shared, id: i64) -> CmdResult<()> {
     let detail = state.lib.photo(id).map_err(err)?;
+    reachable(&state, Path::new(&detail.path))?;
     tauri_plugin_opener::open_path(&detail.path, None::<&str>).map_err(err)
 }
 
@@ -448,30 +508,44 @@ fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdRe
     // Smart search is switched by its own commands (they download and index).
     settings.smart_search = state.settings.read().smart_search;
     settings.smart_gpu = state.settings.read().smart_gpu;
+    settings.migrate();
     settings.save(&state.settings_path).map_err(err)?;
     *state.settings.write() = settings;
     restart_sync(&app, state.inner())
+}
+
+#[tauri::command]
+fn suggest_inboxes() -> Vec<String> {
+    settings::suggested_inboxes()
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
 }
 
 fn restart_sync(app: &AppHandle, state: &Arc<AppState>) -> CmdResult<()> {
     let mut slot = state.sync.lock();
     *slot = None;
     let settings = state.settings.read().clone();
-    let (Some(inbox), Some(library)) = (settings.inbox, settings.import_to) else {
+    let (present, missing): (Vec<_>, Vec<_>) =
+        settings.inboxes.into_iter().partition(|i| i.path.is_dir());
+    let Some(library) = settings.import_to.filter(|_| !present.is_empty()) else {
         let _ = app.emit("sync", serde_json::json!({ "active": false }));
-        return Ok(());
+        return match missing.first() {
+            Some(i) => Err(format!("Inbox folder {} doesn't exist", i.path.display())),
+            None => Ok(()),
+        };
     };
-    if !inbox.is_dir() {
-        return Err(format!("Inbox folder {} doesn't exist", inbox.display()));
-    }
-    std::fs::create_dir_all(&library)
-        .map_err(|e| format!("Can't write to {}: {e}", library.display()))?;
-    // New shots should show up in the library view immediately.
+    // New shots should show up in the library view immediately. The folder
+    // itself is made by the sync thread: the Shield may be asleep, and
+    // waiting on it here would freeze the window.
     if state.lib.source_for(&library).map_err(err)?.is_none() {
         state.lib.add_source(&library).map_err(err)?;
     }
-    *slot = Some(sync::start(app.clone(), state.clone(), inbox, library).map_err(err)?);
-    Ok(())
+    *slot = Some(sync::start(app.clone(), state.clone(), present, library).map_err(err)?);
+    match missing.first() {
+        Some(i) => Err(format!("Inbox folder {} doesn't exist", i.path.display())),
+        None => Ok(()),
+    }
 }
 
 #[derive(Serialize)]
@@ -543,6 +617,7 @@ pub fn run() {
                 sync: Mutex::new(None),
                 models_dir: data.join("models"),
                 smart: smart::Smart::default(),
+                reach: reach::Reach::default(),
             });
 
             #[cfg(windows)]
@@ -562,6 +637,7 @@ pub fn run() {
             // Right away, not after the scan: the UI already says the model
             // is downloading, and on a big network library the scan is slow.
             smart::spawn(handle.clone(), state.clone());
+            reach::spawn(handle.clone(), state.clone());
             spawn_scan(handle, state);
             Ok(())
         })
@@ -588,6 +664,7 @@ pub fn run() {
             reveal,
             open_default,
             save_settings,
+            suggest_inboxes,
             cache_info,
             clear_cache,
             list_recipes,

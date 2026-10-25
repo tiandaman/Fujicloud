@@ -307,11 +307,13 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         let mut jpegs = Vec::with_capacity(chunk.len());
         for &id in chunk {
             match thumbnail(state, id) {
-                Some(bytes) => {
+                Thumb::Ready(bytes) => {
                     ids.push(id);
                     jpegs.push(bytes);
                 }
-                None => {
+                // Indexed after the next scan, once its source is back.
+                Thumb::Offline => {}
+                Thumb::Failed => {
                     smart.failed.lock().insert(id);
                 }
             }
@@ -362,14 +364,29 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-fn thumbnail(state: &AppState, id: i64) -> Option<Vec<u8>> {
-    let (path, kind, size, mtime) = state.lib.file_of(id).ok()?;
+enum Thumb {
+    Ready(Vec<u8>),
+    Offline,
+    Failed,
+}
+
+fn thumbnail(state: &AppState, id: i64) -> Thumb {
+    let Ok((path, kind, size, mtime)) = state.lib.file_of(id) else {
+        return Thumb::Failed;
+    };
     let src = thumbs::Source {
         path: &path,
         kind,
         size,
         mtime,
     };
-    let cached = state.cache.ensure(&src, Size::Thumb).ok()?;
-    std::fs::read(cached).ok()
+    let cached = match state.cache.get(&src, Size::Thumb) {
+        Some(cached) => cached,
+        None if state.reach.covers(&path) => return Thumb::Offline,
+        None => match state.cache.ensure(&src, Size::Thumb) {
+            Ok(cached) => cached,
+            Err(_) => return Thumb::Failed,
+        },
+    };
+    std::fs::read(cached).map_or(Thumb::Failed, Thumb::Ready)
 }

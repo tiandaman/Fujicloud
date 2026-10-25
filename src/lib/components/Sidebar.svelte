@@ -51,6 +51,7 @@
   }
 
   const syncing = $derived(!!store.sync?.copying);
+  const waiting = $derived(store.sync?.waiting ?? 0);
 
   // Typing a new album's name, or renaming one (by id).
   let naming = $state<number | 'new' | null>(null);
@@ -143,8 +144,13 @@
       <button class="add" title="Add folder or network drive" onclick={addFolder}><Icon name="plus" size={14} stroke={2} /></button>
     </div>
     {#each store.sources as s (s.id)}
-      <div oncontextmenu={(e) => sourceMenu(e, s.id)} role="presentation" title={s.path}>
-        {#snippet lead()}<span class="ico"><Icon name={s.path.startsWith('\\\\') ? 'drive' : 'folder'} size={16} /></span>{/snippet}
+      <div
+        oncontextmenu={(e) => sourceMenu(e, s.id)}
+        role="presentation"
+        class:offline={s.offline}
+        title={s.offline ? `${s.path}\nCan't be reached right now. Browsing from the cache; changes are saved when it's back.` : s.path}
+      >
+        {#snippet lead()}<span class="ico"><Icon name={s.offline ? 'offline' : s.path.startsWith('\\\\') ? 'drive' : 'folder'} size={16} /></span>{/snippet}
         {@render item({ type: 'source', id: s.id }, s.label, s.count, lead)}
       </div>
     {/each}
@@ -280,11 +286,12 @@
     {/if}
 
     <button class="sync" class:on={store.sync?.active} onclick={() => (store.settingsOpen = true)}>
-      <span class="sync-ico" class:pulse={syncing}><Icon name="wifi" size={15} /></span>
+      <span class="sync-ico" class:pulse={syncing} class:waiting={waiting && !syncing}><Icon name={waiting && !syncing ? 'offline' : 'wifi'} size={15} /></span>
       <div class="grow">
-        <strong>{store.sync?.active ? (syncing ? 'Importing from camera' : 'Camera sync on') : 'Camera sync off'}</strong>
+        <strong>{store.sync?.active ? (syncing ? 'Importing new photos' : waiting ? 'Waiting for the library' : 'Sync on') : 'Sync off'}</strong>
         <span class="faint truncate">
           {#if syncing}{store.sync?.done ?? 0} of {store.sync?.total ?? 0} copied to library
+          {:else if waiting}{waiting} photo{waiting === 1 ? '' : 's'} queued
           {:else if store.sync?.active}Watching for new shots
           {:else}Set up in Settings{/if}
         </span>
@@ -541,6 +548,16 @@
   .sync.on .sync-ico {
     color: var(--pick);
     background: rgba(48, 209, 88, 0.14);
+  }
+  .sync.on .sync-ico.waiting {
+    color: #ffb340;
+    background: rgba(255, 179, 64, 0.14);
+  }
+  .offline :global(.item) {
+    opacity: 0.62;
+  }
+  .offline :global(.ico) {
+    color: #ffb340;
   }
   .sync.on strong {
     color: var(--text);

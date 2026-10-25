@@ -7,7 +7,7 @@
 
   let el: HTMLDivElement;
   let name = $state('');
-  let pos = $state({ left: x, top: y });
+  let pos = $state({ left: 0, top: 0 });
 
   // Keep it on screen.
   $effect(() => {

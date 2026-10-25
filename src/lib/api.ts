@@ -26,6 +26,8 @@ export interface Api {
   reveal(id: number): Promise<void>;
   openDefault(id: number): Promise<void>;
   saveSettings(settings: Settings): Promise<void>;
+  /** Inbox folders found on this PC (PC AutoSave, iCloud Photos). */
+  suggestInboxes(): Promise<string[]>;
   cacheInfo(): Promise<CacheInfo>;
   clearCache(): Promise<void>;
   listRecipes(): Promise<RecipeRow[]>;
@@ -75,6 +77,7 @@ function tauriApi(): Api {
     reveal: (id) => invoke('reveal', { id }),
     openDefault: (id) => invoke('open_default', { id }),
     saveSettings: (settings) => invoke('save_settings', { settings }),
+    suggestInboxes: () => invoke('suggest_inboxes'),
     cacheInfo: () => invoke('cache_info'),
     clearCache: () => invoke('clear_cache'),
     listRecipes: () => invoke('list_recipes'),

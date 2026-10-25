@@ -125,20 +125,7 @@ impl Cache {
 
     /// Stores both renditions of an already-decoded, upright image.
     fn store_decoded(&self, src: &Source, image: decode::Rgb) -> Result<(), Error> {
-        let preview = render_rgb(
-            image.data,
-            image.width,
-            image.height,
-            Size::Preview.long_edge(),
-            Size::Preview.quality(),
-        )?;
-        let thumb = render(
-            &preview.jpeg,
-            Size::Thumb.long_edge(),
-            Size::Thumb.quality(),
-            false,
-        )?;
-        Ok(self.store(src, &Renditions { preview, thumb })?)
+        Ok(self.store(src, &render_rgb_all(image)?)?)
     }
 
     /// Stores renditions built ahead of time (see [`render_all`]).
@@ -202,6 +189,24 @@ fn render_both(jpeg: &[u8]) -> Result<Renditions, Error> {
         Size::Preview.long_edge(),
         Size::Preview.quality(),
         true,
+    )?;
+    let thumb = render(
+        &preview.jpeg,
+        Size::Thumb.long_edge(),
+        Size::Thumb.quality(),
+        false,
+    )?;
+    Ok(Renditions { preview, thumb })
+}
+
+/// Builds both renditions from an already-decoded, upright image.
+pub fn render_rgb_all(image: decode::Rgb) -> Result<Renditions, Error> {
+    let preview = render_rgb(
+        image.data,
+        image.width,
+        image.height,
+        Size::Preview.long_edge(),
+        Size::Preview.quality(),
     )?;
     let thumb = render(
         &preview.jpeg,

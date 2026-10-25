@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS albums (
     name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
+CREATE TABLE IF NOT EXISTS imported (
+    path  TEXT PRIMARY KEY,
+    size  INTEGER NOT NULL,
+    mtime INTEGER NOT NULL,
+    dest  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS album_photos (
     album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
     photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
@@ -674,6 +680,36 @@ impl Library {
             conn.prepare_cached("SELECT photo_id FROM album_photos WHERE album_id = ?1")?;
         let rows = stmt.query_map([album], |r| r.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    // ---- imports ----------------------------------------------------------
+
+    /// Whether this inbox file (as it is now) was already copied in.
+    pub fn was_imported(&self, path: &Path, size: u64, mtime: i64) -> Result<bool, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT 1 FROM imported WHERE path = ?1 AND size = ?2 AND mtime = ?3",
+        )?;
+        Ok(stmt.exists(params![path.to_string_lossy(), size as i64, mtime])?)
+    }
+
+    pub fn mark_imported(
+        &self,
+        path: &Path,
+        size: u64,
+        mtime: i64,
+        dest: &Path,
+    ) -> Result<(), Error> {
+        self.conn.lock().execute(
+            "INSERT OR REPLACE INTO imported (path, size, mtime, dest) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                path.to_string_lossy(),
+                size as i64,
+                mtime,
+                dest.to_string_lossy()
+            ],
+        )?;
+        Ok(())
     }
 
     // ---- sidecar sync --------------------------------------------------------

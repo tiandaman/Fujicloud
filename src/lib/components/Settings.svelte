@@ -5,18 +5,31 @@
   import type { CacheInfo, Settings } from '../types';
   import Icon from './Icon.svelte';
 
-  let draft = $state<Settings>({ ...store.settings! });
+  let draft = $state<Settings>(structuredClone($state.snapshot(store.settings!)));
   let cache = $state<CacheInfo | null>(null);
   let newSource = $state('');
   let saving = $state(false);
+  let found = $state<string[]>([]);
 
   api.cacheInfo().then((c) => (cache = c)).catch(() => {});
+  api.suggestInboxes().then((s) => (found = s)).catch(() => {});
+
+  // Deleting from a synced folder deletes everywhere: from iCloud Photos, off the iPhone too.
+  const isCloud = (path: string) => /icloud|onedrive|dropbox|google ?drive/i.test(path);
+  const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).slice(-2).join(' › ');
+  const suggestions = $derived(found.filter((f) => !draft.inboxes.some((i) => i.path.toLowerCase() === f.toLowerCase())));
+
+  function addInbox(path: string | null) {
+    const p = path?.trim();
+    if (!p || draft.inboxes.some((i) => i.path.toLowerCase() === p.toLowerCase())) return;
+    draft.inboxes.push({ path: p, cleanup: false });
+  }
 
   // Smart search has its own switch that applies immediately; ignore it here.
   const comparable = (s: Settings | null) => JSON.stringify({ ...s, smartSearch: undefined });
   const dirty = $derived(comparable(draft) !== comparable(store.settings));
 
-  async function pick(key: 'inbox' | 'importTo' | 'editorPath', title: string) {
+  async function pick(key: 'importTo' | 'backupTo' | 'editorPath', title: string) {
     const path = await api.pickFolder(title);
     if (path) draft[key] = path;
   }
@@ -26,13 +39,14 @@
     const clean = (v: string | null) => (v?.trim() ? v.trim() : null);
     const next = {
       ...$state.snapshot(draft),
-      inbox: clean(draft.inbox),
+      inboxes: draft.inboxes.filter((i) => i.path.trim()).map((i) => ({ path: i.path.trim(), cleanup: i.cleanup && !isCloud(i.path) })),
       importTo: clean(draft.importTo),
+      backupTo: clean(draft.backupTo),
       editorPath: clean(draft.editorPath),
       smartSearch: store.settings?.smartSearch ?? false,
     };
     await store.saveSettings(next);
-    draft = { ...next };
+    draft = structuredClone(next);
     saving = false;
   }
 
@@ -76,10 +90,11 @@
       <ul class="sources">
         {#each store.sources as s (s.id)}
           <li>
-            <Icon name={s.path.startsWith('\\\\') ? 'drive' : 'folder'} size={16} />
+            <Icon name={s.offline ? 'offline' : s.path.startsWith('\\\\') ? 'drive' : 'folder'} size={16} />
             <div class="grow">
               <strong>{s.label}</strong>
               <span class="mono faint truncate">{s.path}</span>
+              {#if s.offline}<small class="warn">Can't be reached right now. Photos browse from the cache until it's back.</small>{/if}
             </div>
             <span class="faint tabular">{formatCount(s.count)} files</span>
             <button class="icon-btn" title="Remove from library (files are not touched)" onclick={() => store.removeSource(s.id)}>
@@ -96,25 +111,57 @@
     </section>
 
     <section>
-      <h3><Icon name="wifi" size={16} /> Camera sync</h3>
+      <h3><Icon name="wifi" size={16} /> Camera and phone sync</h3>
       <p class="hint">
-        Have the camera send shots to this PC over Wi-Fi (FUJIFILM <em>PC AutoSave</em>, or any app that saves to a folder). Fujicloud
-        watches that folder and copies each new photo into your library, organised by date, several files at a time.
+        Have the camera send shots to this PC over Wi-Fi (FUJIFILM <em>PC AutoSave</em>), and let <em>iCloud for Windows</em> download your
+        iPhone photos. Fujicloud watches those folders and copies each new photo into your library, organised by date, checking every copy
+        against the original.
       </p>
       <div class="flow">
-        <div class="node"><Icon name="camera" size={18} /><span>Camera</span></div>
+        <div class="node"><Icon name="camera" size={18} /><span>Camera · iPhone</span></div>
         <span class="arrow">Wi-Fi</span>
-        <div class="node"><Icon name="folder" size={18} /><span>Inbox</span></div>
+        <div class="node"><Icon name="folder" size={18} /><span>Inboxes</span></div>
         <span class="arrow">LAN</span>
         <div class="node"><Icon name="drive" size={18} /><span>Shield SSD</span></div>
       </div>
-      <label class="row">
-        <span>Inbox folder</span>
-        <div class="inline grow">
-          <input class="field grow" placeholder="C:\Users\you\Pictures\FUJIFILM PC AutoSave" bind:value={draft.inbox} />
-          <button class="btn" onclick={() => pick('inbox', 'Folder the camera transfers into')}>Browse…</button>
+      <div class="row top">
+        <span>Inbox folders</span>
+        <div class="grow inboxes">
+          {#each draft.inboxes as inbox, i (inbox.path)}
+            {@const cloud = isCloud(inbox.path)}
+            <div class="inbox">
+              <Icon name={cloud ? 'backup' : 'folder'} size={15} />
+              <div class="grow">
+                <span class="truncate" title={inbox.path}>{folderName(inbox.path)}</span>
+                <small class="mono faint truncate">{inbox.path}</small>
+              </div>
+              <label
+                class="cleanup"
+                class:disabled={cloud}
+                title={cloud
+                  ? 'Not for synced folders: deleting from iCloud Photos deletes the photo from your iPhone too.'
+                  : 'Once the library copy has been checked byte for byte, move the inbox file to the Recycle Bin.'}
+              >
+                <input type="checkbox" disabled={cloud} bind:checked={inbox.cleanup} />
+                Free up space
+              </label>
+              <button class="icon-btn" title="Stop watching this folder" onclick={() => draft.inboxes.splice(i, 1)}>
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+          {/each}
+          <div class="inline wrap">
+            <button class="btn" onclick={async () => addInbox(await api.pickFolder('Folder the camera or phone saves into'))}>
+              <Icon name="plus" size={13} stroke={2} /> Add folder…
+            </button>
+            {#each suggestions as s (s)}
+              <button class="btn ghost" title={s} onclick={() => addInbox(s)}>
+                <Icon name="plus" size={13} stroke={2} /> {isCloud(s) ? 'iCloud Photos' : folderName(s)}
+              </button>
+            {/each}
+          </div>
         </div>
-      </label>
+      </div>
       <label class="row">
         <span>Copy new photos to</span>
         <div class="inline grow">
@@ -129,8 +176,17 @@
           <span class="tabular value">{draft.parallelCopies}</span>
         </div>
       </label>
-      {#if store.sync?.active}
-        <p class="ok"><Icon name="check" size={14} stroke={2.4} /> Watching {store.sync.inbox}</p>
+      {#if store.sync?.waiting}
+        <p class="warn">
+          <Icon name="offline" size={14} /> The library can't be reached. {store.sync.waiting} photo{store.sync.waiting === 1 ? '' : 's'} will be copied
+          when it's back.
+        </p>
+      {:else if store.sync?.active}
+        <p class="ok">
+          <Icon name="check" size={14} stroke={2.4} /> Watching {store.sync.inboxes?.length === 1
+            ? folderName(store.sync.inboxes[0])
+            : `${store.sync.inboxes?.length ?? 0} folders`}
+        </p>
       {/if}
     </section>
 
@@ -481,6 +537,53 @@
     margin: 8px 0 0;
     color: var(--pick);
     font-size: 12px;
+  }
+  p.warn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 0;
+    font-size: 12px;
+  }
+  .row.top {
+    align-items: flex-start;
+  }
+  .row.top > span:first-child {
+    padding-top: 8px;
+  }
+  .inboxes {
+    gap: 8px;
+  }
+  .inbox {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 6px 6px 12px;
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.03);
+    box-shadow: inset 0 0 0 0.5px var(--sep);
+    color: var(--text-2);
+  }
+  .inbox .grow span {
+    color: var(--text);
+  }
+  .cleanup {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+  .cleanup.disabled {
+    opacity: 0.45;
+  }
+  .inline.wrap {
+    flex-wrap: wrap;
+  }
+  .btn.ghost {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--border);
   }
   .credits p {
     margin: 0;
