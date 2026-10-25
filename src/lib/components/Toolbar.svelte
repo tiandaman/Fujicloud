@@ -102,6 +102,11 @@
     <span class="faint tabular">
       {store.selection.size ? `${formatCount(store.selection.size)} selected · ` : ''}{plural(store.visible.length, 'photo')}
     </span>
+    {#if store.collection.type === 'rejected' && store.visible.length}
+      <button class="btn danger small" title="Move every rejected photo to the Recycle Bin" onclick={() => store.deleteRejected()}>
+        <Icon name="trash" size={13} /> Delete all rejected…
+      </button>
+    {/if}
   </div>
 
   <div class="search" class:smart={store.smartReady}>
@@ -207,6 +212,14 @@
     min-width: 0;
   }
   .title span {
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .btn.small {
+    align-self: center;
+    height: 24px;
+    padding: 0 9px;
+    gap: 5px;
     font-size: 12px;
     white-space: nowrap;
   }

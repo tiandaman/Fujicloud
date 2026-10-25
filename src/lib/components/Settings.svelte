@@ -26,7 +26,7 @@
   }
 
   // Smart search has its own switch that applies immediately; ignore it here.
-  const comparable = (s: Settings | null) => JSON.stringify({ ...s, smartSearch: undefined });
+  const comparable = (s: Settings | null) => JSON.stringify({ ...s, smartSearch: undefined, smartGpu: undefined, cacheVersion: undefined });
   const dirty = $derived(comparable(draft) !== comparable(store.settings));
 
   async function pick(key: 'importTo' | 'backupTo' | 'editorPath', title: string) {
@@ -56,10 +56,9 @@
     newSource = '';
   }
 
-  async function clearCache() {
-    await api.clearCache();
+  async function rebuild() {
+    await store.rebuildThumbnails();
     cache = await api.cacheInfo();
-    store.toast('Thumbnail cache cleared. It rebuilds as you browse.');
   }
 
   function close() {
@@ -274,8 +273,25 @@
           <span>{cache ? formatBytes(cache.bytes) : '…'} on this PC</span>
           <small class="faint mono truncate">{cache?.path ?? ''}</small>
         </div>
-        <button class="btn" onclick={() => api.rescan()}><Icon name="sync" size={14} /> Rescan library</button>
-        <button class="btn danger" onclick={clearCache}>Clear</button>
+        <button class="btn" onclick={() => api.rescan()} title="Look for new, changed and removed photos">
+          <Icon name="sync" size={14} /> Rescan library
+        </button>
+        <button class="btn" onclick={rebuild} title="Make every thumbnail and preview again, e.g. if some look wrong after an update">
+          <Icon name="photos" size={14} /> Rebuild thumbnails
+        </button>
+      </div>
+    </section>
+
+    <section>
+      <h3><Icon name="info" size={16} /> Help</h3>
+      <div class="row">
+        <div class="grow">
+          <span>Something not working?</span>
+          <small class="faint">The log records what Fujicloud did and any problems it ran into. Attach it when reporting an issue.</small>
+        </div>
+        <button class="btn" onclick={() => api.openLogFolder().catch((e) => store.toast(String(e), 'error'))}>
+          <Icon name="folder" size={14} /> Open log folder
+        </button>
       </div>
     </section>
 
@@ -301,6 +317,10 @@
         <dt><span class="kbd">F</span></dt><dd>Full screen viewer</dd>
         <dt><span class="kbd">Ctrl</span> <span class="kbd">F</span></dt><dd>Search</dd>
         <dt><span class="kbd">Ctrl</span> + scroll</dt><dd>Thumbnail size</dd>
+        <dt><span class="kbd">.</span></dt><dd>Favourite</dd>
+        <dt><span class="kbd">C</span></dt><dd>Compare before / after</dd>
+        <dt><span class="kbd">Ctrl</span> <span class="kbd">Z</span></dt><dd>Undo rating, flag, label</dd>
+        <dt><span class="kbd">Del</span></dt><dd>Delete (Recycle Bin)</dd>
       </dl>
     </section>
   </div>

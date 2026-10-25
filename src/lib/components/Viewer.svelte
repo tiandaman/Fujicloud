@@ -230,7 +230,7 @@
   // ---- keyboard ---------------------------------------------------------------------
 
   async function onKey(e: KeyboardEvent) {
-    if (store.settingsOpen || store.compare || (e.target as HTMLElement).closest('input, textarea')) return;
+    if (store.settingsOpen || store.compare || store.confirmation || (e.target as HTMLElement).closest('input, textarea')) return;
     switch (e.key) {
       case 'ArrowRight':
       case 'ArrowDown':

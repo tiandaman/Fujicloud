@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use fuji_core::db::{AlbumRow, PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
 use fuji_core::thumbs::{self, Size};
-use fuji_core::{Library, meta, scan};
+use fuji_core::{Library, discard, meta, scan, xmp};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use settings::Settings;
@@ -365,6 +365,116 @@ fn remove_from_album(state: Shared, id: i64, ids: Vec<i64>) -> CmdResult<()> {
     Ok(())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Deleted {
+    /// Photos taken out of the library (RAW+JPEG twins included).
+    ids: Vec<i64>,
+    /// Where they went: the Recycle Bin, or a library folder's trash.
+    places: Vec<String>,
+    /// Names of photos that couldn't be moved.
+    failed: Vec<String>,
+}
+
+/// Moves photos (and their twins and sidecars) to the Recycle Bin, or for
+/// network drives to `.fujicloud-trash` in their library folder.
+#[tauri::command]
+async fn delete_photos(app: AppHandle, state: Shared<'_>, ids: Vec<i64>) -> CmdResult<Deleted> {
+    let state = state.inner().clone();
+    let deleted = tauri::async_runtime::spawn_blocking(move || discard_photos(&state, &ids))
+        .await
+        .map_err(err)??;
+    if !deleted.ids.is_empty() {
+        let _ = app.emit("library-changed", ());
+    }
+    Ok(deleted)
+}
+
+fn discard_photos(state: &AppState, ids: &[i64]) -> CmdResult<Deleted> {
+    let ids = state.lib.with_pairs(ids).map_err(err)?;
+    let sources = state.lib.sources().map_err(err)?;
+    let mut deleted = Deleted {
+        ids: Vec::new(),
+        places: Vec::new(),
+        failed: Vec::new(),
+    };
+    for id in ids {
+        let Ok(info) = state.lib.file_info(id) else {
+            continue;
+        };
+        let name = info
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let source = sources.iter().find(|s| s.id == info.source_id);
+        let (Some(source), false) = (source, state.reach.is_offline(info.source_id)) else {
+            deleted.failed.push(name);
+            continue;
+        };
+        let root = Path::new(&source.path);
+        // A RAW+JPEG pair shares one sidecar; whichever goes first takes it.
+        let sidecar = xmp::sidecar_path(&info.path, info.kind);
+        let files: Vec<&Path> = [info.path.as_path(), sidecar.as_path()]
+            .into_iter()
+            .filter(|f| f.exists())
+            .collect();
+        let result = if files.is_empty() {
+            Ok("nowhere".to_owned()) // already gone
+        } else if recycles(root) {
+            trash::delete_all(&files)
+                .map(|()| "the Recycle Bin".to_owned())
+                .map_err(err)
+        } else {
+            files
+                .iter()
+                .try_for_each(|f| discard::to_trash_folder(root, f).map(drop))
+                .map(|()| discard::trash_dir(root).display().to_string())
+                .map_err(err)
+        };
+        match result {
+            Ok(place) => {
+                if !deleted.places.contains(&place) && place != "nowhere" {
+                    deleted.places.push(place);
+                }
+                deleted.ids.push(id);
+            }
+            Err(e) => {
+                log::warn!("couldn't delete {}: {e}", info.path.display());
+                deleted.failed.push(name);
+            }
+        }
+    }
+    state.lib.remove_photos(&deleted.ids).map_err(err)?;
+    log::info!(
+        "deleted {} photos to {:?}; {} failed",
+        deleted.ids.len(),
+        deleted.places,
+        deleted.failed.len()
+    );
+    Ok(deleted)
+}
+
+/// Whether Windows keeps files deleted from this folder in the Recycle Bin.
+/// Only fixed drives do: from a network share or a USB stick they'd be gone.
+#[cfg(windows)]
+fn recycles(path: &Path) -> bool {
+    let path = path.to_string_lossy();
+    let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
+    let Some(drive) = path.get(..3).filter(|d| d.ends_with(":\\")) else {
+        return false; // \\server\share
+    };
+    let drive: Vec<u16> = drive.encode_utf16().chain([0]).collect();
+    // SAFETY: a NUL-terminated root path like `C:\`.
+    let kind = unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(drive.as_ptr()) };
+    kind == 3 // DRIVE_FIXED
+}
+
+#[cfg(not(windows))]
+fn recycles(_: &Path) -> bool {
+    true
+}
+
 // ---- hand-off to other apps -------------------------------------------------
 
 /// Opens photos in Photoshop (Camera Raw for RAFs), falling back to the
@@ -508,6 +618,7 @@ fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdRe
     // Smart search is switched by its own commands (they download and index).
     settings.smart_search = state.settings.read().smart_search;
     settings.smart_gpu = state.settings.read().smart_gpu;
+    settings.cache_version = state.settings.read().cache_version;
     settings.migrate();
     settings.save(&state.settings_path).map_err(err)?;
     *state.settings.write() = settings;
@@ -568,9 +679,27 @@ async fn cache_info(state: Shared<'_>) -> CmdResult<CacheInfo> {
     .map_err(err)
 }
 
+/// Throws away every thumbnail and preview and builds them again, e.g. after
+/// an update that shows some photos better. Returns the new cache version.
 #[tauri::command]
-fn clear_cache(state: Shared) -> CmdResult<()> {
-    state.cache.clear().map_err(err)
+fn rebuild_thumbnails(app: AppHandle, state: Shared) -> CmdResult<u32> {
+    state.cache.clear().map_err(err)?;
+    let version = {
+        let mut settings = state.settings.write();
+        settings.cache_version += 1;
+        settings.save(&state.settings_path).map_err(err)?;
+        settings.cache_version
+    };
+    log::info!("rebuilding thumbnails");
+    spawn_warm(app, state.inner().clone());
+    Ok(version)
+}
+
+#[tauri::command]
+fn open_log_folder(app: AppHandle) -> CmdResult<()> {
+    let dir = app.path().app_local_data_dir().map_err(err)?.join("logs");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    tauri_plugin_opener::open_path(&dir, None::<&str>).map_err(err)
 }
 
 // ---- app ---------------------------------------------------------------------
@@ -666,7 +795,9 @@ pub fn run() {
             save_settings,
             suggest_inboxes,
             cache_info,
-            clear_cache,
+            rebuild_thumbnails,
+            delete_photos,
+            open_log_folder,
             list_recipes,
             name_recipe,
             smart_status,

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import AlbumPicker from './lib/components/AlbumPicker.svelte';
   import Compare from './lib/components/Compare.svelte';
+  import Confirm from './lib/components/Confirm.svelte';
   import Grid from './lib/components/Grid.svelte';
   import InfoPanel from './lib/components/InfoPanel.svelte';
   import MapView from './lib/components/MapView.svelte';
@@ -29,7 +30,7 @@
 
   // Shortcuts that work in both the grid and the viewer.
   function onKey(e: KeyboardEvent) {
-    if (store.settingsOpen || store.compare || (e.target as HTMLElement).closest('input, textarea, select')) return;
+    if (store.settingsOpen || store.compare || store.confirmation || (e.target as HTMLElement).closest('input, textarea, select')) return;
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl) {
       if (e.key === 'z' && !e.shiftKey) store.undo();
@@ -55,6 +56,7 @@
     else if (e.key === '.') store.favorite();
     else if (key === 'c') store.openCompare(store.comparisonOf(store.viewerId != null ? [store.viewerId] : store.targets));
     else if (key === '/') toolbar.focusSearch();
+    else if (e.key === 'Delete') store.deletePhotos();
     else return;
     e.preventDefault();
   }
@@ -99,6 +101,9 @@
 {/if}
 {#if store.settingsOpen && store.settings}
   <Settings />
+{/if}
+{#if store.confirmation}
+  <Confirm />
 {/if}
 <Toasts />
 

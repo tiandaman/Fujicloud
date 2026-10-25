@@ -253,6 +253,7 @@ export function mockApi(): Api {
     editRaw: true,
     smartSearch: false,
     smartGpu: true,
+    cacheVersion: 0,
   };
   const recipeNames = new Map<string, string>([[recipeKey(RECIPES[0]), 'Kodachrome 64-ish']]);
   let smart: SmartStatus = {
@@ -377,6 +378,12 @@ export function mockApi(): Api {
       const gone = withPairs(ids);
       albums = albums.map((a) => (a.id === id ? { ...a, ids: a.ids.filter((x) => !gone.has(x)) } : a));
     },
+    async deletePhotos(ids) {
+      const gone = withPairs(ids);
+      photos = photos.filter((p) => !gone.has(p.id));
+      albums = albums.map((a) => ({ ...a, ids: a.ids.filter((x) => !gone.has(x)) }));
+      return { ids: [...gone], places: ['the Recycle Bin'], failed: [] };
+    },
     openInEditor: async () => 'Photoshop',
     reveal: async () => {},
     openDefault: async () => {},
@@ -453,7 +460,11 @@ export function mockApi(): Api {
         .slice(0, 120);
     },
     cacheInfo: async () => ({ bytes: 1.84e9, path: 'C:\\Users\\me\\AppData\\Local\\app.fujicloud.desktop\\cache', backlog: 0 }),
-    clearCache: async () => {},
+    async rebuildThumbnails() {
+      settings = { ...settings, cacheVersion: settings.cacheVersion + 1 };
+      return settings.cacheVersion;
+    },
+    openLogFolder: async () => {},
     pickFolder: async () => window.prompt('Folder path (mock)', '\\\\SHIELD\\Samsung_T7\\Photos'),
     async listen(event, cb) {
       const set = listeners.get(event) ?? new Set();

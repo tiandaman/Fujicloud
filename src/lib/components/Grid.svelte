@@ -188,6 +188,8 @@
         { label: p.flag === 1 && !many ? 'Unpick' : 'Pick', icon: 'flag', hint: 'P', action: () => store.flag(p.flag === 1 && !many ? 0 : 1, ids) },
         { label: p.flag === -1 && !many ? 'Unreject' : 'Reject', icon: 'x', hint: 'X', action: () => store.flag(p.flag === -1 && !many ? 0 : -1, ids) },
         { labels: true, value: many ? null : p.label, onlabel: (l) => store.label(l, ids) },
+        { separator: true },
+        { label: many ? `Delete ${ids.length} photos…` : 'Delete…', icon: 'trash', hint: 'Del', action: () => store.deletePhotos(ids) },
       ],
     };
   }
@@ -195,7 +197,7 @@
   // ---- keyboard ------------------------------------------------------------------
 
   function onKey(e: KeyboardEvent) {
-    if (store.viewerId != null || store.compare || store.settingsOpen || menu) return;
+    if (store.viewerId != null || store.compare || store.settingsOpen || store.confirmation || menu) return;
     const t = e.target as HTMLElement;
     if (t.closest('input, textarea, select, [contenteditable]')) return;
     const flat = layout.flat;

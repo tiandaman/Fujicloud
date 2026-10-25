@@ -37,6 +37,9 @@ pub struct Settings {
     pub smart_search: bool,
     /// Analyse photos on the graphics card when there is one (DirectML).
     pub smart_gpu: bool,
+    /// Bumped by "Rebuild thumbnails" so the window stops reusing the old
+    /// images it has cached.
+    pub cache_version: u32,
 }
 
 impl Default for Settings {
@@ -52,6 +55,7 @@ impl Default for Settings {
             edit_raw: true,
             smart_search: false,
             smart_gpu: true,
+            cache_version: 0,
         }
     }
 }

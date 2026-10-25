@@ -3,6 +3,7 @@
 
 pub mod db;
 pub mod decode;
+pub mod discard;
 #[cfg(feature = "smart-search")]
 pub mod embed;
 pub mod fuji;

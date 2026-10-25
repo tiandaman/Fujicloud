@@ -1,6 +1,7 @@
 import { api } from './api';
 import { formatDay, formatMonth, plural } from './format';
 import { countryName, placeName, recipeSummary, recipeTitle } from './recipe';
+import { cacheVersion } from './version.svelte';
 import type {
   Album,
   Collection,
@@ -108,6 +109,8 @@ class Store {
   settingsOpen = $state(false);
   /** The "add to album" popover. */
   albumPicker = $state.raw<{ x: number; y: number; ids: number[] } | null>(null);
+  /** A question waiting for an answer (see `ask`). */
+  confirmation = $state.raw<{ title: string; body: string; action: string; resolve: (ok: boolean) => void } | null>(null);
   /** Before/after comparison, shown over everything else. */
   compare = $state.raw<{ before: number; after: number } | null>(null);
   compareMode = $state<'split' | 'slider'>('split');
@@ -404,6 +407,7 @@ class Store {
     const boot = await api.bootstrap();
     this.sources = boot.sources;
     this.settings = boot.settings;
+    cacheVersion.n = boot.settings.cacheVersion;
     this.effects = boot.effects;
     this.editor = boot.editor;
     this.smart = boot.smart;
@@ -635,6 +639,74 @@ class Store {
       await api.saveSettings(s);
       this.settings = s;
       this.toast('Settings saved');
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Asks before doing something that can't be undone with Ctrl+Z. */
+  ask(title: string, body: string, action: string): Promise<boolean> {
+    this.confirmation?.resolve(false);
+    return new Promise((resolve) => (this.confirmation = { title, body, action, resolve }));
+  }
+
+  answer(ok: boolean) {
+    this.confirmation?.resolve(ok);
+    this.confirmation = null;
+  }
+
+  /** Moves photos to the Recycle Bin after asking. RAW twins go too. */
+  async deletePhotos(ids = this.targets, what = 'photo') {
+    if (!ids.length) return;
+    const photos = ids.map((id) => this.byId.get(id)).filter((p) => !!p);
+    const twins = photos.some((p) => p.pairId != null) ? ' RAW+JPEG twins go together.' : '';
+    // Windows can't recycle from network drives; those go to a trash folder.
+    const remote = photos.filter((p) => p.folder.startsWith('\\\\')).length;
+    const they = ids.length === 1 ? 'It goes' : 'They go';
+    const where =
+      remote === 0
+        ? `${they} to the Recycle Bin.`
+        : remote === photos.length
+          ? `${they} to a .fujicloud-trash folder in the library folder, since Windows has no Recycle Bin for network drives. Delete that folder to free up the space.`
+          : `${they} to the Recycle Bin, or for network drives, to a .fujicloud-trash folder in the library folder.`;
+    const ok = await this.ask(`Delete ${plural(ids.length, what)}?`, where + twins, 'Delete');
+    if (!ok) return;
+    try {
+      const r = await api.deletePhotos(ids);
+      const gone = new Set(r.ids);
+      const list = this.viewerList ?? this.visible.map((p) => p.id);
+      if (this.viewerId != null && gone.has(this.viewerId)) {
+        const at = list.indexOf(this.viewerId);
+        const next = list.slice(at + 1).find((id) => !gone.has(id)) ?? list.slice(0, Math.max(at, 0)).findLast((id) => !gone.has(id));
+        this.viewerId = next ?? null;
+      }
+      if (this.viewerList) this.viewerList = this.viewerList.filter((id) => !gone.has(id));
+      this.photos = this.photos.filter((p) => !gone.has(p.id));
+      this.selection = new Set([...this.selection].filter((id) => !gone.has(id)));
+      if (this.focusId != null && gone.has(this.focusId)) this.focusId = null;
+      const moved = ids.filter((id) => gone.has(id)).length;
+      if (moved) this.toast(`Moved ${plural(moved, what)} to ${r.places.join(' and ') || 'the Recycle Bin'}`);
+      if (r.failed.length) {
+        this.toast(`${plural(r.failed.length, 'file')} couldn't be deleted: ${r.failed.slice(0, 3).join(', ')}${r.failed.length > 3 ? '…' : ''}`, 'error');
+      }
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Deletes every rejected photo (one tile per RAW+JPEG pair). */
+  deleteRejected() {
+    return this.deletePhotos(
+      this.photos.filter((p) => p.flag === -1 && !this.folded(p)).map((p) => p.id),
+      'rejected photo',
+    );
+  }
+
+  async rebuildThumbnails() {
+    try {
+      cacheVersion.n = await api.rebuildThumbnails();
+      if (this.settings) this.settings = { ...this.settings, cacheVersion: cacheVersion.n };
+      this.toast('Rebuilding thumbnails and previews. Photos fill back in as they are done.');
     } catch (e) {
       this.toast(String(e), 'error');
     }

@@ -135,6 +135,7 @@ export interface Settings {
   editRaw: boolean;
   smartSearch: boolean;
   smartGpu: boolean;
+  cacheVersion: number;
 }
 
 export interface Bootstrap {
@@ -163,6 +164,16 @@ export interface SyncStatus {
   /** Photos waiting for the library to be reachable. */
   waiting?: number;
   error?: string | null;
+}
+
+/** What `deletePhotos` did. */
+export interface Deleted {
+  /** Photos taken out of the library, RAW+JPEG twins included. */
+  ids: number[];
+  /** Where they went: the Recycle Bin, or a library folder's trash. */
+  places: string[];
+  /** Names of photos that couldn't be moved. */
+  failed: string[];
 }
 
 export interface CacheInfo {

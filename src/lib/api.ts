@@ -1,4 +1,5 @@
-import type { Album, Bootstrap, CacheInfo, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
+import { cacheVersion } from './version.svelte';
+import type { Album, Bootstrap, CacheInfo, Deleted, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -22,6 +23,8 @@ export interface Api {
   deleteAlbum(id: number): Promise<void>;
   addToAlbum(id: number, ids: number[]): Promise<void>;
   removeFromAlbum(id: number, ids: number[]): Promise<void>;
+  /** Moves photos (with their twins and sidecars) to the Recycle Bin. */
+  deletePhotos(ids: number[]): Promise<Deleted>;
   openInEditor(ids: number[]): Promise<string>;
   reveal(id: number): Promise<void>;
   openDefault(id: number): Promise<void>;
@@ -29,7 +32,9 @@ export interface Api {
   /** Inbox folders found on this PC (PC AutoSave, iCloud Photos). */
   suggestInboxes(): Promise<string[]>;
   cacheInfo(): Promise<CacheInfo>;
-  clearCache(): Promise<void>;
+  /** Rebuilds every thumbnail and preview; returns the new cache version. */
+  rebuildThumbnails(): Promise<number>;
+  openLogFolder(): Promise<void>;
   listRecipes(): Promise<RecipeRow[]>;
   nameRecipe(key: string, name: string | null): Promise<void>;
   smartStatus(): Promise<SmartStatus>;
@@ -73,13 +78,15 @@ function tauriApi(): Api {
     deleteAlbum: (id) => invoke('delete_album', { id }),
     addToAlbum: (id, ids) => invoke('add_to_album', { id, ids }),
     removeFromAlbum: (id, ids) => invoke('remove_from_album', { id, ids }),
+    deletePhotos: (ids) => invoke('delete_photos', { ids }),
     openInEditor: (ids) => invoke('open_in_editor', { ids }),
     reveal: (id) => invoke('reveal', { id }),
     openDefault: (id) => invoke('open_default', { id }),
     saveSettings: (settings) => invoke('save_settings', { settings }),
     suggestInboxes: () => invoke('suggest_inboxes'),
     cacheInfo: () => invoke('cache_info'),
-    clearCache: () => invoke('clear_cache'),
+    rebuildThumbnails: () => invoke('rebuild_thumbnails'),
+    openLogFolder: () => invoke('open_log_folder'),
     listRecipes: () => invoke('list_recipes'),
     nameRecipe: (key, name) => invoke('name_recipe', { key, name }),
     smartStatus: () => invoke('smart_status'),
@@ -111,8 +118,8 @@ function tauriApi(): Api {
       return getCurrentWindow().isFullscreen();
     },
     // The mtime makes each URL immutable, so the webview can cache forever.
-    thumbUrl: (p) => `${base}/t/${p.id}?v=${p.mtime}`,
-    previewUrl: (p) => `${base}/p/${p.id}?v=${p.mtime}`,
+    thumbUrl: (p) => `${base}/t/${p.id}?v=${p.mtime}.${cacheVersion.n}`,
+    previewUrl: (p) => `${base}/p/${p.id}?v=${p.mtime}.${cacheVersion.n}`,
     originalUrl: (p) => `${base}/o/${p.id}?v=${p.mtime}`,
   };
 }
