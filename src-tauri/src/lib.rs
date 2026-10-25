@@ -1,3 +1,4 @@
+mod backup;
 mod logfile;
 mod protocol;
 mod reach;
@@ -32,6 +33,7 @@ pub struct AppState {
     pub models_dir: PathBuf,
     pub smart: smart::Smart,
     pub reach: reach::Reach,
+    pub backup: backup::Backup,
 }
 
 type Shared<'a> = State<'a, Arc<AppState>>;
@@ -68,6 +70,7 @@ struct Bootstrap {
     effects: bool,
     editor: Option<String>,
     smart: smart::Status,
+    backup: backup::Status,
 }
 
 #[tauri::command]
@@ -83,6 +86,7 @@ fn bootstrap(state: Shared) -> CmdResult<Bootstrap> {
         effects: state.effects.load(Ordering::Relaxed),
         editor: editor.map(|p| p.to_string_lossy().into_owned()),
         smart: state.smart.status(&state),
+        backup: state.backup.status(&state),
     })
 }
 
@@ -622,8 +626,23 @@ fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdRe
     settings.cache_version = state.settings.read().cache_version;
     settings.migrate();
     settings.save(&state.settings_path).map_err(err)?;
+    let new_backup = settings.backup_to != state.settings.read().backup_to;
     *state.settings.write() = settings;
+    if new_backup {
+        backup::now();
+        let _ = app.emit("backup", state.backup.status(&state));
+    }
     restart_sync(&app, state.inner())
+}
+
+#[tauri::command]
+fn backup_status(state: Shared) -> backup::Status {
+    state.backup.status(&state)
+}
+
+#[tauri::command]
+fn backup_now() {
+    backup::now();
 }
 
 #[tauri::command]
@@ -748,6 +767,7 @@ pub fn run() {
                 models_dir: data.join("models"),
                 smart: smart::Smart::default(),
                 reach: reach::Reach::default(),
+                backup: backup::Backup::new(data.join("backup.json")),
             });
 
             #[cfg(windows)]
@@ -768,6 +788,7 @@ pub fn run() {
             // is downloading, and on a big network library the scan is slow.
             smart::spawn(handle.clone(), state.clone());
             reach::spawn(handle.clone(), state.clone());
+            backup::start(handle.clone(), state.clone());
             spawn_scan(handle, state);
             Ok(())
         })
@@ -795,6 +816,8 @@ pub fn run() {
             open_default,
             save_settings,
             suggest_inboxes,
+            backup_status,
+            backup_now,
             cache_info,
             rebuild_thumbnails,
             delete_photos,

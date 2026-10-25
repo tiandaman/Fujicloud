@@ -42,6 +42,18 @@ export function formatEv(ev: number | null): string | null {
   return `${ev > 0 ? '+' : '−'}${Math.abs(ev).toFixed(1)} EV`;
 }
 
+/** How long ago a moment was, roughly: "just now", "5 min ago", "yesterday". */
+export function formatAgo(unixSeconds: number, now = Date.now() / 1000): string {
+  const s = Math.max(0, now - unixSeconds);
+  if (s < 90) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  const days = Math.floor(s / 86400);
+  if (days === 1) return 'yesterday';
+  if (days < 30) return `${days} days ago`;
+  return `on ${new Date(unixSeconds * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`;
+}
+
 /** 75 → "1:15", 3725 → "1:02:05". */
 export function formatDuration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));

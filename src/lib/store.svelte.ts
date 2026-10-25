@@ -4,6 +4,7 @@ import { countryName, placeName, recipeSummary, recipeTitle } from './recipe';
 import { cacheVersion } from './version.svelte';
 import type {
   Album,
+  BackupStatus,
   Collection,
   GroupKey,
   Hit,
@@ -128,6 +129,7 @@ class Store {
   warm = $state.raw<{ done: number; total: number } | null>(null);
   sync = $state.raw<SyncStatus | null>(null);
   toasts = $state.raw<Toast[]>([]);
+  backup = $state.raw<BackupStatus | null>(null);
   /** Bumped when an offline source comes back, so missing thumbnails retry. */
   reachEpoch = $state(0);
 
@@ -427,6 +429,7 @@ class Store {
     this.effects = boot.effects;
     this.editor = boot.editor;
     this.smart = boot.smart;
+    this.backup = boot.backup;
     await this.refresh();
     this.ready = true;
 
@@ -448,6 +451,11 @@ class Store {
       if (finished) this.toast(`Imported ${plural(s.lastImported!, 'new photo')}`);
       // Retries repeat the same problem; say it once.
       if (s.error && !before?.error) this.toast(s.error, 'error');
+    });
+    await api.listen<BackupStatus>('backup', (b) => {
+      const before = this.backup;
+      this.backup = b;
+      if (b.error && b.error !== before?.error && !b.running) this.toast(`Backup: ${b.error}`, 'error');
     });
     await api.listen('sources-changed', async () => {
       const before = new Set(this.sources.filter((s) => s.offline).map((s) => s.id));

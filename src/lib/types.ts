@@ -144,6 +144,19 @@ export interface Bootstrap {
   effects: boolean;
   editor: string | null;
   smart: SmartStatus;
+  backup: BackupStatus;
+}
+
+export interface BackupStatus {
+  /** The backup folder, or null when backup is off. */
+  target: string | null;
+  /** Unix seconds when the last complete pass finished. */
+  lastBackedUp: number | null;
+  running: boolean;
+  done: number;
+  total: number;
+  /** Why the last pass didn't finish cleanly. */
+  error: string | null;
 }
 
 export interface ScanProgress {

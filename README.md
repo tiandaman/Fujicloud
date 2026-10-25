@@ -52,6 +52,10 @@ thousands of images.
   rendered from the local copy *while* it uploads, so a new photo can be browsed the
   moment it arrives. Optionally the inbox file goes to the Recycle Bin once its copy
   checks out (never for iCloud, where that would delete it from the phone).
+- **Backup:** point *Settings → Backup* at a second drive or your OneDrive folder and
+  the library is mirrored there in the background (after imports and every few
+  hours), every copy checked. Nothing is ever deleted from the backup, and the sidebar
+  shows when it last finished.
 - **When the Shield is off:** the library stays browsable from the thumbnail cache,
   new shots wait on the PC and are copied when it's back, and nothing is removed from
   the library because a share went quiet.

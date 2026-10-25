@@ -66,10 +66,18 @@ pub fn copy(src: &Path, dest: &Path) -> Result<(), Error> {
     if let Some(dir) = dest.parent() {
         fs::create_dir_all(dir)?;
     }
-    let part = dest.with_extension("fujicloud-part");
+    let part = part_path(dest);
     fs::copy(src, &part)?;
     fs::rename(&part, dest)?;
     Ok(())
+}
+
+/// Where a copy is written before it's complete. Keeps the whole name, so a
+/// RAW and a JPEG of the same shot copied at once don't share one.
+fn part_path(dest: &Path) -> PathBuf {
+    let mut name = dest.file_name().unwrap_or_default().to_os_string();
+    name.push(".fujicloud-part");
+    dest.with_file_name(name)
 }
 
 /// A checksum of a file's contents (xxh3, read in 1 MB chunks).
@@ -102,7 +110,7 @@ pub fn copy_verified(src: &Path, dest: &Path) -> Result<(), Error> {
     if let Some(dir) = dest.parent() {
         fs::create_dir_all(dir)?;
     }
-    let part = dest.with_extension("fujicloud-part");
+    let part = part_path(dest);
     let want = checksum(src)?;
     for attempt in 1..=2 {
         fs::copy(src, &part)?;
@@ -139,7 +147,12 @@ mod tests {
         let dest = dir.path().join("lib/2026/a.JPG");
         copy_verified(&src, &dest).unwrap();
         assert!(same_content(&src, &dest).unwrap());
-        assert!(!dir.path().join("lib/2026/a.fujicloud-part").exists());
+        assert!(!part_path(&dest).exists());
+        assert_ne!(
+            part_path(&dest.with_file_name("DSCF0001.JPG")),
+            part_path(&dest.with_file_name("DSCF0001.RAF")),
+            "a pair copied at once"
+        );
 
         let other = dir.path().join("b.JPG");
         fs::write(&other, b"some photo bytez").unwrap();
@@ -168,6 +181,6 @@ mod tests {
             panic!("expected a copy")
         };
         assert_eq!(dest.file_name().unwrap(), "DSCF0042_1.JPG");
-        assert!(!dest.with_extension("fujicloud-part").exists());
+        assert!(!part_path(&dest).exists());
     }
 }

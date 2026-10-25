@@ -3,7 +3,7 @@
   import { api } from '../api';
   import { filmGradient } from '../film';
   import { countryName, recipeSummary, recipeTitle } from '../recipe';
-  import { formatBytes, formatCount } from '../format';
+  import { formatAgo, formatBytes, formatCount } from '../format';
   import { store } from '../store.svelte';
   import type { Collection } from '../types';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
@@ -51,6 +51,12 @@
   }
 
   const syncing = $derived(!!store.sync?.copying);
+  // Keeps "Backed up 5 min ago" current.
+  let now = $state(Date.now() / 1000);
+  $effect(() => {
+    const timer = setInterval(() => (now = Date.now() / 1000), 60_000);
+    return () => clearInterval(timer);
+  });
   const waiting = $derived(store.sync?.waiting ?? 0);
 
   // Typing a new album's name, or renaming one (by id).
@@ -285,6 +291,21 @@
       </div>
     {/if}
 
+    {#if store.backup?.target}
+      <button
+        class="backup-line"
+        class:warn={!!store.backup.error && !store.backup.running}
+        title={store.backup.error ?? `Backing up to ${store.backup.target}`}
+        onclick={() => (store.settingsOpen = true)}
+      >
+        <span class:pulse={store.backup.running}><Icon name="backup" size={13} /></span>
+        <span class="truncate">
+          {#if store.backup.running}Backing up{store.backup.total ? ` · ${formatCount(store.backup.done)} of ${formatCount(store.backup.total)}` : '…'}
+          {:else if store.backup.lastBackedUp}Backed up {formatAgo(store.backup.lastBackedUp, now)}{store.backup.error ? ' · needs attention' : ''}
+          {:else}Not backed up yet{/if}
+        </span>
+      </button>
+    {/if}
     <button class="sync" class:on={store.sync?.active} onclick={() => (store.settingsOpen = true)}>
       <span class="sync-ico" class:pulse={syncing} class:waiting={waiting && !syncing}><Icon name={waiting && !syncing ? 'offline' : 'wifi'} size={15} /></span>
       <div class="grow">
@@ -511,6 +532,29 @@
     to {
       transform: rotate(360deg);
     }
+  }
+  .backup-line {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    margin-bottom: 4px;
+    padding: 3px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--text-3);
+    font: inherit;
+    font-size: 11.5px;
+    text-align: left;
+    cursor: default;
+  }
+  .backup-line:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-2);
+  }
+  .backup-line.warn {
+    color: #ffb340;
   }
   .sync {
     display: flex;

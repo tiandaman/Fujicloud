@@ -253,8 +253,9 @@ fn run(
         }
         status.last_imported = imported;
         if imported > 0 {
-            // Make the new shots findable by description too.
+            // Make the new shots findable by description too, and back them up.
             crate::smart::spawn(app.clone(), state.clone());
+            crate::backup::soon();
         }
         status.copying = 0;
         status.done = status.total;

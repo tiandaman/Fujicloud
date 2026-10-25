@@ -441,7 +441,7 @@ pub fn list(dir: &Path) -> Listing {
     Listing { files, sidecars }
 }
 
-fn skip_dir(name: &str) -> bool {
+pub(crate) fn skip_dir(name: &str) -> bool {
     name.starts_with('.')
         || name.starts_with('$')
         || matches!(

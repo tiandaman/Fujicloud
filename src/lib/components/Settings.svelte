@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from '../api';
-  import { formatBytes, formatCount } from '../format';
+  import { formatAgo, formatBytes, formatCount } from '../format';
   import { store } from '../store.svelte';
   import type { CacheInfo, Settings } from '../types';
   import Icon from './Icon.svelte';
@@ -186,6 +186,36 @@
             ? folderName(store.sync.inboxes[0])
             : `${store.sync.inboxes?.length ?? 0} folders`}
         </p>
+      {/if}
+    </section>
+
+    <section>
+      <h3><Icon name="backup" size={16} /> Backup</h3>
+      <p class="hint">
+        Keeps a second copy of the library on another drive, or in your <em>OneDrive</em> folder so it also goes to the cloud. New and
+        changed photos and sidecars are copied and checked against the originals. Photos deleted from the library stay in the backup.
+      </p>
+      <label class="row">
+        <span>Back up to</span>
+        <div class="inline grow">
+          <input class="field grow" placeholder="E:\Fujicloud Backup (off when empty)" bind:value={draft.backupTo} />
+          <button class="btn" onclick={() => pick('backupTo', 'Folder to back the library up to')}>Browse…</button>
+        </div>
+      </label>
+      {#if store.backup?.target}
+        <div class="row">
+          <div class="grow">
+            <span>
+              {#if store.backup.running}Backing up… {store.backup.total ? `${formatCount(store.backup.done)} of ${formatCount(store.backup.total)} files` : 'looking for changes'}
+              {:else if store.backup.lastBackedUp}Last backed up {formatAgo(store.backup.lastBackedUp)}
+              {:else}Not backed up yet{/if}
+            </span>
+            {#if store.backup.error && !store.backup.running}<small class="warn">{store.backup.error}</small>{/if}
+          </div>
+          <button class="btn" disabled={store.backup.running} onclick={() => api.backupNow()}>
+            <Icon name="backup" size={14} /> Back up now
+          </button>
+        </div>
       {/if}
     </section>
 

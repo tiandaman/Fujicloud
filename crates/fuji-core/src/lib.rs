@@ -1,6 +1,7 @@
 //! Core of Fujicloud: everything that touches files lives here, independent
 //! of the desktop shell, so it can be tested and benchmarked on its own.
 
+pub mod backup;
 pub mod db;
 pub mod decode;
 pub mod discard;

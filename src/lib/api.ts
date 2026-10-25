@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, Bootstrap, CacheInfo, Deleted, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -29,6 +29,8 @@ export interface Api {
   reveal(id: number): Promise<void>;
   openDefault(id: number): Promise<void>;
   saveSettings(settings: Settings): Promise<void>;
+  backupStatus(): Promise<BackupStatus>;
+  backupNow(): Promise<void>;
   /** Inbox folders found on this PC (PC AutoSave, iCloud Photos). */
   suggestInboxes(): Promise<string[]>;
   cacheInfo(): Promise<CacheInfo>;
@@ -84,6 +86,8 @@ function tauriApi(): Api {
     openDefault: (id) => invoke('open_default', { id }),
     saveSettings: (settings) => invoke('save_settings', { settings }),
     suggestInboxes: () => invoke('suggest_inboxes'),
+    backupStatus: () => invoke('backup_status'),
+    backupNow: () => invoke('backup_now'),
     cacheInfo: () => invoke('cache_info'),
     rebuildThumbnails: () => invoke('rebuild_thumbnails'),
     openLogFolder: () => invoke('open_log_folder'),

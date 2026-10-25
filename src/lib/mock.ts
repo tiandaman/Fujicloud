@@ -2,7 +2,7 @@
 // browser (`npm run dev`) without the Rust backend or a camera.
 
 import type { Api } from './api';
-import type { Album, Bootstrap, Detail, Hit, Kind, Label, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, Detail, Hit, Kind, Label, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 const FILMS = ['Classic Chrome', 'Classic Neg.', 'Provia', 'Velvia', 'Acros', 'Nostalgic Neg.', 'Reala Ace', 'Eterna', 'Astia', 'Pro Neg. Hi', 'Acros +R', 'Monochrome'];
 const FILM_WEIGHTS = [18, 16, 12, 9, 8, 7, 7, 5, 5, 4, 3, 2];
@@ -264,7 +264,7 @@ export function mockApi(): Api {
   let settings: Settings = {
     inboxes: [{ path: 'C:\\Users\\me\\Pictures\\FUJIFILM PC AutoSave', cleanup: false }],
     importTo: '\\\\SHIELD\\Samsung_T7\\Photos',
-    backupTo: null,
+    backupTo: 'E:\\Fujicloud Backup',
     parallelCopies: 4,
     writeXmp: true,
     editorPath: null,
@@ -272,6 +272,14 @@ export function mockApi(): Api {
     smartSearch: false,
     smartGpu: true,
     cacheVersion: 0,
+  };
+  let backup: BackupStatus = {
+    target: settings.backupTo,
+    lastBackedUp: Date.now() / 1000 - 2.2 * 3600,
+    running: false,
+    done: 0,
+    total: 0,
+    error: offline ? "Shield · Samsung T7 can't be reached, so it wasn't backed up" : null,
   };
   const recipeNames = new Map<string, string>([[recipeKey(RECIPES[0]), 'Kodachrome 64-ish']]);
   let smart: SmartStatus = {
@@ -325,7 +333,7 @@ export function mockApi(): Api {
 
   return {
     native: false,
-    bootstrap: async (): Promise<Bootstrap> => ({ sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart }),
+    bootstrap: async (): Promise<Bootstrap> => ({ sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup }),
     listPhotos: async () => photos,
     listSources: async () => sources,
     async photoDetail(id) {
@@ -407,6 +415,18 @@ export function mockApi(): Api {
     openDefault: async () => {},
     async saveSettings(s) {
       settings = s;
+    },
+    backupStatus: async () => backup,
+    async backupNow() {
+      backup = { ...backup, running: true, done: 0, total: 40, error: null };
+      emit('backup', backup);
+      for (let i = 1; i <= 40; i += 8) {
+        await delay(120);
+        backup = { ...backup, done: i };
+        emit('backup', backup);
+      }
+      backup = { ...backup, running: false, done: 40, lastBackedUp: Date.now() / 1000 };
+      emit('backup', backup);
     },
     suggestInboxes: async () => ['C:\\Users\\me\\Pictures\\FUJIFILM PC AutoSave', 'C:\\Users\\me\\Pictures\\iCloud Photos\\Photos'],
     async listRecipes(): Promise<RecipeRow[]> {
