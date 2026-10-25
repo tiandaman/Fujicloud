@@ -237,7 +237,7 @@ pub struct Touched {
 }
 
 pub struct Library {
-    conn: Mutex<Connection>,
+    pub(crate) conn: Mutex<Connection>,
 }
 
 impl Library {
@@ -261,6 +261,7 @@ impl Library {
              PRAGMA mmap_size = 268435456;",
         )?;
         conn.execute_batch(TABLES)?;
+        conn.execute_batch(crate::people::TABLES)?;
         migrate(&conn)?;
         conn.execute_batch(INDEXES)?;
         Ok(Self {

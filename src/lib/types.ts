@@ -135,6 +135,7 @@ export interface Settings {
   editRaw: boolean;
   smartSearch: boolean;
   smartGpu: boolean;
+  faces: boolean;
   cacheVersion: number;
 }
 
@@ -147,6 +148,37 @@ export interface Bootstrap {
   editor: string | null;
   smart: SmartStatus;
   backup: BackupStatus;
+  faces: FacesStatus;
+}
+
+/** Someone found in the photos: named, or a group of faces waiting for a name. */
+export interface Person {
+  id: number;
+  name: string | null;
+  /** The clearest face, for the avatar. */
+  cover: number;
+  faces: number;
+  photoIds: number[];
+}
+
+export interface FaceInPhoto {
+  id: number;
+  personId: number | null;
+  name: string | null;
+  /** x, y, width, height as fractions of the picture. */
+  bbox: [number, number, number, number];
+}
+
+export interface FacesStatus {
+  enabled: boolean;
+  phase: 'off' | 'downloading' | 'indexing' | 'ready' | 'error';
+  /** Bytes while downloading, photos while looking for faces. */
+  done: number;
+  total: number;
+  downloadMb: number;
+  /** Photos searched so far. */
+  scanned: number;
+  error: string | null;
 }
 
 export interface BackupStatus {
@@ -216,6 +248,8 @@ export type Collection =
   | { type: 'favorites' }
   | { type: 'album'; id: number }
   | { type: 'duplicates' }
+  | { type: 'people' }
+  | { type: 'person'; id: number }
   | { type: 'source'; id: number }
   | { type: 'film'; value: string }
   | { type: 'camera'; value: string }

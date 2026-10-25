@@ -255,6 +255,7 @@ fn run(
         if imported > 0 {
             // Make the new shots findable by description too, and back them up.
             crate::smart::spawn(app.clone(), state.clone());
+            crate::faces::spawn(app.clone(), state.clone());
             crate::backup::soon();
         }
         status.copying = 0;

@@ -35,6 +35,11 @@ thousands of images.
   favourites. *Delete all rejected…* (or `Del`) moves photos to the Recycle Bin, RAW
   twins and sidecars included. Windows has no Recycle Bin for network drives, so from
   the Shield they go to a `.fujicloud-trash` folder in the library instead.
+- **People:** turn on *Settings → People* and faces are found and grouped on your PC
+  (two small open models from OpenCV, YuNet and SFace, downloaded once). Name a group
+  under *People → Who's this?*, or a single face in the info panel, and new photos of
+  that person are filed under them automatically. Right-click a photo in someone's view
+  for *Not them*; using a name twice merges the two. Nothing leaves your network.
 - **Find duplicates:** *Duplicates* in the sidebar finds byte-for-byte copies (the same
   shot imported twice) and, with smart search on, near-identical shots taken moments
   apart. The best of each group (highest rated, then most pixels) is marked *KEEP*, and
@@ -231,4 +236,8 @@ OpenStreetMap contributors, tiles by [OpenFreeMap](https://openfreemap.org). Cou
 borders from Natural Earth via `world-atlas`. Smart search uses Google's SigLIP model,
 via the [Xenova ONNX export](https://huggingface.co/Xenova/siglip-base-patch16-224). HEIC decoding by
 [heic-decoder](https://github.com/Multipad-cyber/heic-decoder-rust); test images from
-[heic-rs](https://github.com/tbraun96/heic-rs).
+[heic-rs](https://github.com/tbraun96/heic-rs). Face detection and recognition use
+[YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) and
+[SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface) (Apache 2.0) from
+OpenCV's model zoo; the face test uses example photos from
+[face_recognition](https://github.com/ageitgey/face_recognition), downloaded at test time.

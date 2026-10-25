@@ -92,6 +92,22 @@
     el.select();
   }
 
+  const named = $derived(store.people.filter((p) => p.name));
+  const toName = $derived(store.people.filter((p) => !p.name && p.photoIds.length > 1).length);
+
+  function personMenu(e: MouseEvent, id: number) {
+    e.preventDefault();
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'All people', icon: 'people', action: () => store.setCollection({ type: 'people' }) },
+        { separator: true },
+        { label: 'Forget this name', icon: 'x', action: () => store.deletePerson(id) },
+      ],
+    };
+  }
+
   function albumMenu(e: MouseEvent, id: number, name: string) {
     e.preventDefault();
     menu = {
@@ -199,6 +215,19 @@
         <span class="label">New album…</span>
       </button>
     {/if}
+
+    <div class="heading static">
+      People
+      {#if toName}<span class="to-name" title="Groups of faces waiting for a name">{toName} to name</span>{/if}
+    </div>
+    {#snippet peopleLead()}<span class="ico"><Icon name="people" size={16} /></span>{/snippet}
+    {@render item({ type: 'people' }, store.faces?.enabled ? 'Everyone' : 'Find people…', store.faces?.enabled ? named.length : null, peopleLead)}
+    {#each named.slice(0, 8) as p (p.id)}
+      <div oncontextmenu={(e) => personMenu(e, p.id)} role="presentation">
+        {#snippet lead()}<img class="avatar" src={api.faceUrl(p.cover)} alt="" draggable="false" />{/snippet}
+        {@render item({ type: 'person', id: p.id }, p.name!, p.photoIds.length, lead)}
+      </div>
+    {/each}
 
     {#if store.recipes.length}
       {@render group('recipes', 'Recipes')}
@@ -560,6 +589,26 @@
     to {
       transform: rotate(360deg);
     }
+  }
+  .avatar {
+    width: 18px;
+    height: 18px;
+    margin: 0 1px;
+    flex: none;
+    border-radius: 50%;
+    object-fit: cover;
+    box-shadow: 0 0 0 0.5px var(--border);
+  }
+  .to-name {
+    margin-left: auto;
+    padding: 0 6px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--text);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
   }
   .backup-line {
     display: flex;

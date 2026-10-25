@@ -210,6 +210,12 @@
         },
         { label: 'Add to album…', icon: 'album', action: () => (store.albumPicker = { x: e.clientX, y: e.clientY, ids }) },
         {
+          label: `Not ${store.collection.type === 'person' ? (store.personById.get(store.collection.id)?.name ?? 'this person') : ''}`,
+          icon: 'people',
+          action: () => store.collection.type === 'person' && store.removeFromPerson(store.collection.id, ids),
+          hidden: store.collection.type !== 'person',
+        },
+        {
           label: `Remove from “${store.collection.type === 'album' ? store.albumById.get(store.collection.id)?.name : ''}”`,
           icon: 'x',
           action: () => store.collection.type === 'album' && store.removeFromAlbum(store.collection.id, ids),

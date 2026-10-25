@@ -1,0 +1,292 @@
+<script lang="ts">
+  import { api } from '../api';
+  import { formatBytes, formatCount, plural } from '../format';
+  import { store } from '../store.svelte';
+  import type { Person } from '../types';
+  import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
+  import Icon from './Icon.svelte';
+
+  const named = $derived(store.people.filter((p) => p.name));
+  // A group needs a couple of photos before it's worth asking about.
+  const unnamed = $derived(store.people.filter((p) => !p.name && p.photoIds.length > 1));
+  const status = $derived(store.faces);
+
+  let drafts = $state<Record<number, string>>({});
+  let renaming = $state<number | null>(null);
+  let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+
+  function open(p: Person) {
+    store.setCollection({ type: 'person', id: p.id });
+  }
+
+  async function save(p: Person) {
+    const name = drafts[p.id]?.trim();
+    if (!name) return;
+    await store.namePerson(p.id, name);
+    delete drafts[p.id];
+    renaming = null;
+  }
+
+  function personMenu(e: MouseEvent, p: Person) {
+    e.preventDefault();
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'Show photos', icon: 'photos', action: () => open(p) },
+        {
+          label: p.name ? 'Rename…' : 'Add a name…',
+          icon: 'edit',
+          action: () => {
+            drafts[p.id] = p.name ?? '';
+            renaming = p.id;
+          },
+        },
+        { separator: true },
+        { label: 'Forget this name', icon: 'x', action: () => store.deletePerson(p.id), hidden: !p.name },
+      ],
+    };
+  }
+
+  function focus(el: HTMLInputElement) {
+    el.focus();
+    el.select();
+  }
+</script>
+
+{#snippet face(p: Person, size: number)}
+  <button class="face" style:width="{size}px" style:height="{size}px" title="Show photos" onclick={() => open(p)}>
+    <img src={api.faceUrl(p.cover)} alt="" draggable="false" />
+  </button>
+{/snippet}
+
+{#snippet nameInput(p: Person)}
+  <input
+    class="name-input"
+    placeholder="Add a name"
+    list="people-names"
+    bind:value={drafts[p.id]}
+    use:focus
+    onkeydown={(e) => {
+      if (e.key === 'Enter') save(p);
+      if (e.key === 'Escape') renaming = null;
+      e.stopPropagation();
+    }}
+    onblur={() => (renaming = null)}
+  />
+{/snippet}
+
+<datalist id="people-names">
+  {#each store.names as n (n)}<option value={n}></option>{/each}
+</datalist>
+
+<div class="people">
+  {#if !status?.enabled}
+    <div class="intro">
+      <Icon name="people" size={44} stroke={1.2} />
+      <h2>Find the people in your photos</h2>
+      <p>
+        Fujicloud can find faces and group the photos of each person, so you can name them once and see every photo they're in. It all
+        happens on this PC: no photo or face ever leaves it. Two small models are downloaded once ({status?.downloadMb ?? 39} MB).
+      </p>
+      <button class="btn primary" onclick={() => store.setFaces(true)}>Turn on face recognition</button>
+    </div>
+  {:else}
+    {#if status.phase === 'downloading' || status.phase === 'indexing'}
+      <div class="progress">
+        <span class="spin"><Icon name="sync" size={14} /></span>
+        <span>
+          {#if status.phase === 'downloading'}Downloading face models… {status.total ? `${formatBytes(status.done)} of ${formatBytes(status.total)}` : ''}
+          {:else}Looking for faces… {formatCount(status.done)} of {formatCount(status.total)} photos{/if}
+        </span>
+        <div class="bar"><i style:width="{status.total ? (status.done / status.total) * 100 : 5}%"></i></div>
+      </div>
+    {:else if status.phase === 'error'}
+      <p class="error">{status.error}</p>
+    {/if}
+
+    {#if named.length}
+      <section>
+        <h2>People</h2>
+        <div class="grid">
+          {#each named as p (p.id)}
+            <div class="person" oncontextmenu={(e) => personMenu(e, p)} role="presentation">
+              {@render face(p, 112)}
+              {#if renaming === p.id}
+                {@render nameInput(p)}
+              {:else}
+                <strong class="truncate">{p.name}</strong>
+              {/if}
+              <span class="faint tabular">{plural(p.photoIds.length, 'photo')}</span>
+            </div>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
+    {#if unnamed.length}
+      <section>
+        <h2>Who's this?</h2>
+        <p class="hint">Name a face and Fujicloud finds them in new photos too. Using a name that's already taken adds the photos to that person.</p>
+        <div class="grid">
+          {#each unnamed as p (p.id)}
+            <div class="person" oncontextmenu={(e) => personMenu(e, p)} role="presentation">
+              {@render face(p, 96)}
+              {@render nameInput(p)}
+              <span class="faint tabular">{plural(p.photoIds.length, 'photo')}</span>
+            </div>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
+    {#if !named.length && !unnamed.length && status.phase !== 'downloading' && status.phase !== 'indexing'}
+      <div class="intro">
+        <Icon name="people" size={44} stroke={1.2} />
+        <h2>No people found yet</h2>
+        <p>
+          {status.scanned
+            ? `Searched ${plural(status.scanned, 'photo')}. People show up here once someone appears in at least two photos.`
+            : 'Faces are looked for in the background as thumbnails are built.'}
+        </p>
+      </div>
+    {/if}
+  {/if}
+</div>
+
+{#if menu}
+  <ContextMenu {...menu} onclose={() => (menu = null)} />
+{/if}
+
+<style>
+  .people {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 18px 26px 40px;
+  }
+  section + section {
+    margin-top: 26px;
+  }
+  h2 {
+    margin: 0 0 14px;
+    font: 600 17px/1.2 var(--font-display);
+  }
+  .hint {
+    margin: -6px 0 16px;
+    color: var(--text-3);
+    font-size: 12px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+    gap: 22px 14px;
+  }
+  .person {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    text-align: center;
+  }
+  .person strong {
+    max-width: 100%;
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .person .faint {
+    font-size: 11.5px;
+  }
+  .face {
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    overflow: hidden;
+    background: var(--bg-elev-2);
+    box-shadow: 0 0 0 1px var(--border);
+    cursor: default;
+    transition: transform 160ms var(--ease-out), box-shadow 160ms;
+  }
+  .face:hover {
+    transform: scale(1.04);
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  .face img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .name-input {
+    width: 120px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.07);
+    box-shadow: inset 0 0 0 1px var(--border);
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: center;
+  }
+  .name-input:focus {
+    outline: none;
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+  }
+  .intro {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    max-width: 460px;
+    margin: 12vh auto 0;
+    text-align: center;
+    color: var(--text-2);
+  }
+  .intro :global(svg) {
+    color: var(--text-3);
+  }
+  .intro h2 {
+    margin: 14px 0 8px;
+    color: var(--text);
+  }
+  .intro p {
+    margin: 0 0 18px;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  .progress {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    color: var(--text-2);
+    font-size: 12.5px;
+  }
+  .progress .bar {
+    flex-basis: 100%;
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+  }
+  .progress .bar i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 300ms;
+  }
+  .spin {
+    display: inline-grid;
+    animation: spin 1.2s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .error {
+    color: #ff8a80;
+    font-size: 12.5px;
+  }
+</style>

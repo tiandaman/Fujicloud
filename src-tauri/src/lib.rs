@@ -1,4 +1,5 @@
 mod backup;
+mod faces;
 mod logfile;
 mod protocol;
 mod reach;
@@ -13,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use fuji_core::db::{AlbumRow, PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
+use fuji_core::people::{FaceRow, PersonRow};
 use fuji_core::thumbs::{self, Size};
 use fuji_core::{Kind, Library, discard, dupes, export, ingest, meta, scan, xmp};
 use parking_lot::{Mutex, RwLock};
@@ -34,6 +36,7 @@ pub struct AppState {
     pub smart: smart::Smart,
     pub reach: reach::Reach,
     pub backup: backup::Backup,
+    pub faces: faces::Faces,
 }
 
 type Shared<'a> = State<'a, Arc<AppState>>;
@@ -73,6 +76,7 @@ struct Bootstrap {
     editor: Option<String>,
     smart: smart::Status,
     backup: backup::Status,
+    faces: faces::Status,
 }
 
 #[tauri::command]
@@ -90,6 +94,7 @@ fn bootstrap(app: AppHandle, state: Shared) -> CmdResult<Bootstrap> {
         editor: editor.map(|p| p.to_string_lossy().into_owned()),
         smart: state.smart.status(&state),
         backup: state.backup.status(&state),
+        faces: state.faces.status(&state),
     })
 }
 
@@ -227,6 +232,7 @@ pub(crate) fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
         let _ = app.emit("scan-done", ());
         let _ = app.emit("library-changed", ());
         smart::spawn(app.clone(), state.clone());
+        faces::spawn(app.clone(), state.clone());
         spawn_warm(app, state);
     });
 }
@@ -705,6 +711,75 @@ fn set_smart_search(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<s
     Ok(state.smart.status(&state))
 }
 
+// ---- people ------------------------------------------------------------------
+
+#[tauri::command]
+fn faces_status(state: Shared) -> faces::Status {
+    state.faces.status(&state)
+}
+
+#[tauri::command]
+fn set_faces(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<faces::Status> {
+    {
+        let mut settings = state.settings.write();
+        settings.faces = enabled;
+        settings.save(&state.settings_path).map_err(err)?;
+    }
+    if enabled {
+        faces::spawn(app, state.inner().clone());
+    } else {
+        state.faces.disable(&app, &state);
+    }
+    Ok(state.faces.status(&state))
+}
+
+#[tauri::command]
+async fn list_people(state: Shared<'_>) -> CmdResult<Vec<PersonRow>> {
+    state.lib.people().map_err(err)
+}
+
+#[tauri::command]
+async fn faces_in(state: Shared<'_>, id: i64) -> CmdResult<Vec<FaceRow>> {
+    state.lib.faces_in(id).map_err(err)
+}
+
+/// Names a person or unnamed group; a name already in use merges the two.
+#[tauri::command]
+async fn name_person(state: Shared<'_>, id: i64, name: String) -> CmdResult<i64> {
+    if name.trim().is_empty() {
+        return Err("A name can't be empty".into());
+    }
+    state.lib.name_person(id, &name).map_err(err)
+}
+
+/// Says who one face is.
+#[tauri::command]
+async fn name_face(state: Shared<'_>, id: i64, name: String) -> CmdResult<i64> {
+    if name.trim().is_empty() {
+        return Err("A name can't be empty".into());
+    }
+    state.lib.name_face(id, &name).map_err(err)
+}
+
+/// "Not this person" for these photos.
+#[tauri::command]
+async fn remove_from_person(
+    app: AppHandle,
+    state: Shared<'_>,
+    id: i64,
+    photo_ids: Vec<i64>,
+) -> CmdResult<()> {
+    state.lib.remove_from_person(id, &photo_ids).map_err(err)?;
+    faces::group(&app, &state)
+}
+
+/// Forgets a person's name; their faces are grouped again, unnamed.
+#[tauri::command]
+async fn delete_person(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<()> {
+    state.lib.delete_person(id).map_err(err)?;
+    faces::group(&app, &state)
+}
+
 /// Switches photo analysis between the graphics card and the CPU.
 #[tauri::command]
 fn set_smart_gpu(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<smart::Status> {
@@ -758,6 +833,7 @@ fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdRe
     // Smart search is switched by its own commands (they download and index).
     settings.smart_search = state.settings.read().smart_search;
     settings.smart_gpu = state.settings.read().smart_gpu;
+    settings.faces = state.settings.read().faces;
     settings.cache_version = state.settings.read().cache_version;
     settings.migrate();
     settings.save(&state.settings_path).map_err(err)?;
@@ -905,6 +981,7 @@ pub fn run() {
                 smart: smart::Smart::default(),
                 reach: reach::Reach::default(),
                 backup: backup::Backup::new(data.join("backup.json")),
+                faces: faces::Faces::default(),
             });
 
             #[cfg(windows)]
@@ -924,6 +1001,7 @@ pub fn run() {
             // Right away, not after the scan: the UI already says the model
             // is downloading, and on a big network library the scan is slow.
             smart::spawn(handle.clone(), state.clone());
+            faces::spawn(handle.clone(), state.clone());
             reach::spawn(handle.clone(), state.clone());
             backup::start(handle.clone(), state.clone());
             spawn_scan(handle, state);
@@ -968,6 +1046,14 @@ pub fn run() {
             smart_status,
             set_smart_search,
             set_smart_gpu,
+            faces_status,
+            set_faces,
+            list_people,
+            faces_in,
+            name_person,
+            name_face,
+            remove_from_person,
+            delete_person,
             search_smart,
             similar_photos,
         ])

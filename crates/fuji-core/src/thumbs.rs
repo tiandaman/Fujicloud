@@ -283,6 +283,57 @@ pub(crate) fn upright(jpeg: &[u8], long_edge: u32) -> Result<decode::Rgb, Error>
     })
 }
 
+/// One of our own renditions (already upright sRGB) as pixels, decoded at
+/// least `long_edge` across where the decoder can scale down.
+pub fn decode_rendition(jpeg: &[u8], long_edge: u32) -> Result<decode::Rgb, Error> {
+    let (data, width, height) = decode_scaled(jpeg, long_edge)?;
+    Ok(decode::Rgb {
+        data,
+        width,
+        height,
+    })
+}
+
+/// A square JPEG, `out` pixels across, around `bbox` (fractions of the
+/// picture: x, y, width, height) with `margin` times its size around it.
+pub fn crop_square(
+    image: &decode::Rgb,
+    bbox: [f32; 4],
+    margin: f32,
+    out: u32,
+) -> Result<Vec<u8>, Error> {
+    let (w, h) = (image.width as f32, image.height as f32);
+    let [x, y, bw, bh] = bbox;
+    let side = ((bw * w).max(bh * h) * margin).clamp(1.0, w.min(h));
+    let centre = ((x + bw / 2.0) * w, (y + bh / 2.0) * h);
+    let left = (centre.0 - side / 2.0).clamp(0.0, w - side);
+    let top = (centre.1 - side / 2.0).clamp(0.0, h - side);
+    let src = Image::from_vec_u8(
+        image.width,
+        image.height,
+        image.data.clone(),
+        fr::PixelType::U8x3,
+    )
+    .map_err(|e| Error::Decode(e.to_string()))?;
+    let mut dst = Image::new(out, out, fr::PixelType::U8x3);
+    let options = fr::ResizeOptions::new()
+        .crop(left as f64, top as f64, side as f64, side as f64)
+        .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3));
+    fr::Resizer::new()
+        .resize(&src, &mut dst, &options)
+        .map_err(|e| Error::Decode(e.to_string()))?;
+    let mut jpeg = Vec::new();
+    jpeg_encoder::Encoder::new(&mut jpeg, 88)
+        .encode(
+            dst.buffer(),
+            out as u16,
+            out as u16,
+            jpeg_encoder::ColorType::Rgb,
+        )
+        .map_err(|e| Error::Decode(e.to_string()))?;
+    Ok(jpeg)
+}
+
 /// Decodes a JPEG to RGB, letting the decoder skip most of the work when
 /// the result only needs to cover `long_edge`. Returns pixels and size.
 pub(crate) fn decode_scaled(jpeg: &[u8], long_edge: u32) -> Result<(Vec<u8>, u32, u32), Error> {

@@ -8,11 +8,13 @@ import type {
   Collection,
   DuplicateGroup,
   ExportPreset,
+  FacesStatus,
   GroupKey,
   Hit,
   Kind,
   Label,
   LayoutMode,
+  Person,
   Photo,
   RecipeRow,
   ScanProgress,
@@ -144,6 +146,11 @@ class Store {
   sync = $state.raw<SyncStatus | null>(null);
   toasts = $state.raw<Toast[]>([]);
   backup = $state.raw<BackupStatus | null>(null);
+  people = $state.raw<Person[]>([]);
+  faces = $state.raw<FacesStatus | null>(null);
+  personById = $derived(new Map(this.people.map((p) => [p.id, p])));
+  /** Named people, for name suggestions. */
+  names = $derived(this.people.filter((p) => p.name).map((p) => p.name!));
   version = $state('');
   /** Bumped when an offline source comes back, so missing thumbnails retry. */
   reachEpoch = $state(0);
@@ -239,6 +246,7 @@ class Store {
       c.type === 'ids' ? new Set(c.ids)
       : c.type === 'album' ? new Set(this.albumById.get(c.id)?.ids ?? [])
       : c.type === 'duplicates' ? new Set((this.duplicates ?? []).flatMap((g) => g.ids))
+      : c.type === 'person' ? new Set(this.personById.get(c.id)?.photoIds ?? [])
       : null;
     const test: (p: Photo) => boolean =
       c.type === 'all' || c.type === 'map' ? (p) => p.flag !== -1
@@ -254,7 +262,8 @@ class Store {
       : c.type === 'lens' ? (p) => p.lens === c.value
       : c.type === 'recipe' ? (p) => p.recipeKey === c.key && p.flag !== -1
       : c.type === 'country' ? (p) => p.country === c.value && p.flag !== -1
-      : c.type === 'ids' || c.type === 'duplicates' ? (p) => ids!.has(p.id)
+      : c.type === 'ids' || c.type === 'duplicates' || c.type === 'person' ? (p) => ids!.has(p.id)
+      : c.type === 'people' ? () => false
       : (p) => !!similar && (similar.has(p.id) || (p.pairId != null && similar.has(p.pairId)));
     return this.photos.filter(test);
   });
@@ -419,6 +428,8 @@ class Store {
       case 'favorites': return 'Favourites';
       case 'album': return this.albumById.get(c.id)?.name ?? 'Album';
       case 'duplicates': return 'Duplicates';
+      case 'people': return 'People';
+      case 'person': return this.personById.get(c.id)?.name ?? 'Who is this?';
       case 'map': return 'Places';
       case 'source': return this.sources.find((s) => s.id === c.id)?.label ?? 'Folder';
       case 'recipe': {
@@ -450,6 +461,7 @@ class Store {
     this.editor = boot.editor;
     this.smart = boot.smart;
     this.backup = boot.backup;
+    this.faces = boot.faces;
     this.version = boot.version;
     await this.refresh();
     this.ready = true;
@@ -475,6 +487,15 @@ class Store {
     });
     await api.listen<{ done: number; total: number }>('export', (p) => {
       if (this.exporting) this.exporting = p;
+    });
+    let peopleTimer: ReturnType<typeof setTimeout> | undefined;
+    await api.listen('people-changed', () => {
+      clearTimeout(peopleTimer);
+      peopleTimer = setTimeout(() => this.loadPeople(), 400);
+    });
+    await api.listen<FacesStatus>('faces', (f) => {
+      this.faces = f;
+      if (f.phase === 'error' && f.error) this.toast(f.error, 'error');
     });
     await api.listen<BackupStatus>('backup', (b) => {
       const before = this.backup;
@@ -503,11 +524,22 @@ class Store {
   }
 
   async refresh() {
-    const [photos, sources, recipes, albums] = await Promise.all([api.listPhotos(), api.listSources(), api.listRecipes(), api.listAlbums()]);
+    const [photos, sources, recipes, albums, people] = await Promise.all([
+      api.listPhotos(),
+      api.listSources(),
+      api.listRecipes(),
+      api.listAlbums(),
+      api.listPeople(),
+    ]);
     this.photos = photos;
     this.sources = sources;
     this.recipes = recipes;
     this.albums = albums;
+    this.people = people;
+  }
+
+  async loadPeople() {
+    this.people = await api.listPeople();
   }
 
   // ---- actions ----
@@ -790,6 +822,62 @@ class Store {
       this.smart = await api.setSmartSearch(enabled);
       if (this.settings) this.settings = { ...this.settings, smartSearch: enabled };
       if (!enabled) this.smartHits = null;
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  async setFaces(enabled: boolean) {
+    try {
+      this.faces = await api.setFaces(enabled);
+      if (this.settings) this.settings = { ...this.settings, faces: enabled };
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Names a person or unnamed group; using a name already given merges them. */
+  async namePerson(id: number, name: string) {
+    if (!name.trim()) return;
+    try {
+      const now = await api.namePerson(id, name);
+      await this.loadPeople();
+      if (now !== id && this.collection.type === 'person' && this.collection.id === id) this.setCollection({ type: 'person', id: now });
+      this.toast(now !== id ? `Added to ${name.trim()}` : `Named ${name.trim()}`);
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Says who one face is. */
+  async nameFace(faceId: number, name: string) {
+    if (!name.trim()) return;
+    try {
+      await api.nameFace(faceId, name);
+      await this.loadPeople();
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** "Not this person" for these photos. */
+  async removeFromPerson(id: number, photoIds: number[]) {
+    try {
+      await api.removeFromPerson(id, photoIds);
+      await this.loadPeople();
+      const name = this.personById.get(id)?.name ?? 'this person';
+      this.toast(`Removed ${plural(photoIds.length, 'photo')} from ${name}`);
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Forgets a person's name; their faces go back to waiting for one. */
+  async deletePerson(id: number) {
+    try {
+      await api.deletePerson(id);
+      await this.loadPeople();
+      if (this.collection.type === 'person' && this.collection.id === id) this.setCollection({ type: 'people' });
     } catch (e) {
       this.toast(String(e), 'error');
     }

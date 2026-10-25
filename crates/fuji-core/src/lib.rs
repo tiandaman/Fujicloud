@@ -10,11 +10,14 @@ pub mod dupes;
 #[cfg(feature = "smart-search")]
 pub mod embed;
 pub mod export;
+#[cfg(feature = "smart-search")]
+pub mod faces;
 pub mod fuji;
 pub mod geo;
 pub mod hdr;
 pub mod ingest;
 pub mod meta;
+pub mod people;
 pub mod raf;
 pub mod scan;
 pub mod search;

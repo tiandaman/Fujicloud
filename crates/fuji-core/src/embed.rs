@@ -169,9 +169,6 @@ impl ModelSpec {
         device: Device,
         progress: &dyn Fn(u64, u64),
     ) -> Result<(), Error> {
-        // One download at a time, so a second caller finds the files the
-        // first one fetched instead of racing it for the same paths.
-        static DOWNLOAD: Mutex<()> = Mutex::new(());
         let _one = DOWNLOAD.lock();
         let mut wanted: Vec<&[&str]> = vec![
             std::slice::from_ref(&self.text),
@@ -223,6 +220,41 @@ impl ModelSpec {
         }
         Ok(())
     }
+}
+
+/// One download at a time, so a second caller finds the files the first one
+/// fetched instead of racing it for the same paths.
+static DOWNLOAD: Mutex<()> = Mutex::new(());
+
+/// Downloads each `(url, path)` that isn't there yet, resuming dropped
+/// transfers. `progress(done, total)` is in bytes.
+pub(crate) fn download_files(
+    files: &[(&str, PathBuf)],
+    progress: &dyn Fn(u64, u64),
+) -> Result<(), Error> {
+    let _one = DOWNLOAD.lock();
+    let agent = agent(STALL);
+    let (mut done, mut total) = (0u64, 0u64);
+    let mut pending = Vec::new();
+    for (url, path) in files {
+        if path.is_file() {
+            let len = fs::metadata(path)?.len();
+            (done, total) = (done + len, total + len);
+            continue;
+        }
+        let len =
+            remote_len(&agent, url).map_err(|e| Error::Model(format!("downloading {url}: {e}")))?;
+        total += len;
+        pending.push((*url, path, len));
+    }
+    progress(done, total);
+    for (url, path, len) in pending {
+        fetch(&agent, url, path, len, &mut |have| {
+            progress(done + have, total)
+        })?;
+        done += fs::metadata(path)?.len();
+    }
+    Ok(())
 }
 
 /// How long a download may go without receiving anything before the
@@ -404,7 +436,7 @@ pub struct Engine {
     pad_id: u32,
 }
 
-fn model_err(e: impl std::fmt::Display) -> Error {
+pub(crate) fn model_err(e: impl std::fmt::Display) -> Error {
     Error::Model(e.to_string())
 }
 
@@ -611,7 +643,7 @@ impl Engine {
 /// ONNX Runtime allows one environment per process, ever (even after the
 /// first is dropped), so every engine shares this one: switching between
 /// GPU and CPU loads a second engine.
-fn environment() -> Result<ort::environment::Environment, Error> {
+pub(crate) fn environment() -> Result<ort::environment::Environment, Error> {
     static ENV: Mutex<Option<ort::environment::Environment>> = Mutex::new(None);
     let mut env = ENV.lock();
     if env.is_none() {

@@ -2,7 +2,7 @@
 // browser (`npm run dev`) without the Rust backend or a camera.
 
 import type { Api } from './api';
-import type { Album, BackupStatus, Bootstrap, Detail, Hit, Kind, Label, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Person, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 const FILMS = ['Classic Chrome', 'Classic Neg.', 'Provia', 'Velvia', 'Acros', 'Nostalgic Neg.', 'Reala Ace', 'Eterna', 'Astia', 'Pro Neg. Hi', 'Acros +R', 'Monochrome'];
 const FILM_WEIGHTS = [18, 16, 12, 9, 8, 7, 7, 5, 5, 4, 3, 2];
@@ -271,6 +271,7 @@ export function mockApi(): Api {
     editRaw: true,
     smartSearch: false,
     smartGpu: true,
+    faces: true,
     cacheVersion: 0,
   };
   let backup: BackupStatus = {
@@ -282,6 +283,33 @@ export function mockApi(): Api {
     error: offline ? "Shield · Samsung T7 can't be reached, so it wasn't backed up" : null,
   };
   const recipeNames = new Map<string, string>([[recipeKey(RECIPES[0]), 'Kodachrome 64-ish']]);
+  // People: a few named, a few groups waiting for a name.
+  const shown = photos.filter((p) => p.kind !== 'raf' && p.editOf == null);
+  let people: Person[] = empty
+    ? []
+    : [
+        ['Ana', 7],
+        ['Kenji', 11],
+        ['Mum', 13],
+        [null, 17],
+        [null, 29],
+        ['Sam', 19],
+        [null, 41],
+      ].map(([name, every], i) => ({
+        id: i + 1,
+        name: name as string | null,
+        cover: (i + 1) * 1000,
+        faces: 0,
+        photoIds: shown.filter((p) => p.id % (every as number) === 0).slice(0, 60 - i * 6).map((p) => p.id),
+      }));
+  people = people.map((p) => ({ ...p, faces: p.photoIds.length }));
+  let faces: FacesStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 39, scanned: photos.length, error: null };
+  const avatar = (seed: number) => {
+    const hue = (seed * 47) % 360;
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='hsl(${hue} 35% 38%)'/><circle cx='50' cy='42' r='20' fill='hsl(${hue} 40% 78%)'/><ellipse cx='50' cy='96' rx='34' ry='26' fill='hsl(${hue} 40% 78%)'/></svg>`;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  };
+
   let smart: SmartStatus = {
     enabled: false,
     phase: 'off',
@@ -333,7 +361,7 @@ export function mockApi(): Api {
 
   return {
     native: false,
-    bootstrap: async (): Promise<Bootstrap> => ({ version: '0.2.0', sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup }),
+    bootstrap: async (): Promise<Bootstrap> => ({ version: '0.2.0', sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup, faces }),
     listPhotos: async () => photos,
     listSources: async () => sources,
     async photoDetail(id) {
@@ -404,6 +432,47 @@ export function mockApi(): Api {
       const gone = withPairs(ids);
       albums = albums.map((a) => (a.id === id ? { ...a, ids: a.ids.filter((x) => !gone.has(x)) } : a));
     },
+    facesStatus: async () => faces,
+    async setFaces(enabled) {
+      settings = { ...settings, faces: enabled };
+      faces = { ...faces, enabled, phase: enabled ? 'ready' : 'off' };
+      return faces;
+    },
+    listPeople: async () => people,
+    async facesIn(photoId) {
+      const found: FaceInPhoto[] = people
+        .filter((p) => p.photoIds.includes(photoId))
+        .map((p, i) => ({ id: p.cover + photoId, personId: p.id, name: p.name, bbox: [0.2 + i * 0.3, 0.2, 0.15, 0.2] }));
+      if (photoId % 5 === 0) found.push({ id: 90000 + photoId, personId: null, name: null, bbox: [0.7, 0.3, 0.1, 0.14] });
+      return found;
+    },
+    async namePerson(id, name) {
+      const same = people.find((p) => p.id !== id && p.name?.toLowerCase() === name.trim().toLowerCase());
+      if (same) {
+        const gone = people.find((p) => p.id === id)!;
+        people = people.filter((p) => p.id !== id).map((p) => (p === same ? { ...p, photoIds: [...new Set([...p.photoIds, ...gone.photoIds])] } : p));
+        return same.id;
+      }
+      people = people.map((p) => (p.id === id ? { ...p, name: name.trim() } : p));
+      return id;
+    },
+    async nameFace(faceId, name) {
+      const photoId = faceId >= 90000 ? faceId - 90000 : faceId % 1000;
+      let person = people.find((p) => p.name?.toLowerCase() === name.trim().toLowerCase());
+      if (!person) {
+        person = { id: people.length + 100, name: name.trim(), cover: faceId, faces: 0, photoIds: [] };
+        people = [...people, person];
+      }
+      people = people.map((p) => (p.id === person!.id ? { ...p, photoIds: [...p.photoIds, photoId], faces: p.faces + 1 } : p));
+      return person.id;
+    },
+    async removeFromPerson(id, photoIds) {
+      people = people.map((p) => (p.id === id ? { ...p, photoIds: p.photoIds.filter((x) => !photoIds.includes(x)) } : p));
+    },
+    async deletePerson(id) {
+      people = people.map((p) => (p.id === id ? { ...p, name: null } : p));
+    },
+    faceUrl: (id) => avatar(Math.floor(id / 1000) || id),
     async findDuplicates() {
       await delay(500);
       // Bursts: shots of one outing a few seconds apart, best rated first.

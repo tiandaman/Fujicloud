@@ -15,7 +15,7 @@
     plural,
   } from '../format';
   import { store } from '../store.svelte';
-  import type { Detail, Label } from '../types';
+  import type { Detail, FaceInPhoto, Label } from '../types';
   import { placeName } from '../recipe';
   import Histogram from './Histogram.svelte';
   import RecipeCard from './RecipeCard.svelte';
@@ -36,6 +36,33 @@
   const twin = $derived(photo?.pairId != null ? store.byId.get(photo.pairId) : undefined);
   const many = $derived(ids.length > 1 ? ids.map((id) => store.byId.get(id)).filter((p) => !!p) : []);
   const pair = $derived(store.comparisonOf(ids));
+  // Who's in the photo; refreshed when people are named or regrouped.
+  let faces = $state<FaceInPhoto[]>([]);
+  let naming = $state<Record<number, string>>({});
+  $effect(() => {
+    const id = photo?.id;
+    void store.people;
+    if (id == null || !store.faces?.enabled) {
+      faces = [];
+      return;
+    }
+    let live = true;
+    api
+      .facesIn(id)
+      .then((f) => live && (faces = f))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  });
+
+  async function nameFace(face: FaceInPhoto) {
+    const name = naming[face.id]?.trim();
+    if (!name) return;
+    await store.nameFace(face.id, name);
+    delete naming[face.id];
+  }
+
   const inAlbums = $derived(photo ? store.albums.filter((a) => a.ids.includes(photo.id)) : []);
   const edits = $derived(photo ? (store.editsOf.get(photo.id) ?? (twin ? store.editsOf.get(twin.id) : undefined) ?? []) : []);
 
@@ -207,6 +234,31 @@
           <Icon name="plus" size={12} stroke={2.2} /> Album
         </button>
       </div>
+      {#if faces.length}
+        <div class="faces">
+          {#each faces as f (f.id)}
+            <div class="face-chip">
+              <img src={api.faceUrl(f.id)} alt="" draggable="false" />
+              {#if f.name && f.personId != null}
+                <button class="truncate" title="Show photos of {f.name}" onclick={() => store.setCollection({ type: 'person', id: f.personId! })}>{f.name}</button>
+              {:else}
+                <input
+                  placeholder="Who's this?"
+                  list="face-names"
+                  bind:value={naming[f.id]}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter') nameFace(f);
+                    e.stopPropagation();
+                  }}
+                />
+              {/if}
+            </div>
+          {/each}
+          <datalist id="face-names">
+            {#each store.names as n (n)}<option value={n}></option>{/each}
+          </datalist>
+        </div>
+      {/if}
     </section>
 
     <section class="file">
@@ -609,6 +661,44 @@
   .album-chip .remove:hover {
     background: var(--hover);
     color: var(--text);
+  }
+  .faces {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .face-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    height: 28px;
+    padding: 0 10px 0 2px;
+    border-radius: 14px;
+    background: var(--bg-input);
+    font-size: 12px;
+  }
+  .face-chip img {
+    width: 24px;
+    height: 24px;
+    flex: none;
+    border-radius: 50%;
+    object-fit: cover;
+  }
+  .face-chip button {
+    color: var(--text);
+  }
+  .face-chip input {
+    width: 92px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--text);
+    font: inherit;
+  }
+  .face-chip input:focus {
+    outline: none;
   }
   .add-album {
     display: inline-flex;

@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, DuplicateGroup, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, DuplicateGroup, FaceInPhoto, FacesStatus, Person, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -23,6 +23,19 @@ export interface Api {
   deleteAlbum(id: number): Promise<void>;
   addToAlbum(id: number, ids: number[]): Promise<void>;
   removeFromAlbum(id: number, ids: number[]): Promise<void>;
+  facesStatus(): Promise<FacesStatus>;
+  setFaces(enabled: boolean): Promise<FacesStatus>;
+  listPeople(): Promise<Person[]>;
+  facesIn(photoId: number): Promise<FaceInPhoto[]>;
+  /** Names a person or group; a name already in use merges them. Returns who they are now. */
+  namePerson(id: number, name: string): Promise<number>;
+  /** Says who one face is. Returns the person. */
+  nameFace(faceId: number, name: string): Promise<number>;
+  /** "Not this person" for these photos. */
+  removeFromPerson(id: number, photoIds: number[]): Promise<void>;
+  /** Forgets a person's name; their faces are grouped again. */
+  deletePerson(id: number): Promise<void>;
+  faceUrl(faceId: number): string;
   /** Copies of the same file, and near-identical shots. */
   findDuplicates(): Promise<DuplicateGroup[]>;
   /** Moves photos (with their twins and sidecars) to the Recycle Bin. */
@@ -87,6 +100,15 @@ function tauriApi(): Api {
     deleteAlbum: (id) => invoke('delete_album', { id }),
     addToAlbum: (id, ids) => invoke('add_to_album', { id, ids }),
     removeFromAlbum: (id, ids) => invoke('remove_from_album', { id, ids }),
+    facesStatus: () => invoke('faces_status'),
+    setFaces: (enabled) => invoke('set_faces', { enabled }),
+    listPeople: () => invoke('list_people'),
+    facesIn: (id) => invoke('faces_in', { id }),
+    namePerson: (id, name) => invoke('name_person', { id, name }),
+    nameFace: (id, name) => invoke('name_face', { id, name }),
+    removeFromPerson: (id, photoIds) => invoke('remove_from_person', { id, photoIds }),
+    deletePerson: (id) => invoke('delete_person', { id }),
+    faceUrl: (id) => `${base}/f/${id}?v=${cacheVersion.n}`,
     findDuplicates: () => invoke('find_duplicates'),
     deletePhotos: (ids) => invoke('delete_photos', { ids }),
     exportPhotos: (ids, preset, location, folder) => invoke('export_photos', { ids, preset, location, folder }),

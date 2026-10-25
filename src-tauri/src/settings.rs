@@ -37,6 +37,8 @@ pub struct Settings {
     pub smart_search: bool,
     /// Analyse photos on the graphics card when there is one (DirectML).
     pub smart_gpu: bool,
+    /// Find faces and group them into people (downloads two small models).
+    pub faces: bool,
     /// Bumped by "Rebuild thumbnails" so the window stops reusing the old
     /// images it has cached.
     pub cache_version: u32,
@@ -55,6 +57,7 @@ impl Default for Settings {
             edit_raw: true,
             smart_search: false,
             smart_gpu: true,
+            faces: false,
             cache_version: 0,
         }
     }

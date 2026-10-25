@@ -123,7 +123,7 @@ pub fn forget_failures() {
 
 pub fn lane_for(request: &Request<Vec<u8>>) -> Lane {
     match request.uri().path().as_bytes().get(1) {
-        Some(b't') => Lane::Normal,
+        Some(b't' | b'f') => Lane::Normal,
         _ => Lane::High,
     }
 }
@@ -136,6 +136,16 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
     let Ok(id) = id.parse::<i64>() else {
         return status(StatusCode::BAD_REQUEST);
     };
+    // A face, cropped for a person's avatar.
+    if kind == "f" {
+        return match crate::faces::crop(state, id) {
+            Ok(jpeg) => image(jpeg, "image/jpeg", true),
+            Err(e) => {
+                log::warn!("{path}: {e}");
+                status(StatusCode::SERVICE_UNAVAILABLE)
+            }
+        };
+    }
     let Ok((file, file_kind, size, mtime)) = state.lib.file_of(id) else {
         return status(StatusCode::NOT_FOUND);
     };

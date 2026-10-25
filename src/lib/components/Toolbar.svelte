@@ -103,7 +103,12 @@
       <button class="clear" title="Back to all photos" aria-label="Back to all photos" onclick={() => store.setCollection({ type: 'all' })}><Icon name="x" size={12} stroke={2.2} /></button>
     {/if}
     <span class="faint tabular">
-      {store.selection.size ? `${formatCount(store.selection.size)} selected · ` : ''}{plural(store.visible.length, 'photo')}
+      {#if store.collection.type === 'people'}
+        {@const named = store.people.filter((p) => p.name).length}
+        {named === 1 ? '1 person' : `${formatCount(named)} people`}
+      {:else}
+        {store.selection.size ? `${formatCount(store.selection.size)} selected · ` : ''}{plural(store.visible.length, 'photo')}
+      {/if}
     </span>
     {#if store.collection.type === 'duplicates'}
       {#if store.findingDuplicates}

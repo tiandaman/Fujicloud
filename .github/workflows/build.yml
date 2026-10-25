@@ -47,6 +47,13 @@ jobs:
       - run: cargo test -p fuji-core -- --ignored --nocapture real_siglip
         env:
           FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
+      # Face detection and recognition with the real models on real photos:
+      # the same person must match across photos, different people mustn't.
+      - name: Face recognition (real models)
+        run: cargo test -p fuji-core -- --ignored --nocapture real_faces
+        env:
+          FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
+          FUJICLOUD_FACE_TEST: ${{ github.workspace }}/.models/face-test
 
   windows:
     name: Windows installer

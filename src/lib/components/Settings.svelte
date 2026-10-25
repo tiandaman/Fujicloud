@@ -26,7 +26,8 @@
   }
 
   // Smart search has its own switch that applies immediately; ignore it here.
-  const comparable = (s: Settings | null) => JSON.stringify({ ...s, smartSearch: undefined, smartGpu: undefined, cacheVersion: undefined });
+  const comparable = (s: Settings | null) =>
+    JSON.stringify({ ...s, smartSearch: undefined, smartGpu: undefined, faces: undefined, cacheVersion: undefined });
   const dirty = $derived(comparable(draft) !== comparable(store.settings));
 
   async function pick(key: 'importTo' | 'backupTo' | 'editorPath', title: string) {
@@ -297,6 +298,28 @@
     </section>
 
     <section>
+      <h3><Icon name="people" size={16} /> People</h3>
+      <p class="hint">
+        Finds the faces in your photos and groups each person's photos, so you can name them once and find them anywhere. It runs entirely
+        on this PC using two small open models from OpenCV (downloaded once, {store.faces?.downloadMb ?? 39} MB). Faces never leave your
+        network.
+      </p>
+      <label class="row toggle">
+        <div>
+          <span>Recognise faces</span>
+          <small class="faint">
+            {#if !store.faces?.enabled}Off
+            {:else if store.faces.phase === 'downloading'}Downloading models… {store.faces.total ? `${formatBytes(store.faces.done)} of ${formatBytes(store.faces.total)}` : 'connecting'}
+            {:else if store.faces.phase === 'indexing'}Looking for faces… {formatCount(store.faces.done)} of {formatCount(store.faces.total)}
+            {:else if store.faces.phase === 'error'}Problem: {store.faces.error}
+            {:else}Ready · {formatCount(store.faces.scanned)} photos searched · {store.people.filter((p) => p.name).length} people named{/if}
+          </small>
+        </div>
+        <input type="checkbox" class="switch" checked={!!store.faces?.enabled} onchange={(e) => store.setFaces(e.currentTarget.checked)} />
+      </label>
+    </section>
+
+    <section>
       <h3><Icon name="photos" size={16} /> Thumbnail cache</h3>
       <div class="row">
         <div class="grow">
@@ -328,7 +351,7 @@
     <section class="credits">
       <p class="faint">
         Place names © <a href="https://www.geonames.org" target="_blank" rel="noreferrer">GeoNames</a> (CC BY 4.0). Map © OpenStreetMap
-        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model.
+        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses OpenCV's YuNet and SFace models.
       </p>
     </section>
 
