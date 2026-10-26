@@ -159,6 +159,8 @@ export interface Person {
   cover: number;
   faces: number;
   photoIds: number[];
+  /** A stranger, kept out of the way. */
+  hidden: boolean;
 }
 
 export interface FaceInPhoto {

@@ -37,6 +37,10 @@ export interface Api {
   mergePeople(from: number[], into: number): Promise<number>;
   /** Forgets a person's name; their faces are grouped again. */
   deletePerson(id: number): Promise<void>;
+  /** Hides strangers, or brings them back. */
+  hidePeople(ids: number[], hidden: boolean): Promise<void>;
+  /** "I don't know them", from one face in a photo. Returns who's hidden. */
+  hideFace(faceId: number): Promise<number>;
   faceUrl(faceId: number): string;
   /** Copies of the same file, and near-identical shots. */
   findDuplicates(): Promise<DuplicateGroup[]>;
@@ -114,6 +118,8 @@ function tauriApi(): Api {
     removeFromPerson: (id, photoIds) => invoke('remove_from_person', { id, photoIds }),
     deletePerson: (id) => invoke('delete_person', { id }),
     mergePeople: (from, into) => invoke('merge_people', { from, into }),
+    hidePeople: (ids, hidden) => invoke('hide_people', { ids, hidden }),
+    hideFace: (id) => invoke('hide_face', { id }),
     faceUrl: (id) => `${base}/f/${id}?v=${cacheVersion.n}`,
     findDuplicates: () => invoke('find_duplicates'),
     deletePhotos: (ids) => invoke('delete_photos', { ids }),

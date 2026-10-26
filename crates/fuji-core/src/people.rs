@@ -5,7 +5,8 @@
 //! grouped with each other into unnamed people, waiting for a name. Naming a
 //! group, or saying "that's not them", is remembered: a face someone has
 //! confirmed is never moved, and a face rejected from a person is never
-//! filed under them again.
+//! filed under them again. Strangers can be hidden: their new photos keep
+//! being filed under them, out of sight.
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,7 +26,9 @@ CREATE TABLE IF NOT EXISTS people (
     id         INTEGER PRIMARY KEY,
     -- NULL until someone names this group of faces.
     name       TEXT COLLATE NOCASE,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    -- Someone said they don't know this person.
+    hidden     INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS faces (
     id         INTEGER PRIMARY KEY,
@@ -48,6 +51,19 @@ CREATE TABLE IF NOT EXISTS face_scans (
 );
 ";
 
+/// Libraries made before people could be hidden.
+pub(crate) fn migrate(conn: &rusqlite::Connection) -> Result<(), Error> {
+    let hidden: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('people') WHERE name = 'hidden'",
+        [],
+        |r| r.get(0),
+    )?;
+    if hidden == 0 {
+        conn.execute_batch("ALTER TABLE people ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
+
 /// A face to store: box as fractions of the picture, and its description.
 pub struct NewFace {
     pub bbox: [f32; 4],
@@ -64,6 +80,8 @@ pub struct PersonRow {
     pub cover: i64,
     pub faces: usize,
     pub photo_ids: Vec<i64>,
+    /// A stranger, kept out of the way.
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -282,34 +300,43 @@ impl Library {
     pub fn people(&self) -> Result<Vec<PersonRow>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT f.person_id, p.name, f.id, f.photo_id, f.confirmed, f.score
+            "SELECT f.person_id, p.name, p.hidden, f.id, f.photo_id, f.confirmed, f.score
              FROM faces f JOIN people p ON p.id = f.person_id",
         )?;
-        let mut by_person: HashMap<i64, (Option<String>, Vec<Filed>)> = HashMap::new();
+        type Entry = (Option<String>, bool, Vec<Filed>);
+        let mut by_person: HashMap<i64, Entry> = HashMap::new();
         let mut rows = stmt.query([])?;
         while let Some(r) = rows.next()? {
-            let entry = by_person
-                .entry(r.get(0)?)
-                .or_insert_with(|| (r.get(1).ok().flatten(), Vec::new()));
-            entry.1.push(Filed {
-                id: r.get(2)?,
-                photo: r.get(3)?,
-                confirmed: r.get::<_, i64>(4)? != 0,
-                score: r.get(5)?,
+            let entry = by_person.entry(r.get(0)?).or_insert_with(|| {
+                (
+                    r.get(1).ok().flatten(),
+                    r.get::<_, i64>(2).is_ok_and(|h| h != 0),
+                    Vec::new(),
+                )
+            });
+            entry.2.push(Filed {
+                id: r.get(3)?,
+                photo: r.get(4)?,
+                confirmed: r.get::<_, i64>(5)? != 0,
+                score: r.get(6)?,
             });
         }
         // Named people with no faces left still exist.
         let mut named =
-            conn.prepare_cached("SELECT id, name FROM people WHERE name IS NOT NULL")?;
+            conn.prepare_cached("SELECT id, name, hidden FROM people WHERE name IS NOT NULL")?;
         let mut rows = named.query([])?;
         while let Some(r) = rows.next()? {
-            by_person
-                .entry(r.get(0)?)
-                .or_insert_with(|| (r.get(1).ok(), Vec::new()));
+            by_person.entry(r.get(0)?).or_insert_with(|| {
+                (
+                    r.get(1).ok(),
+                    r.get::<_, i64>(2).is_ok_and(|h| h != 0),
+                    Vec::new(),
+                )
+            });
         }
         let mut out: Vec<PersonRow> = by_person
             .into_iter()
-            .map(|(id, (name, faces))| {
+            .map(|(id, (name, hidden, faces))| {
                 // The clearest face someone confirmed, else the clearest.
                 let cover = faces
                     .iter()
@@ -328,6 +355,7 @@ impl Library {
                     cover,
                     faces: faces.len(),
                     photo_ids,
+                    hidden,
                 }
             })
             .collect();
@@ -341,13 +369,13 @@ impl Library {
         Ok(out)
     }
 
-    /// The faces in one photo, left to right.
+    /// The faces in one photo, left to right; hidden strangers left out.
     pub fn faces_in(&self, photo_id: i64) -> Result<Vec<FaceRow>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT f.id, f.person_id, p.name, f.x, f.y, f.w, f.h
              FROM faces f LEFT JOIN people p ON p.id = f.person_id
-             WHERE f.photo_id = ?1 ORDER BY f.x",
+             WHERE f.photo_id = ?1 AND NOT coalesce(p.hidden, 0) ORDER BY f.x",
         )?;
         let rows = stmt.query_map([photo_id], |r| {
             Ok(FaceRow {
@@ -404,6 +432,7 @@ impl Library {
             "UPDATE faces SET confirmed = 1 WHERE person_id = ?1",
             [person],
         )?;
+        tx.execute("UPDATE people SET hidden = 0 WHERE id = ?1", [person])?;
         tx.commit()?;
         Ok(person)
     }
@@ -429,6 +458,7 @@ impl Library {
             "UPDATE faces SET person_id = ?2, confirmed = 1, not_person = NULL WHERE id = ?1",
             params![face_id, person],
         )?;
+        tx.execute("UPDATE people SET hidden = 0 WHERE id = ?1", [person])?;
         tx.execute(
             "DELETE FROM people WHERE name IS NULL
                AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)",
@@ -469,6 +499,20 @@ impl Library {
                 .optional()?
                 .flatten())
         };
+        // One of them still in sight keeps the merged person in sight.
+        let mut all_hidden = true;
+        for &id in from.iter().chain([&into]) {
+            all_hidden &= tx
+                .query_row("SELECT hidden FROM people WHERE id = ?1", [id], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .optional()?
+                .is_none_or(|h| h != 0);
+        }
+        tx.execute(
+            "UPDATE people SET hidden = ?2 WHERE id = ?1",
+            params![into, all_hidden],
+        )?;
         if name_of(into)?.is_none() {
             let mut names = Vec::new();
             for &id in from {
@@ -496,6 +540,61 @@ impl Library {
         }
         tx.commit()?;
         Ok(into)
+    }
+
+    /// Hides people (strangers in the background) or brings them back.
+    /// Hidden people keep their faces, so new photos of them are filed
+    /// under them and stay out of sight too.
+    pub fn hide_people(&self, ids: &[i64], hidden: bool) -> Result<(), Error> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        for &id in ids {
+            tx.execute(
+                "UPDATE people SET hidden = ?2 WHERE id = ?1",
+                params![id, hidden],
+            )?;
+            if hidden {
+                // Kept even if the photo is searched for faces again.
+                tx.execute("UPDATE faces SET confirmed = 1 WHERE person_id = ?1", [id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// "I don't know them", said of one face: hides the unnamed group it's
+    /// in, or, for a face on its own (or filed under someone it isn't),
+    /// files it under a new hidden person that look-alikes join later.
+    /// Returns the hidden person.
+    pub fn hide_face(&self, face_id: i64) -> Result<i64, Error> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let (current, named): (Option<i64>, bool) = tx.query_row(
+            "SELECT f.person_id, p.name IS NOT NULL
+             FROM faces f LEFT JOIN people p ON p.id = f.person_id WHERE f.id = ?1",
+            [face_id],
+            |r| Ok((r.get(0)?, r.get::<_, Option<bool>>(1)?.unwrap_or(false))),
+        )?;
+        let person = match current {
+            Some(group) if !named => group,
+            _ => {
+                tx.execute("INSERT INTO people (name, hidden) VALUES (NULL, 1)", [])?;
+                let person = tx.last_insert_rowid();
+                tx.execute(
+                    "UPDATE faces SET person_id = ?2, not_person = coalesce(person_id, not_person)
+                     WHERE id = ?1",
+                    params![face_id, person],
+                )?;
+                person
+            }
+        };
+        tx.execute("UPDATE people SET hidden = 1 WHERE id = ?1", [person])?;
+        tx.execute(
+            "UPDATE faces SET confirmed = 1 WHERE person_id = ?1",
+            [person],
+        )?;
+        tx.commit()?;
+        Ok(person)
     }
 
     /// Forgets a person's name; their faces go back to being grouped.
@@ -659,6 +758,114 @@ mod tests {
         // Regrouping leaves the merged person alone.
         assert!(!lib.group_faces().unwrap());
         assert_eq!(lib.people().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn strangers_can_be_hidden_and_stay_hidden() {
+        let lib = library(4);
+        let p = ids(&lib);
+        // Ann (axis 0) and a stranger in the background (axis 2).
+        lib.store_faces(p[0], "m", &[face(0, 0.0), face(2, 0.0)])
+            .unwrap();
+        lib.store_faces(p[1], "m", &[face(2, 0.1)]).unwrap();
+        lib.store_faces(p[2], "m", &[face(0, 0.1)]).unwrap();
+        lib.group_faces().unwrap();
+        let stranger = lib
+            .people()
+            .unwrap()
+            .into_iter()
+            .find(|g| g.photo_ids == [p[0], p[1]])
+            .unwrap()
+            .id;
+        lib.hide_people(&[stranger], true).unwrap();
+        let hidden: Vec<i64> = lib
+            .people()
+            .unwrap()
+            .iter()
+            .filter(|g| g.hidden)
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(hidden, [stranger]);
+        assert_eq!(lib.faces_in(p[0]).unwrap().len(), 1, "only Ann shows");
+
+        // A new photo of the stranger joins them, out of sight.
+        lib.store_faces(p[3], "m", &[face(2, 0.05)]).unwrap();
+        lib.group_faces().unwrap();
+        let people = lib.people().unwrap();
+        assert_eq!(people.len(), 2, "no new group pops up");
+        let s = people.iter().find(|g| g.id == stranger).unwrap();
+        assert!(s.hidden);
+        assert_eq!(s.photo_ids, [p[0], p[1], p[3]]);
+
+        // Merging Ann's group with them keeps the result in sight.
+        let ann = people.iter().find(|g| !g.hidden).unwrap().id;
+        lib.merge_people(&[ann], stranger).unwrap();
+        assert!(!lib.people().unwrap()[0].hidden);
+
+        // Unhiding, and naming, bring people back.
+        lib.hide_people(&[stranger], true).unwrap();
+        lib.hide_people(&[stranger], false).unwrap();
+        assert!(!lib.people().unwrap()[0].hidden);
+        lib.hide_people(&[stranger], true).unwrap();
+        lib.name_person(stranger, "Sam").unwrap();
+        assert!(!lib.people().unwrap()[0].hidden);
+    }
+
+    #[test]
+    fn one_face_can_be_hidden_from_a_photo() {
+        let lib = library(3);
+        let p = ids(&lib);
+        // Ann in two photos, plus someone passing by once.
+        lib.store_faces(p[0], "m", &[face(0, 0.0), face(5, 0.0)])
+            .unwrap();
+        lib.store_faces(p[1], "m", &[face(0, 0.1)]).unwrap();
+        lib.group_faces().unwrap();
+        let passer = lib
+            .faces_in(p[0])
+            .unwrap()
+            .into_iter()
+            .find(|f| f.person_id.is_none())
+            .unwrap();
+        let hidden = lib.hide_face(passer.id).unwrap();
+        assert_eq!(lib.faces_in(p[0]).unwrap().len(), 1);
+        // They turn up again: still hidden.
+        lib.store_faces(p[2], "m", &[face(5, 0.05)]).unwrap();
+        lib.group_faces().unwrap();
+        assert!(lib.faces_in(p[2]).unwrap().is_empty());
+        let them = lib
+            .people()
+            .unwrap()
+            .into_iter()
+            .find(|g| g.id == hidden)
+            .unwrap();
+        assert!(them.hidden);
+        assert_eq!(them.photo_ids, [p[0], p[2]]);
+
+        // A face of an unnamed group hides the whole group.
+        let ann = lib.faces_in(p[1]).unwrap()[0].clone();
+        let group = ann.person_id.unwrap();
+        assert_eq!(lib.hide_face(ann.id).unwrap(), group);
+        assert!(lib.faces_in(p[0]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn libraries_from_before_hiding_are_upgraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+                 INSERT INTO people (name) VALUES ('Ann');",
+            )
+            .unwrap();
+        let lib = Library::open(&path).unwrap();
+        let people = lib.people().unwrap();
+        assert_eq!(people[0].name.as_deref(), Some("Ann"));
+        assert!(!people[0].hidden);
+        drop(lib);
+        Library::open(&path).unwrap();
     }
 
     #[test]

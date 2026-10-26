@@ -301,8 +301,10 @@ export function mockApi(): Api {
         cover: (i + 1) * 1000,
         faces: 0,
         photoIds: shown.filter((p) => p.id % (every as number) === 0).slice(0, 60 - i * 6).map((p) => p.id),
+        hidden: false,
       }));
   people = people.map((p) => ({ ...p, faces: p.photoIds.length }));
+  const hiddenFaces = new Set<number>();
   let faces: FacesStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 39, scanned: photos.length, error: null };
   const avatar = (seed: number) => {
     const hue = (seed * 47) % 360;
@@ -441,9 +443,9 @@ export function mockApi(): Api {
     listPeople: async () => people,
     async facesIn(photoId) {
       const found: FaceInPhoto[] = people
-        .filter((p) => p.photoIds.includes(photoId))
+        .filter((p) => !p.hidden && p.photoIds.includes(photoId))
         .map((p, i) => ({ id: p.cover + photoId, personId: p.id, name: p.name, bbox: [0.2 + i * 0.3, 0.2, 0.15, 0.2] }));
-      if (photoId % 5 === 0) found.push({ id: 90000 + photoId, personId: null, name: null, bbox: [0.7, 0.3, 0.1, 0.14] });
+      if (photoId % 5 === 0 && !hiddenFaces.has(90000 + photoId)) found.push({ id: 90000 + photoId, personId: null, name: null, bbox: [0.7, 0.3, 0.1, 0.14] });
       return found;
     },
     async namePerson(id, name) {
@@ -453,14 +455,14 @@ export function mockApi(): Api {
         people = people.filter((p) => p.id !== id).map((p) => (p === same ? { ...p, photoIds: [...new Set([...p.photoIds, ...gone.photoIds])] } : p));
         return same.id;
       }
-      people = people.map((p) => (p.id === id ? { ...p, name: name.trim() } : p));
+      people = people.map((p) => (p.id === id ? { ...p, name: name.trim(), hidden: false } : p));
       return id;
     },
     async nameFace(faceId, name) {
       const photoId = faceId >= 90000 ? faceId - 90000 : faceId % 1000;
       let person = people.find((p) => p.name?.toLowerCase() === name.trim().toLowerCase());
       if (!person) {
-        person = { id: people.length + 100, name: name.trim(), cover: faceId, faces: 0, photoIds: [] };
+        person = { id: people.length + 100, name: name.trim(), cover: faceId, faces: 0, photoIds: [], hidden: false };
         people = [...people, person];
       }
       people = people.map((p) => (p.id === person!.id ? { ...p, photoIds: [...p.photoIds, photoId], faces: p.faces + 1 } : p));
@@ -481,6 +483,20 @@ export function mockApi(): Api {
     },
     async deletePerson(id) {
       people = people.map((p) => (p.id === id ? { ...p, name: null } : p));
+    },
+    async hidePeople(ids, hidden) {
+      people = people.map((p) => (ids.includes(p.id) ? { ...p, hidden } : p));
+    },
+    async hideFace(faceId) {
+      const group = people.find((p) => !p.name && faceId > p.cover && faceId - p.cover < 1000);
+      if (group) {
+        people = people.map((p) => (p === group ? { ...p, hidden: true } : p));
+        return group.id;
+      }
+      hiddenFaces.add(faceId);
+      const id = 500 + hiddenFaces.size;
+      people = [...people, { id, name: null, cover: faceId, faces: 1, photoIds: [faceId - 90000], hidden: true }];
+      return id;
     },
     faceUrl: (id) => avatar(Math.floor(id / 1000) || id),
     async findDuplicates() {

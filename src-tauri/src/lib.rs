@@ -836,6 +836,18 @@ async fn merge_people(state: Shared<'_>, from: Vec<i64>, into: i64) -> CmdResult
     state.lib.merge_people(&from, into).map_err(err)
 }
 
+/// Hides strangers, or brings them back.
+#[tauri::command]
+async fn hide_people(state: Shared<'_>, ids: Vec<i64>, hidden: bool) -> CmdResult<()> {
+    state.lib.hide_people(&ids, hidden).map_err(err)
+}
+
+/// "I don't know them", from one face in a photo. Returns who's hidden.
+#[tauri::command]
+async fn hide_face(state: Shared<'_>, id: i64) -> CmdResult<i64> {
+    state.lib.hide_face(id).map_err(err)
+}
+
 /// Forgets a person's name; their faces are grouped again, unnamed.
 #[tauri::command]
 async fn delete_person(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<()> {
@@ -1119,6 +1131,8 @@ pub fn run() {
             remove_from_person,
             delete_person,
             merge_people,
+            hide_people,
+            hide_face,
             search_smart,
             similar_photos,
         ])

@@ -56,6 +56,11 @@
     };
   });
 
+  async function hideFace(face: FaceInPhoto) {
+    faces = faces.filter((f) => f !== face);
+    await store.hideFace(face.id);
+  }
+
   async function nameFace(face: FaceInPhoto) {
     const name = naming[face.id]?.trim();
     if (!name) return;
@@ -251,6 +256,9 @@
                     e.stopPropagation();
                   }}
                 />
+                <button class="dismiss" title="Hide: I don't know them" aria-label="Hide" onclick={() => hideFace(f)}>
+                  <Icon name="x" size={10} stroke={2.4} />
+                </button>
               {/if}
             </div>
           {/each}
@@ -699,6 +707,22 @@
   }
   .face-chip input:focus {
     outline: none;
+  }
+  .face-chip:has(.dismiss) {
+    padding-right: 3px;
+  }
+  .face-chip .dismiss {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    flex: none;
+    border-radius: 50%;
+    color: var(--text-3);
+  }
+  .face-chip .dismiss:hover {
+    background: var(--hover);
+    color: var(--text);
   }
   .add-album {
     display: inline-flex;

@@ -148,9 +148,12 @@ class Store {
   sync = $state.raw<SyncStatus | null>(null);
   toasts = $state.raw<Toast[]>([]);
   backup = $state.raw<BackupStatus | null>(null);
-  people = $state.raw<Person[]>([]);
+  /** Everyone, hidden strangers too. */
+  allPeople = $state.raw<Person[]>([]);
+  people = $derived(this.allPeople.filter((p) => !p.hidden));
+  hiddenPeople = $derived(this.allPeople.filter((p) => p.hidden));
   faces = $state.raw<FacesStatus | null>(null);
-  personById = $derived(new Map(this.people.map((p) => [p.id, p])));
+  personById = $derived(new Map(this.allPeople.map((p) => [p.id, p])));
   /** Named people, for name suggestions. */
   names = $derived(this.people.filter((p) => p.name).map((p) => p.name!));
   version = $state('');
@@ -537,11 +540,11 @@ class Store {
     this.sources = sources;
     this.recipes = recipes;
     this.albums = albums;
-    this.people = people;
+    this.allPeople = people;
   }
 
   async loadPeople() {
-    this.people = await api.listPeople();
+    this.allPeople = await api.listPeople();
   }
 
   // ---- actions ----
@@ -910,6 +913,33 @@ class Store {
   /** Back from a person's photos to everyone. */
   back() {
     if (this.collection.type === 'person' && this.viewerId == null) this.setCollection({ type: 'people' });
+  }
+
+  /** Strangers out of the way; their new photos stay hidden too. */
+  async hidePeople(ids: number[], hidden = true) {
+    if (!ids.length) return;
+    try {
+      await api.hidePeople(ids, hidden);
+      await this.loadPeople();
+      const c = this.collection;
+      if (hidden && c.type === 'person' && ids.includes(c.id)) this.setCollection({ type: 'people' });
+      const who = ids.length === 1 ? (this.personById.get(ids[0])?.name ?? 'them') : `${ids.length} people`;
+      if (hidden) this.toast(`Hid ${who}. New photos of them stay hidden too.`, 'info', { label: 'Undo', run: () => this.hidePeople(ids, false) });
+      else this.toast(`${who === 'them' ? 'They' : who} will show again`);
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** "I don't know them", from one face in a photo. */
+  async hideFace(faceId: number) {
+    try {
+      const id = await api.hideFace(faceId);
+      await this.loadPeople();
+      this.toast('Hidden. New photos of them stay hidden too.', 'info', { label: 'Undo', run: () => this.hidePeople([id], false) });
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
   }
 
   async deletePerson(id: number) {

@@ -262,6 +262,7 @@ impl Library {
         )?;
         conn.execute_batch(TABLES)?;
         conn.execute_batch(crate::people::TABLES)?;
+        crate::people::migrate(&conn)?;
         migrate(&conn)?;
         conn.execute_batch(INDEXES)?;
         Ok(Self {

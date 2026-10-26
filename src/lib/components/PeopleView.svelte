@@ -10,6 +10,8 @@
   // A group needs a couple of photos before it's worth asking about.
   const unnamed = $derived(store.people.filter((p) => !p.name && p.photoIds.length > 1));
   const status = $derived(store.faces);
+  const hidden = $derived(store.hiddenPeople.filter((p) => p.photoIds.length > 0));
+  let showHidden = $state(false);
 
   let drafts = $state<Record<number, string>>({});
   /** People picked for merging (Ctrl+click, or the tick on a face). */
@@ -34,6 +36,11 @@
     picked = [];
   }
 
+  async function hide(ids: number[]) {
+    picked = picked.filter((id) => !ids.includes(id));
+    await store.hidePeople(ids);
+  }
+
   async function save(p: Person) {
     const name = drafts[p.id]?.trim();
     if (!name) return;
@@ -44,6 +51,17 @@
 
   function personMenu(e: MouseEvent, p: Person) {
     e.preventDefault();
+    if (p.hidden) {
+      menu = {
+        x: e.clientX,
+        y: e.clientY,
+        items: [
+          { label: 'Show again', icon: 'eye', action: () => store.hidePeople([p.id], false) },
+          { label: 'Show photos', icon: 'photos', action: () => store.setCollection({ type: 'person', id: p.id }) },
+        ],
+      };
+      return;
+    }
     menu = {
       x: e.clientX,
       y: e.clientY,
@@ -60,6 +78,7 @@
           },
         },
         { separator: true },
+        { label: "Hide: I don't know them", icon: 'eye-off', action: () => hide([p.id]) },
         { label: 'Forget this name', icon: 'x', action: () => store.deletePerson(p.id), hidden: !p.name },
       ],
     };
@@ -72,7 +91,7 @@
 </script>
 
 {#snippet face(p: Person, size: number)}
-  <div class="face-wrap" class:picked={picked.includes(p.id)}>
+  <div class="face-wrap" class:picked={picked.includes(p.id)} class:hidden={p.hidden}>
     <button
       class="face"
       style:width="{size}px"
@@ -82,9 +101,20 @@
     >
       <img src={api.faceUrl(p.cover)} alt="" draggable="false" />
     </button>
-    <button class="tick" aria-label={picked.includes(p.id) ? 'Unselect' : 'Select to merge'} onclick={() => toggle(p)}>
-      <Icon name="check" size={12} stroke={3} />
-    </button>
+    {#if p.hidden}
+      <button class="corner show" title="Show again" aria-label="Show again" onclick={() => store.hidePeople([p.id], false)}>
+        <Icon name="eye" size={12} stroke={2} />
+      </button>
+    {:else}
+      <button class="tick" aria-label={picked.includes(p.id) ? 'Unselect' : 'Select to merge'} onclick={() => toggle(p)}>
+        <Icon name="check" size={12} stroke={3} />
+      </button>
+      {#if !p.name}
+        <button class="corner dismiss" title="Hide: I don't know them" aria-label="Hide" onclick={() => hide([p.id])}>
+          <Icon name="x" size={11} stroke={2.6} />
+        </button>
+      {/if}
+    {/if}
   </div>
 {/snippet}
 
@@ -155,7 +185,10 @@
     {#if unnamed.length}
       <section>
         <h2>Who's this?</h2>
-        <p class="hint">Name a face and Fujicloud finds them in new photos too. Using a name that's already taken adds the photos to that person.</p>
+        <p class="hint">
+          Name a face and Fujicloud finds them in new photos too. Using a name that's already taken adds the photos to that person. Don't know
+          them? The × on their face hides them, and their new photos stay hidden too.
+        </p>
         <div class="grid">
           {#each unnamed as p (p.id)}
             <div class="person" oncontextmenu={(e) => personMenu(e, p)} role="presentation">
@@ -165,6 +198,28 @@
             </div>
           {/each}
         </div>
+      </section>
+    {/if}
+
+    {#if hidden.length}
+      <section class="hidden-people">
+        <button class="link" onclick={() => (showHidden = !showHidden)}>
+          <Icon name={showHidden ? 'down' : 'next'} size={12} />
+          {showHidden ? 'Hidden' : `Show ${hidden.length === 1 ? '1 hidden person' : `${hidden.length} hidden people`}`}
+        </button>
+        {#if showHidden}
+          <p class="hint">People you don't know. They're left out of People, the sidebar and photo info.</p>
+          <div class="grid">
+            {#each hidden as p (p.id)}
+              <div class="person" oncontextmenu={(e) => personMenu(e, p)} role="presentation">
+                {@render face(p, 80)}
+                {#if p.name}<strong class="truncate">{p.name}</strong>{/if}
+                <span class="faint tabular">{plural(p.photoIds.length, 'photo')}</span>
+                <button class="show-again" onclick={() => store.hidePeople([p.id], false)}>Show again</button>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </section>
     {/if}
 
@@ -185,10 +240,13 @@
 {#if picked.length}
   <div class="merge-bar">
     <span>
-      {#if picked.length === 1}Pick the other one{:else}{picked.length} selected: the same person?{/if}
+      {#if picked.length === 1}1 selected: pick another to merge{:else}{picked.length} selected: the same person?{/if}
     </span>
     <button class="btn primary" disabled={picked.length < 2} onclick={merge}>
       <Icon name="people" size={14} /> Merge
+    </button>
+    <button class="btn" title="Hide: I don't know them" onclick={() => hide(picked)}>
+      <Icon name="eye-off" size={14} /> Hide
     </button>
     <button class="btn subtle" onclick={() => (picked = [])}>Cancel</button>
   </div>
@@ -276,6 +334,73 @@
   .face-wrap.picked .tick {
     background: var(--accent);
     box-shadow: none;
+    color: #fff;
+  }
+  .corner {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+    color: #fff;
+    opacity: 0;
+    cursor: default;
+    transition: opacity 120ms, background 120ms;
+  }
+  .face-wrap:hover .corner {
+    opacity: 1;
+  }
+  .corner.dismiss:hover {
+    background: #c9443c;
+  }
+  .corner.show:hover {
+    background: var(--accent);
+  }
+  .face-wrap.hidden .face img {
+    opacity: 0.55;
+    filter: grayscale(0.6);
+  }
+  .hidden-people {
+    padding-top: 6px;
+  }
+  .hidden-people .grid {
+    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  }
+  .link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 12px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--text-2);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: default;
+  }
+  .link:hover {
+    color: var(--text);
+  }
+  .show-again {
+    padding: 2px 9px;
+    border: 0;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--text-2);
+    font: inherit;
+    font-size: 11.5px;
+    cursor: default;
+  }
+  .show-again:hover {
+    background: var(--accent);
     color: #fff;
   }
   .merge-bar {

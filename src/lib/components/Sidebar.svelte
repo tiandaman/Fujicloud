@@ -104,6 +104,7 @@
         { label: 'All people', icon: 'people', action: () => store.setCollection({ type: 'people' }) },
         { label: 'Merge with…', icon: 'people', action: () => (store.mergePicker = { x: e.clientX, y: e.clientY, id }) },
         { separator: true },
+        { label: "Hide: I don't know them", icon: 'eye-off', action: () => store.hidePeople([id]) },
         { label: 'Forget this name', icon: 'x', action: () => store.deletePerson(id) },
       ],
     };
