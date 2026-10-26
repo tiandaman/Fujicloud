@@ -209,10 +209,45 @@ struct Filed {
     score: f64,
 }
 
-struct Loose {
-    id: i64,
-    not_person: Option<i64>,
-    embedding: Vec<f32>,
+/// A face (or pet) not filed under anyone yet.
+pub(crate) struct Loose {
+    pub id: i64,
+    /// Someone said it isn't this person.
+    pub not_person: Option<i64>,
+    pub embedding: Vec<f32>,
+}
+
+/// Groups faces that look alike (similarity to the group's average at least
+/// `same`), in order. Only groups of two or more are returned: a face on its
+/// own waits for company.
+pub(crate) fn cluster(faces: Vec<Loose>, same: f32) -> Vec<Vec<i64>> {
+    let mut groups: Vec<(Centroid, Vec<i64>, HashSet<i64>)> = Vec::new();
+    for face in faces {
+        let best = groups
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| face.not_person.is_none_or(|p| !g.2.contains(&p)))
+            .map(|(i, g)| (i, g.0.similarity(&face.embedding)))
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        match best {
+            Some((i, sim)) if sim >= same => {
+                let g = &mut groups[i];
+                g.0.add(&face.embedding);
+                g.1.push(face.id);
+                g.2.extend(face.not_person);
+            }
+            _ => groups.push((
+                Centroid::new(&face.embedding),
+                vec![face.id],
+                face.not_person.into_iter().collect(),
+            )),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|g| g.1)
+        .filter(|ids| ids.len() > 1)
+        .collect()
 }
 
 impl Library {
@@ -369,30 +404,8 @@ impl Library {
                 _ => rest.push(face),
             }
         }
-        // New groups among the rest; a face on its own waits for company.
-        let mut groups: Vec<(Centroid, Vec<i64>, HashSet<i64>)> = Vec::new();
-        for face in rest {
-            let best = groups
-                .iter()
-                .enumerate()
-                .filter(|(_, g)| face.not_person.is_none_or(|p| !g.2.contains(&p)))
-                .map(|(i, g)| (i, g.0.similarity(&face.embedding)))
-                .max_by(|a, b| a.1.total_cmp(&b.1));
-            match best {
-                Some((i, sim)) if sim >= same => {
-                    let g = &mut groups[i];
-                    g.0.add(&face.embedding);
-                    g.1.push(face.id);
-                    g.2.extend(face.not_person);
-                }
-                _ => groups.push((
-                    Centroid::new(&face.embedding),
-                    vec![face.id],
-                    face.not_person.into_iter().collect(),
-                )),
-            }
-        }
-        for (_, ids, _) in groups.into_iter().filter(|g| g.1.len() > 1) {
+        // New groups among the rest.
+        for ids in cluster(rest, same) {
             tx.execute(
                 "INSERT INTO people (name, kind) VALUES (NULL, ?1)",
                 [subject.as_str()],

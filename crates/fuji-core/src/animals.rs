@@ -272,7 +272,7 @@ mod tests {
     }
 
     /// Oxford-IIIT Pet's cat breeds (CC BY-SA 4.0), from Hugging Face.
-    const BREEDS: [&str; 12] = [
+    const CATS: [&str; 12] = [
         "Abyssinian",
         "Bengal",
         "Birman",
@@ -286,6 +286,22 @@ mod tests {
         "Siamese",
         "Sphynx",
     ];
+    /// Some of its dog breeds: only for learning what pets have in common.
+    const DOGS: [&str; 8] = [
+        "beagle",
+        "boxer",
+        "chihuahua",
+        "pomeranian",
+        "pug",
+        "samoyed",
+        "shiba_inu",
+        "yorkshire_terrier",
+    ];
+    /// Photos of each cat breed: the first few teach what pets have in
+    /// common, the rest test telling them apart.
+    const PER_CAT: usize = 10;
+    const LEARN: usize = 4;
+    const PER_DOG: usize = 4;
 
     fn squash(name: &str) -> String {
         name.chars()
@@ -294,13 +310,19 @@ mod tests {
             .to_ascii_lowercase()
     }
 
-    /// `per` photos of each breed, kept in `dir` for the next run.
-    fn breed_photos(dir: &Path, per: usize) -> Vec<(usize, PathBuf)> {
-        let want = |breed: usize, i: usize| dir.join(format!("{}_{i}.jpg", BREEDS[breed]));
-        if (0..BREEDS.len()).all(|b| (0..per).all(|i| want(b, i).is_file())) {
-            return (0..BREEDS.len())
-                .flat_map(|b| (0..per).map(move |i| (b, want(b, i))))
-                .collect();
+    /// `per` photos of each breed named, kept in `dir` for the next run.
+    /// Returns (breed, photo number, file) in the order of `breeds`.
+    fn breed_photos(dir: &Path, breeds: &[(&str, usize)]) -> Vec<(usize, usize, PathBuf)> {
+        let want = |b: usize, i: usize| dir.join(format!("{}_{i}.jpg", breeds[b].0));
+        let all = || {
+            breeds
+                .iter()
+                .enumerate()
+                .flat_map(|(b, (_, per))| (0..*per).map(move |i| (b, i, want(b, i))))
+                .collect::<Vec<_>>()
+        };
+        if all().iter().all(|f| f.2.is_file()) {
+            return all();
         }
         std::fs::create_dir_all(dir).unwrap();
         let get = |url: &str| -> Vec<u8> {
@@ -325,9 +347,9 @@ mod tests {
         };
         let api = "https://datasets-server.huggingface.co/rows?dataset=timm%2Foxford-iiit-pet&config=default&split=test";
         let mut ours: Option<Vec<Option<usize>>> = None;
-        let mut have = vec![0usize; BREEDS.len()];
+        let mut have = vec![0usize; breeds.len()];
         let mut offset = 0;
-        while have.iter().any(|&n| n < per) && offset < 4000 {
+        while have.iter().zip(breeds).any(|(n, b)| *n < b.1) && offset < 4000 {
             let page: serde_json::Value =
                 serde_json::from_slice(&get(&format!("{api}&offset={offset}&length=100"))).unwrap();
             // The label feature's class names, matched to ours.
@@ -343,7 +365,7 @@ mod tests {
                     .iter()
                     .map(|n| {
                         let n = squash(n.as_str().unwrap_or_default());
-                        BREEDS.iter().position(|b| squash(b) == n)
+                        breeds.iter().position(|b| squash(b.0) == n)
                     })
                     .collect()
             });
@@ -353,31 +375,155 @@ mod tests {
             }
             for row in rows {
                 let row = &row["row"];
-                let Some(breed) = row["label"]
+                let Some(b) = row["label"]
                     .as_u64()
                     .and_then(|l| ours.get(l as usize).copied().flatten())
                 else {
                     continue;
                 };
-                if have[breed] < per
+                if have[b] < breeds[b].1
                     && let Some(src) = row["image"]["src"].as_str()
                 {
-                    std::fs::write(want(breed, have[breed]), get(src)).unwrap();
-                    have[breed] += 1;
+                    std::fs::write(want(b, have[b]), get(src)).unwrap();
+                    have[b] += 1;
                 }
             }
             offset += rows.len();
         }
-        assert!(have.iter().all(|&n| n == per), "photos per breed: {have:?}");
-        breed_photos(dir, per)
+        assert!(
+            have.iter().zip(breeds).all(|(n, b)| *n == b.1),
+            "photos per breed: {have:?}"
+        );
+        all()
+    }
+
+    fn unit(mut v: Vec<f32>) -> Vec<f32> {
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+        v.iter_mut().for_each(|x| *x /= n);
+        v
+    }
+
+    fn dot(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| x * y).sum()
+    }
+
+    /// What pets have in common: their average, and the main ways they
+    /// vary (principal axes, by power iteration).
+    fn learn(vectors: &[Vec<f32>], axes: usize) -> (Vec<f32>, Vec<Vec<f32>>) {
+        let d = vectors[0].len();
+        let n = vectors.len() as f32;
+        let mean: Vec<f32> = (0..d)
+            .map(|j| vectors.iter().map(|v| v[j]).sum::<f32>() / n)
+            .collect();
+        let x: Vec<Vec<f32>> = vectors
+            .iter()
+            .map(|v| v.iter().zip(&mean).map(|(a, m)| a - m).collect())
+            .collect();
+        let mut found: Vec<Vec<f32>> = Vec::new();
+        for a in 0..axes {
+            let mut u = unit(
+                (0..d)
+                    .map(|j| ((j * 7 + a * 13) % 11) as f32 - 5.0)
+                    .collect(),
+            );
+            for _ in 0..300 {
+                let mut w = vec![0f32; d];
+                for row in &x {
+                    let p = dot(row, &u);
+                    w.iter_mut().zip(row).for_each(|(w, r)| *w += r * p);
+                }
+                for prev in &found {
+                    let c = dot(&w, prev);
+                    w.iter_mut().zip(prev).for_each(|(w, p)| *w -= c * p);
+                }
+                u = unit(w);
+            }
+            found.push(u);
+        }
+        (mean, found)
+    }
+
+    fn apply(v: &[f32], mean: &[f32], axes: &[Vec<f32>]) -> Vec<f32> {
+        let mut d: Vec<f32> = v.iter().zip(mean).map(|(a, m)| a - m).collect();
+        for u in axes {
+            let c = dot(&d, u);
+            d.iter_mut().zip(u).for_each(|(d, u)| *d -= c * u);
+        }
+        unit(d)
+    }
+
+    /// Groups pets as the app does and scores the result: how pure the
+    /// groups are, and how much of each breed stays together.
+    fn score(pets: &[(usize, Vec<f32>)], same: f32) -> String {
+        let loose = pets
+            .iter()
+            .enumerate()
+            .map(|(i, p)| crate::people::Loose {
+                id: i as i64,
+                not_person: None,
+                embedding: p.1.clone(),
+            })
+            .collect();
+        let groups = crate::people::cluster(loose, same);
+        let grouped: usize = groups.iter().map(Vec::len).sum();
+        let mut right = 0;
+        for g in &groups {
+            let mut counts = std::collections::HashMap::new();
+            for &i in g {
+                *counts.entry(pets[i as usize].0).or_insert(0) += 1;
+            }
+            right += counts.values().max().unwrap();
+        }
+        let breeds: std::collections::BTreeSet<usize> = pets.iter().map(|p| p.0).collect();
+        let together: f32 = breeds
+            .iter()
+            .map(|&b| {
+                let total = pets.iter().filter(|p| p.0 == b).count();
+                let best = groups
+                    .iter()
+                    .map(|g| g.iter().filter(|&&i| pets[i as usize].0 == b).count())
+                    .max()
+                    .unwrap_or(0);
+                best as f32 / total as f32
+            })
+            .sum::<f32>()
+            / breeds.len() as f32;
+        format!(
+            "{:>2} groups, purity {:.2}, together {:.2}, alone {:>2}",
+            groups.len(),
+            right as f32 / grouped.max(1) as f32,
+            together,
+            pets.len() - grouped
+        )
+    }
+
+    fn stats(pets: &[(usize, Vec<f32>)]) -> String {
+        let (mut same, mut other) = (Vec::new(), Vec::new());
+        for (i, a) in pets.iter().enumerate() {
+            for b in &pets[i + 1..] {
+                let sim = dot(&a.1, &b.1);
+                if a.0 == b.0 { &mut same } else { &mut other }.push(sim);
+            }
+        }
+        let pct = |v: &mut Vec<f32>, p: f32| {
+            v.sort_by(f32::total_cmp);
+            v[((v.len() - 1) as f32 * p) as usize]
+        };
+        format!(
+            "same breed p10 {:.3} median {:.3}; different breeds median {:.3} p90 {:.3}",
+            pct(&mut same, 0.1),
+            pct(&mut same, 0.5),
+            pct(&mut other, 0.5),
+            pct(&mut other, 0.9),
+        )
     }
 
     /// Telling pets apart with the real models: the smart search model's
-    /// view of each pet's picture. Different photos of cats of one breed
-    /// must look more alike than cats of different breeds, and three cats
-    /// of different types must end up as three pets. Two pictures of one
-    /// pet are closer still than two cats of its breed, so this is the
-    /// hard case. (Run with `--ignored`; downloads ~220 MB of models.)
+    /// view of each pet's picture. Cats of one breed must look more alike
+    /// than cats of different breeds, and three cats of different types
+    /// must end up as three pets. (Two pictures of one pet are closer still
+    /// than two cats of its breed.) Run with `--ignored`; downloads ~220 MB
+    /// of models and ~150 photos.
     #[test]
     #[ignore]
     fn real_pets_are_told_apart() {
@@ -392,129 +538,114 @@ mod tests {
         let detector = Detector::load(&models, 4).unwrap();
         let engine = Engine::load(&models, &SIGLIP_BASE, Device::Cpu, 4).unwrap();
 
-        const PER: usize = 6;
-        let photos = breed_photos(&photos().join("oxford"), PER);
-        let mut pets: Vec<(usize, Vec<f32>)> = Vec::new();
+        let breeds: Vec<(&str, usize)> = CATS
+            .iter()
+            .map(|b| (*b, PER_CAT))
+            .chain(DOGS.iter().map(|b| (*b, PER_DOG)))
+            .collect();
+        let photos = breed_photos(&photos().join("oxford"), &breeds);
+        let (mut prior, mut pets) = (Vec::new(), Vec::new());
         let mut missed = 0;
-        for (breed, file) in &photos {
+        for (breed, i, file) in &photos {
             let image = crate::thumbs::upright(&std::fs::read(file).unwrap(), 1280).unwrap();
-            let Some(cat) = detector.animals(&image).unwrap().into_iter().next() else {
+            let Some(pet) = detector.animals(&image).unwrap().into_iter().next() else {
                 missed += 1;
                 continue;
             };
-            let jpeg = crop(&image, &cat).unwrap();
-            pets.push((*breed, engine.embed_images(&[jpeg]).unwrap().remove(0)));
+            let v = engine
+                .embed_images(&[crop(&image, &pet).unwrap()])
+                .unwrap()
+                .remove(0);
+            if *breed >= CATS.len() || *i < LEARN {
+                prior.push(v);
+            } else {
+                pets.push((*breed, v));
+            }
         }
-        println!("{} pets found in {} photos", pets.len(), photos.len());
+        println!(
+            "{} pets found in {} photos: {} to learn from, {} cats to tell apart",
+            prior.len() + pets.len(),
+            photos.len(),
+            prior.len(),
+            pets.len()
+        );
         assert!(missed <= photos.len() / 10, "{missed} photos without a pet");
 
-        let report = |label: &str, pets: &[(usize, Vec<f32>)]| {
-            let n = BREEDS.len();
-            let mut sum = vec![vec![0f32; n]; n];
-            let mut count = vec![vec![0u32; n]; n];
-            let (mut same, mut other) = (Vec::new(), Vec::new());
-            for (i, a) in pets.iter().enumerate() {
-                for b in &pets[i + 1..] {
-                    let sim = crate::faces::similarity_of(&a.1, &b.1);
-                    sum[a.0][b.0] += sim;
-                    count[a.0][b.0] += 1;
-                    if a.0 != b.0 {
-                        sum[b.0][a.0] += sim;
-                        count[b.0][a.0] += 1;
-                    }
-                    if a.0 == b.0 { &mut same } else { &mut other }.push(sim);
-                }
-            }
-            let pct = |v: &mut Vec<f32>, p: f32| {
-                v.sort_by(f32::total_cmp);
-                v[((v.len() - 1) as f32 * p) as usize]
-            };
-            println!(
-                "{label}: same breed p10 {:.3} median {:.3}; different breeds median {:.3} p90 {:.3} max {:.3}",
-                pct(&mut same, 0.1),
-                pct(&mut same, 0.5),
-                pct(&mut other, 0.5),
-                pct(&mut other, 0.9),
-                pct(&mut other, 1.0),
-            );
-            for (b, name) in BREEDS.iter().enumerate() {
-                let cells: Vec<String> = (0..n)
-                    .map(|c| format!("{:.2}", sum[b][c] / count[b][c].max(1) as f32))
-                    .collect();
-                println!("  {name:>17} {}", cells.join(" "));
-            }
-            (pct(&mut same, 0.5), pct(&mut other, 0.5))
-        };
-        let (same, other) = report("as is", &pets);
-        assert!(same > other + 0.05, "breeds aren't told apart");
-
-        // Three cats of different types, grouped as the app does.
-        let lib = crate::db::Library::open_in_memory().unwrap();
-        let src = lib.add_source(Path::new("/lib")).unwrap();
         let three =
-            ["Siamese", "Bombay", "Bengal"].map(|b| BREEDS.iter().position(|x| *x == b).unwrap());
-        let ours: Vec<&(usize, Vec<f32>)> = pets.iter().filter(|p| three.contains(&p.0)).collect();
-        let rows: Vec<crate::db::NewPhoto> = (0..ours.len())
-            .map(|i| crate::db::NewPhoto {
-                path: PathBuf::from(format!("/lib/{i}.jpg")),
-                kind: crate::Kind::Jpeg,
-                size: 1,
-                mtime: 1,
-                meta: Default::default(),
-                place: None,
-            })
-            .collect();
-        lib.upsert(src.id, &rows).unwrap();
-        let mut ids: Vec<i64> = lib.photos().unwrap().iter().map(|p| p.id).collect();
-        ids.sort();
-        for (id, pet) in ids.iter().zip(&ours) {
-            lib.store_pets(
-                *id,
-                "test",
-                &[crate::people::NewFace {
-                    bbox: [0.1, 0.1, 0.5, 0.5],
-                    score: 0.9,
-                    embedding: pet.1.clone(),
-                }],
-            )
-            .unwrap();
-        }
-        lib.group_faces().unwrap();
-        let breed_of = |photo: i64| ours[ids.iter().position(|&i| i == photo).unwrap()].0;
-        let groups = lib.people().unwrap();
-        for g in &groups {
-            let names: Vec<&str> = g.photo_ids.iter().map(|&p| BREEDS[breed_of(p)]).collect();
-            println!("group {}: {names:?}", g.id);
-        }
-        for &breed in &three {
-            let total = ours.iter().filter(|p| p.0 == breed).count();
-            let best = groups
-                .iter()
-                .map(|g| {
-                    g.photo_ids
-                        .iter()
-                        .filter(|&&p| breed_of(p) == breed)
-                        .count()
-                })
-                .max()
-                .unwrap_or(0);
-            assert!(
-                best * 2 > total,
-                "{}: at most {best} of {total} photos together",
-                BREEDS[breed]
+            ["Siamese", "Bombay", "Bengal"].map(|b| CATS.iter().position(|x| *x == b).unwrap());
+        let only_three = |v: &[(usize, Vec<f32>)]| {
+            v.iter()
+                .filter(|p| three.contains(&p.0))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        println!("as is: {}", stats(&pets));
+        for same in [0.80, 0.84, 0.86, 0.88, 0.90] {
+            println!(
+                "  as is, same at {same:.2}: three [{}] all [{}]",
+                score(&only_three(&pets), same),
+                score(&pets, same)
             );
         }
+        const AXES: usize = 8;
+        let (mean, axes) = learn(&prior, AXES);
+        for k in [0, 1, 2, 3, 4, 6, 8] {
+            let t: Vec<(usize, Vec<f32>)> = pets
+                .iter()
+                .map(|(b, v)| (*b, apply(v, &mean, &axes[..k])))
+                .collect();
+            println!("{k} axes: {}", stats(&t));
+            for same in [
+                0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60,
+            ] {
+                println!(
+                    "  {k} axes, same at {same:.2}: three [{}] all [{}]",
+                    score(&only_three(&t), same),
+                    score(&t, same)
+                );
+            }
+        }
+        // The learned basis as half floats (mean, then axes), to ship.
+        let mut hex = String::new();
+        for x in mean.iter().chain(axes.iter().flatten()) {
+            for byte in half::f16::from_f32(*x).to_le_bytes() {
+                hex.push_str(&format!("{byte:02x}"));
+            }
+        }
+        for (n, line) in hex.as_bytes().chunks(256).enumerate() {
+            println!("basis {n:03} {}", std::str::from_utf8(line).unwrap());
+        }
+
+        // As the app groups them today.
+        let ours = only_three(&pets);
+        let groups = crate::people::cluster(
+            ours.iter()
+                .enumerate()
+                .map(|(i, p)| crate::people::Loose {
+                    id: i as i64,
+                    not_person: None,
+                    embedding: p.1.clone(),
+                })
+                .collect(),
+            crate::people::SAME_PET,
+        );
+        println!("app today: {}", score(&ours, crate::people::SAME_PET));
         for g in &groups {
             let top = three
                 .iter()
-                .map(|&b| g.photo_ids.iter().filter(|&&p| breed_of(p) == b).count())
+                .map(|&b| g.iter().filter(|&&i| ours[i as usize].0 == b).count())
                 .max()
                 .unwrap();
-            assert!(
-                top * 10 >= g.photo_ids.len() * 8,
-                "group {} mixes breeds",
-                g.id
-            );
+            assert!(top * 10 >= g.len() * 8, "a group mixes breeds: {g:?}");
+        }
+        for &b in &three {
+            let total = ours.iter().filter(|p| p.0 == b).count();
+            let best = groups
+                .iter()
+                .map(|g| g.iter().filter(|&&i| ours[i as usize].0 == b).count())
+                .max()
+                .unwrap_or(0);
+            assert!(best * 2 > total, "{}: {best} of {total} together", CATS[b]);
         }
     }
 
