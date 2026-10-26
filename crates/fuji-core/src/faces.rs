@@ -1,10 +1,11 @@
 //! Finding and recognising faces, entirely on this PC.
 //!
-//! Two small open models from OpenCV's model zoo: YuNet finds faces and the
-//! five points of each (eyes, nose, mouth corners), and SFace turns a face,
-//! turned and scaled to a standard 112×112 pose, into 128 numbers. Faces of
-//! the same person land close together, so people can be grouped and named
-//! (see [`crate::people`]).
+//! InsightFace's "buffalo_l" pair, as used by Immich: SCRFD finds faces and
+//! the five points of each (eyes, nose, mouth corners), and ArcFace turns a
+//! face, turned and scaled to a standard 112×112 pose, into 512 numbers.
+//! Faces of the same person land close together, so people can be grouped
+//! and named (see [`crate::people`]). The models are InsightFace's, for
+//! non-commercial use, which a personal photo library is.
 
 use std::path::{Path, PathBuf};
 
@@ -17,25 +18,33 @@ use crate::Error;
 use crate::decode::Rgb;
 use crate::embed::{download_files, environment, model_err};
 
-/// Stored with each face, so a future model can tell its own faces apart.
-pub const MODEL_ID: &str = "yunet-2023mar+sface-2021dec";
+/// Stored with each photo searched: a new model searches every photo again.
+pub const MODEL_ID: &str = "scrfd-10g+arcface-w600k-r50";
 
-const DETECTOR: &str = "face_detection_yunet_2023mar.onnx";
-const RECOGNISER: &str = "face_recognition_sface_2021dec.onnx";
-const BASE_URL: &str = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/";
+const DETECTOR: &str = "scrfd_10g.onnx";
+const RECOGNISER: &str = "arcface_w600k_r50.onnx";
+const DETECTOR_URL: &str =
+    "https://huggingface.co/immich-app/buffalo_l/resolve/main/detection/model.onnx";
+const RECOGNISER_URL: &str =
+    "https://huggingface.co/immich-app/buffalo_l/resolve/main/recognition/model.onnx";
 /// Both models together, for the UI.
-pub const DOWNLOAD_MB: u32 = 39;
+pub const DOWNLOAD_MB: u32 = 183;
+/// The earlier, weaker models (YuNet and SFace), removed once these are in.
+const OLD_MODELS: [&str; 2] = [
+    "face_detection_yunet_2023mar.onnx",
+    "face_recognition_sface_2021dec.onnx",
+];
 
-/// YuNet's fixed input size.
+/// The detector's input size.
 const SIDE: usize = 640;
-/// Detections less sure than this are dropped.
-const MIN_SCORE: f32 = 0.8;
+/// Detections less sure than this are dropped (Immich's default).
+const MIN_SCORE: f32 = 0.7;
 /// Faces smaller than this (pixels across, in the image searched) are too
 /// blurry to recognise.
 const MIN_FACE: f32 = 28.0;
 const MAX_FACES: usize = 40;
 
-/// Where SFace expects the eyes, nose and mouth corners (112×112).
+/// Where ArcFace expects the eyes, nose and mouth corners (112×112).
 const TEMPLATE: [[f32; 2]; 5] = [
     [38.2946, 51.6963],
     [73.5318, 51.5014],
@@ -71,18 +80,17 @@ pub fn is_downloaded(dir: &Path) -> bool {
         .all(|f| dir_for(dir).join(f).is_file())
 }
 
-/// Fetches both models into `dir` (~39 MB). `progress(done, total)` in bytes.
+/// Fetches both models into `dir` (~183 MB). `progress(done, total)` in bytes.
 pub fn download(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
-    let urls = [
-        format!("{BASE_URL}face_detection_yunet/{DETECTOR}"),
-        format!("{BASE_URL}face_recognition_sface/{RECOGNISER}"),
+    let files = [
+        (DETECTOR_URL, dir_for(dir).join(DETECTOR)),
+        (RECOGNISER_URL, dir_for(dir).join(RECOGNISER)),
     ];
-    let files: Vec<(&str, PathBuf)> = urls
-        .iter()
-        .zip([DETECTOR, RECOGNISER])
-        .map(|(url, name)| (url.as_str(), dir_for(dir).join(name)))
-        .collect();
-    download_files(&files, progress)
+    download_files(&files, progress)?;
+    for old in OLD_MODELS {
+        let _ = std::fs::remove_file(dir_for(dir).join(old));
+    }
+    Ok(())
 }
 
 pub struct FaceModels {
@@ -91,7 +99,7 @@ pub struct FaceModels {
 }
 
 impl FaceModels {
-    /// Loads the downloaded models (CPU; they're small and quick).
+    /// Loads the downloaded models (CPU).
     pub fn load(dir: &Path, threads: usize) -> Result<Self, Error> {
         let env = environment()?;
         let session = |name: &str| -> Result<Session, Error> {
@@ -118,12 +126,13 @@ impl FaceModels {
             .map(|d| {
                 let embedding = self.embed(&align(image, &d.points))?;
                 let [x, y, bw, bh] = d.bbox;
+                let (x0, y0) = (x.max(0.0), y.max(0.0));
                 Ok(Face {
                     bbox: [
-                        (x / w).clamp(0.0, 1.0),
-                        (y / h).clamp(0.0, 1.0),
-                        (bw / w).min(1.0),
-                        (bh / h).min(1.0),
+                        (x0 / w).min(1.0),
+                        (y0 / h).min(1.0),
+                        ((x + bw).min(w) - x0).max(0.0) / w,
+                        ((y + bh).min(h) - y0).max(0.0) / h,
                     ],
                     score: d.score,
                     embedding,
@@ -155,63 +164,60 @@ impl FaceModels {
             )
             .map_err(model_err)?;
 
-        // Top-left of a black 640×640 square; BGR planes, 0–255.
+        // Top-left of a black 640×640 square; RGB planes, (v − 127.5) / 128.
         let plane = SIDE * SIDE;
-        let mut input = vec![0f32; 3 * plane];
+        let mut input = vec![-127.5f32 / 128.0; 3 * plane];
         for (i, px) in small.buffer().as_chunks::<3>().0.iter().enumerate() {
             let (x, y) = (i % nw as usize, i / nw as usize);
             let at = y * SIDE + x;
-            input[at] = px[2] as f32;
-            input[plane + at] = px[1] as f32;
-            input[2 * plane + at] = px[0] as f32;
+            for c in 0..3 {
+                input[c * plane + at] = (px[c] as f32 - 127.5) / 128.0;
+            }
         }
         let tensor = Tensor::from_array(([1usize, 3, SIDE, SIDE], input)).map_err(model_err)?;
         let mut session = self.detector.lock();
+        let name = session.inputs()[0].name().to_owned();
         let outputs = session
-            .run(ort::inputs!["input" => tensor])
+            .run(ort::inputs![name => tensor])
             .map_err(model_err)?;
-        let get = |name: &str| -> Result<Vec<f32>, Error> {
-            let (_, data) = outputs[name]
-                .try_extract_tensor::<f32>()
-                .map_err(model_err)?;
-            Ok(data.to_vec())
-        };
-
+        // Nine outputs: scores, boxes and points for strides 8, 16 and 32,
+        // told apart by their shapes (two anchors per cell).
+        let mut by_shape = std::collections::HashMap::new();
+        for (_, value) in outputs.iter() {
+            let (shape, data) = value.try_extract_tensor::<f32>().map_err(model_err)?;
+            let width = *shape.last().unwrap_or(&0) as usize;
+            let rows = data.len() / width.max(1);
+            by_shape.insert((rows, width), data.to_vec());
+        }
         let mut found = Vec::new();
         for stride in [8usize, 16, 32] {
-            let (cls, obj) = (
-                get(&format!("cls_{stride}"))?,
-                get(&format!("obj_{stride}"))?,
-            );
-            let (bbox, kps) = (
-                get(&format!("bbox_{stride}"))?,
-                get(&format!("kps_{stride}"))?,
-            );
             let cols = SIDE / stride;
-            for (i, (c, o)) in cls.iter().zip(&obj).enumerate() {
-                let score = (c.clamp(0.0, 1.0) * o.clamp(0.0, 1.0)).sqrt();
+            let anchors = cols * cols * 2;
+            let (Some(scores), Some(boxes), Some(kps)) = (
+                by_shape.get(&(anchors, 1)),
+                by_shape.get(&(anchors, 4)),
+                by_shape.get(&(anchors, 10)),
+            ) else {
+                return Err(Error::Model(format!(
+                    "face detector: unexpected outputs for stride {stride}"
+                )));
+            };
+            let s = stride as f32;
+            for (i, &score) in scores.iter().enumerate() {
                 if score < MIN_SCORE {
                     continue;
                 }
-                let (col, row) = ((i % cols) as f32, (i / cols) as f32);
-                let s = stride as f32;
-                let b = &bbox[i * 4..i * 4 + 4];
-                let (cx, cy) = ((col + b[0]) * s, (row + b[1]) * s);
-                let (bw, bh) = (b[2].exp() * s, b[3].exp() * s);
+                let cell = i / 2;
+                let (cx, cy) = ((cell % cols) as f32 * s, (cell / cols) as f32 * s);
+                let d = &boxes[i * 4..i * 4 + 4];
+                let (x1, y1) = (cx - d[0] * s, cy - d[1] * s);
+                let (x2, y2) = (cx + d[2] * s, cy + d[3] * s);
                 let k = &kps[i * 10..i * 10 + 10];
                 let points = std::array::from_fn(|n| {
-                    [
-                        (k[2 * n] + col) * s / scale,
-                        (k[2 * n + 1] + row) * s / scale,
-                    ]
+                    [(cx + k[2 * n] * s) / scale, (cy + k[2 * n + 1] * s) / scale]
                 });
                 found.push(Detection {
-                    bbox: [
-                        (cx - bw / 2.0) / scale,
-                        (cy - bh / 2.0) / scale,
-                        bw / scale,
-                        bh / scale,
-                    ],
+                    bbox: [x1 / scale, y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale],
                     points,
                     score,
                 });
@@ -221,18 +227,19 @@ impl FaceModels {
     }
 
     fn embed(&self, face: &[u8]) -> Result<Vec<f32>, Error> {
-        // RGB planes, 0–255.
+        // RGB planes, (v − 127.5) / 127.5.
         let plane = 112 * 112;
         let mut input = vec![0f32; 3 * plane];
         for (i, px) in face.as_chunks::<3>().0.iter().enumerate() {
             for c in 0..3 {
-                input[c * plane + i] = px[c] as f32;
+                input[c * plane + i] = (px[c] as f32 - 127.5) / 127.5;
             }
         }
         let tensor = Tensor::from_array(([1usize, 3, 112, 112], input)).map_err(model_err)?;
         let mut session = self.recogniser.lock();
+        let name = session.inputs()[0].name().to_owned();
         let outputs = session
-            .run(ort::inputs!["data" => tensor])
+            .run(ort::inputs![name => tensor])
             .map_err(model_err)?;
         let (_, v) = outputs[0].try_extract_tensor::<f32>().map_err(model_err)?;
         let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
@@ -287,7 +294,7 @@ fn similarity(from: &[[f32; 2]; 5], to: &[[f32; 2]; 5]) -> [f32; 4] {
     ]
 }
 
-/// The face turned and scaled into SFace's 112×112 pose (RGB).
+/// The face turned and scaled into ArcFace's 112×112 pose (RGB).
 fn align(image: &Rgb, points: &[[f32; 2]; 5]) -> Vec<u8> {
     let [a, b, tx, ty] = similarity(points, &TEMPLATE);
     let det = (a * a + b * b).max(1e-12);
@@ -354,6 +361,181 @@ mod tests {
         let kept = suppress(vec![d(0.0, 0.85), d(10.0, 0.95), d(300.0, 0.9)]);
         let xs: Vec<f32> = kept.iter().map(|k| k.bbox[0]).collect();
         assert_eq!(xs, [10.0, 300.0]);
+    }
+
+    /// Twelve people from LFW (Labeled Faces in the Wild), ten photos each.
+    const LFW_PEOPLE: [&str; 12] = [
+        "George_W_Bush",
+        "Colin_Powell",
+        "Tony_Blair",
+        "Donald_Rumsfeld",
+        "Gerhard_Schroeder",
+        "Ariel_Sharon",
+        "Hugo_Chavez",
+        "Junichiro_Koizumi",
+        "Jean_Chretien",
+        "John_Ashcroft",
+        "Serena_Williams",
+        "Jacques_Chirac",
+    ];
+    const LFW_PER: usize = 10;
+
+    /// LFW's photos of [`LFW_PEOPLE`], downloaded (173 MB) and unpacked into
+    /// `dir` the first time.
+    fn lfw(dir: &Path) -> PathBuf {
+        let root = dir.join("lfw");
+        let want = |name: &str, i: usize| root.join(name).join(format!("{name}_{i:04}.jpg"));
+        let all = || {
+            LFW_PEOPLE
+                .iter()
+                .all(|n| (1..=LFW_PER).all(|i| want(n, i).is_file()))
+        };
+        if all() {
+            return root;
+        }
+        let archive = dir.join("lfw.tgz");
+        download_files(
+            &[(
+                "https://ndownloader.figshare.com/files/5976018",
+                archive.clone(),
+            )],
+            &|_, _| {},
+        )
+        .expect("download LFW");
+        let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(
+            std::fs::File::open(&archive).unwrap(),
+        ));
+        for entry in tar.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().into_owned();
+            let parts: Vec<_> = path
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            if let [_, name, file] = &parts[..]
+                && LFW_PEOPLE.contains(&name.as_str())
+                && (1..=LFW_PER).any(|i| *file == format!("{name}_{i:04}.jpg"))
+            {
+                std::fs::create_dir_all(root.join(name)).unwrap();
+                entry.unpack(root.join(name).join(file)).unwrap();
+            }
+        }
+        let _ = std::fs::remove_file(&archive);
+        assert!(all(), "LFW photos missing");
+        root
+    }
+
+    /// The real models on LFW: same-person and different-person similarity,
+    /// and grouping twelve people as the app does (run with `--ignored`).
+    #[test]
+    #[ignore]
+    fn real_faces_group_lfw_people() {
+        let dir = PathBuf::from(
+            std::env::var("FUJICLOUD_MODEL_DIR").unwrap_or_else(|_| ".models".into()),
+        );
+        download(&dir, &|_, _| {}).expect("download models");
+        let models = FaceModels::load(&dir, 4).unwrap();
+        let photos = PathBuf::from(
+            std::env::var("FUJICLOUD_FACE_TEST").unwrap_or_else(|_| ".models/face-test".into()),
+        );
+        let root = lfw(&photos);
+        let mut faces: Vec<(usize, Vec<f32>)> = Vec::new();
+        let mut missed = 0;
+        for (who, name) in LFW_PEOPLE.iter().enumerate() {
+            for i in 1..=LFW_PER {
+                let jpeg =
+                    std::fs::read(root.join(name).join(format!("{name}_{i:04}.jpg"))).unwrap();
+                let image = crate::thumbs::upright(&jpeg, 1280).unwrap();
+                // LFW centres the person it names.
+                let centre = |f: &Face| {
+                    let (x, y) = (f.bbox[0] + f.bbox[2] / 2.0, f.bbox[1] + f.bbox[3] / 2.0);
+                    (x - 0.5).powi(2) + (y - 0.5).powi(2)
+                };
+                match models
+                    .faces(&image)
+                    .unwrap()
+                    .into_iter()
+                    .min_by(|a, b| centre(a).total_cmp(&centre(b)))
+                {
+                    Some(f) => faces.push((who, f.embedding)),
+                    None => missed += 1,
+                }
+            }
+        }
+        let total = LFW_PEOPLE.len() * LFW_PER;
+        println!("{} of {total} faces found", faces.len());
+        assert!(missed * 20 <= total, "{missed} photos without a face");
+
+        let (mut same, mut other) = (Vec::new(), Vec::new());
+        for (i, a) in faces.iter().enumerate() {
+            for b in &faces[i + 1..] {
+                let s = similarity_of(&a.1, &b.1);
+                if a.0 == b.0 { &mut same } else { &mut other }.push(s);
+            }
+        }
+        let pct = |v: &mut Vec<f32>, p: f32| {
+            v.sort_by(f32::total_cmp);
+            v[((v.len() - 1) as f32 * p) as usize]
+        };
+        println!(
+            "same person p5 {:.3} p25 {:.3} median {:.3}; different people median {:.3} p99 {:.3} max {:.3}",
+            pct(&mut same, 0.05),
+            pct(&mut same, 0.25),
+            pct(&mut same, 0.5),
+            pct(&mut other, 0.5),
+            pct(&mut other, 0.99),
+            pct(&mut other, 1.0),
+        );
+        let score = |same: f32| {
+            let loose = faces
+                .iter()
+                .enumerate()
+                .map(|(i, f)| crate::people::Loose {
+                    id: i as i64,
+                    not_person: None,
+                    embedding: f.1.clone(),
+                })
+                .collect();
+            let groups = crate::people::cluster(loose, same);
+            let grouped: usize = groups.iter().map(Vec::len).sum();
+            let right: usize = groups
+                .iter()
+                .map(|g| {
+                    (0..LFW_PEOPLE.len())
+                        .map(|w| g.iter().filter(|&&i| faces[i as usize].0 == w).count())
+                        .max()
+                        .unwrap_or(0)
+                })
+                .sum();
+            let together = (0..LFW_PEOPLE.len())
+                .map(|w| {
+                    let n = faces.iter().filter(|f| f.0 == w).count().max(1);
+                    let best = groups
+                        .iter()
+                        .map(|g| g.iter().filter(|&&i| faces[i as usize].0 == w).count())
+                        .max()
+                        .unwrap_or(0);
+                    best as f32 / n as f32
+                })
+                .sum::<f32>()
+                / LFW_PEOPLE.len() as f32;
+            (
+                groups.len(),
+                right as f32 / grouped.max(1) as f32,
+                together,
+                faces.len() - grouped,
+            )
+        };
+        for t in [0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55] {
+            let (g, purity, together, alone) = score(t);
+            println!(
+                "  same at {t:.2}: {g:>2} groups, purity {purity:.3}, together {together:.2}, alone {alone}"
+            );
+        }
+        let (groups, purity, together, _) = score(crate::people::SAME_PERSON);
+        println!("app: {groups} groups, purity {purity:.3}, together {together:.2}");
+        assert!(purity >= 0.97, "groups mix people: purity {purity}");
+        assert!(together >= 0.8, "people split up: {together}");
     }
 
     /// The real models on real photos (downloaded; run with `--ignored`).

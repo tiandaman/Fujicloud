@@ -53,6 +53,8 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# Unpacks the LFW face benchmark in the real-model face test.
+tar = "0.4"
 
 # Tests run DirectML on WARP (Windows' software renderer) when there's no GPU.
 [target.'cfg(windows)'.dev-dependencies]

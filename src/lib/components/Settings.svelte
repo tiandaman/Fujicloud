@@ -301,7 +301,7 @@
       <h3><Icon name="people" size={16} /> People</h3>
       <p class="hint">
         Finds the faces in your photos and groups each person's photos, so you can name them once and find them anywhere. It runs entirely
-        on this PC using two small open models from OpenCV (downloaded once, {store.faces?.downloadMb ?? 39} MB). Faces never leave your
+        on this PC using InsightFace's SCRFD and ArcFace models, as Immich does (downloaded once, {store.faces?.downloadMb ?? 183} MB). Faces never leave your
         network.
       </p>
       <label class="row toggle">
@@ -376,7 +376,7 @@
     <section class="credits">
       <p class="faint">
         Place names © <a href="https://www.geonames.org" target="_blank" rel="noreferrer">GeoNames</a> (CC BY 4.0). Map © OpenStreetMap
-        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses OpenCV's YuNet and SFace models; Pets uses OpenCV's YOLOX model.
+        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses InsightFace's SCRFD and ArcFace models (for non-commercial use); Pets uses OpenCV's YOLOX model.
       </p>
     </section>
 

@@ -162,7 +162,7 @@
       <h2>Find the people in your photos</h2>
       <p>
         Fujicloud can find faces and group the photos of each person, so you can name them once and see every photo they're in. It all
-        happens on this PC: no photo or face ever leaves it. Two small models are downloaded once ({status?.downloadMb ?? 39} MB).
+        happens on this PC: no photo or face ever leaves it. Two models are downloaded once ({status?.downloadMb ?? 183} MB).
       </p>
       <button class="btn primary" onclick={() => store.setFaces(true)}>Turn on face recognition</button>
     </div>

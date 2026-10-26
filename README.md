@@ -36,7 +36,7 @@ thousands of images.
   twins and sidecars included. Windows has no Recycle Bin for network drives, so from
   the Shield they go to a `.fujicloud-trash` folder in the library instead.
 - **People:** turn on *Settings → People* and faces are found and grouped on your PC
-  (two small open models from OpenCV, YuNet and SFace, downloaded once). Name a group
+  (InsightFace's SCRFD and ArcFace, as Immich uses, downloaded once). Name a group
   under *People → Who's this?*, or a single face in the info panel, and new photos of
   that person are filed under them automatically. Right-click a photo in someone's view
   for *Not them*. If one person was found as two, Ctrl+click both on the People page and
@@ -246,10 +246,11 @@ borders from Natural Earth via `world-atlas`. Smart search uses Google's SigLIP 
 via the [Xenova ONNX export](https://huggingface.co/Xenova/siglip-base-patch16-224). HEIC decoding by
 [heic-decoder](https://github.com/Multipad-cyber/heic-decoder-rust); test images from
 [heic-rs](https://github.com/tbraun96/heic-rs). Face detection and recognition use
-[YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) and
-[SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface) (Apache 2.0) from
-OpenCV's model zoo; the face test uses example photos from
-[face_recognition](https://github.com/ageitgey/face_recognition), downloaded at test time.
+[InsightFace](https://github.com/deepinsight/insightface)'s "buffalo_l" models, SCRFD and
+ArcFace, from [Immich's copy](https://huggingface.co/immich-app/buffalo_l) (InsightFace's
+pretrained models are for non-commercial use, such as a personal library); the face tests
+use example photos from [face_recognition](https://github.com/ageitgey/face_recognition)
+and [LFW](https://vis-www.cs.umass.edu/lfw/), downloaded at test time.
 Pets are found with [YOLOX](https://github.com/opencv/opencv_zoo/tree/main/models/object_detection_yolox)
 (Apache 2.0), also from OpenCV's model zoo; the pet tests use
 [ImageNet sample images](https://github.com/EliSchwartz/imagenet-sample-images) and

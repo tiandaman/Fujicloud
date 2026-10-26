@@ -181,6 +181,16 @@ fn unpack(b: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// How much two boxes overlap (intersection over union).
+fn overlap(a: &[f32; 4], b: &[f32; 4]) -> f32 {
+    let x1 = a[0].max(b[0]);
+    let y1 = a[1].max(b[1]);
+    let x2 = (a[0] + a[2]).min(b[0] + b[2]);
+    let y2 = (a[1] + a[3]).min(b[1] + b[3]);
+    let inter = (x2 - x1).max(0.0) * (y2 - y1).max(0.0);
+    inter / (a[2] * a[3] + b[2] * b[3] - inter).max(1e-12)
+}
+
 fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
@@ -314,23 +324,53 @@ impl Library {
             "DELETE FROM faces WHERE photo_id = ?1 AND confirmed = 0 AND kind = ?2",
             params![photo_id, subject.as_str()],
         )?;
+        // Faces someone confirmed keep who they are: a face found in the same
+        // place takes over its row (and person), with the new description.
+        // This is how names survive a better model searching photos again.
+        let mut confirmed: Vec<(i64, [f32; 4])> = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT id, x, y, w, h FROM faces WHERE photo_id = ?1 AND kind = ?2",
+            )?;
+            let rows = stmt.query_map(params![photo_id, subject.as_str()], |r| {
+                Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]))
+            })?;
+            rows.collect::<Result<_, _>>()?
+        };
         {
             let mut insert = tx.prepare_cached(
                 "INSERT INTO faces (photo_id, x, y, w, h, score, embedding, kind)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
+            let mut update = tx.prepare_cached(
+                "UPDATE faces SET x = ?2, y = ?3, w = ?4, h = ?5, score = ?6, embedding = ?7
+                 WHERE id = ?1",
+            )?;
             for f in faces {
                 let [x, y, w, h] = f.bbox;
-                insert.execute(params![
-                    photo_id,
-                    x,
-                    y,
-                    w,
-                    h,
-                    f.score,
-                    pack(&f.embedding),
-                    subject.as_str()
-                ])?;
+                let same_place = confirmed
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (i, overlap(&c.1, &f.bbox)))
+                    .filter(|&(_, o)| o > 0.4)
+                    .max_by(|a, b| a.1.total_cmp(&b.1));
+                match same_place {
+                    Some((i, _)) => {
+                        let (id, _) = confirmed.swap_remove(i);
+                        update.execute(params![id, x, y, w, h, f.score, pack(&f.embedding)])?;
+                    }
+                    None => {
+                        insert.execute(params![
+                            photo_id,
+                            x,
+                            y,
+                            w,
+                            h,
+                            f.score,
+                            pack(&f.embedding),
+                            subject.as_str()
+                        ])?;
+                    }
+                }
             }
         }
         tx.execute(
@@ -377,11 +417,22 @@ impl Library {
         let tx = conn.transaction()?;
         let mut people: HashMap<i64, Centroid> = HashMap::new();
         let mut loose = Vec::new();
+        // Only descriptions from the current model compare: the newest face
+        // says which that is. Faces from an earlier model wait to be searched
+        // again (keeping their person meanwhile).
+        let current: Option<i64> = tx
+            .query_row(
+                "SELECT length(embedding) FROM faces WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
+                [subject.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
         {
             let mut stmt = tx.prepare(
-                "SELECT id, person_id, not_person, embedding FROM faces WHERE kind = ?1 ORDER BY id",
+                "SELECT id, person_id, not_person, embedding FROM faces
+                 WHERE kind = ?1 AND length(embedding) = ?2 ORDER BY id",
             )?;
-            let mut rows = stmt.query([subject.as_str()])?;
+            let mut rows = stmt.query(params![subject.as_str(), current.unwrap_or(0)])?;
             while let Some(r) = rows.next()? {
                 let embedding = subject.comparable(unpack(&r.get::<_, Vec<u8>>(3)?));
                 match r.get::<_, Option<i64>>(1)? {
@@ -1084,6 +1135,43 @@ mod tests {
         assert_eq!(lib.faces_in(p[1]).unwrap().len(), 2, "confirmed faces stay");
         lib.store_pets(p[3], "s", &[]).unwrap();
         assert_eq!(lib.faces_in(p[3]).unwrap().len(), 1, "named pets stay");
+    }
+
+    #[test]
+    fn names_survive_a_new_face_model() {
+        let lib = library(3);
+        let p = ids(&lib);
+        // The old model: Ann in two photos, named.
+        lib.store_faces(p[0], "old", &[face(0, 0.0)]).unwrap();
+        lib.store_faces(p[1], "old", &[face(0, 0.1)]).unwrap();
+        lib.group_faces().unwrap();
+        let ann = lib.people().unwrap()[0].id;
+        lib.name_person(ann, "Ann").unwrap();
+
+        // A new model with longer descriptions finds her in nearly the same
+        // place in the first photo, and in a third photo.
+        let newer = |wobble: f32, nudge: f32| {
+            let mut f = face(0, wobble);
+            f.embedding = [f.embedding.clone(), f.embedding].concat();
+            let n = f.embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+            f.embedding.iter_mut().for_each(|x| *x /= n);
+            f.bbox[0] += nudge;
+            f
+        };
+        assert_eq!(lib.faces_todo("new").unwrap().len(), 3);
+        lib.store_faces(p[0], "new", &[newer(0.0, 0.01)]).unwrap();
+        lib.store_faces(p[2], "new", &[newer(0.05, 0.0)]).unwrap();
+        lib.group_faces().unwrap();
+        let people = lib.people().unwrap();
+        assert_eq!(people.len(), 1, "no stray groups: {people:?}");
+        assert_eq!(people[0].name.as_deref(), Some("Ann"));
+        assert_eq!(people[0].photo_ids, p, "the old photo stays hers meanwhile");
+
+        // Once every photo is searched again, all her faces are new ones.
+        lib.store_faces(p[1], "new", &[newer(0.1, 0.0)]).unwrap();
+        lib.group_faces().unwrap();
+        assert_eq!(lib.people().unwrap()[0].faces, 3);
+        assert!(lib.faces_todo("new").unwrap().is_empty());
     }
 
     #[test]

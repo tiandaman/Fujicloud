@@ -327,7 +327,7 @@ export function mockApi(): Api {
   people = people.map((p) => ({ ...p, faces: p.photoIds.length }));
   let pets: PetsStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 9, scanned: photos.length, error: null };
   const hiddenFaces = new Set<number>();
-  let faces: FacesStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 39, scanned: photos.length, error: null };
+  let faces: FacesStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 183, scanned: photos.length, error: null };
   const avatar = (seed: number) => {
     const hue = (seed * 47) % 360;
     // A cat: a round face with ears.

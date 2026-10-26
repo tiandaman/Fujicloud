@@ -47,8 +47,15 @@ jobs:
       - run: cargo test -p fuji-core -- --ignored --nocapture real_siglip
         env:
           FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .models/faces
+            .models/face-test
+          key: faces-buffalo-l-lfw-v1
       # Face detection and recognition with the real models on real photos:
-      # the same person must match across photos, different people mustn't.
+      # the same person must match across photos, different people mustn't,
+      # and twelve people from LFW must be grouped apart.
       - name: Face recognition (real models)
         run: cargo test -p fuji-core -- --ignored --nocapture real_faces
         env:

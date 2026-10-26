@@ -158,7 +158,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         })
         .map_err(|e| {
             format!(
-                "{e}. Check that this PC can reach media.githubusercontent.com, then switch face recognition off and on to try again."
+                "{e}. Check that this PC can reach huggingface.co, then switch face recognition off and on to try again."
             )
         })?;
     }
