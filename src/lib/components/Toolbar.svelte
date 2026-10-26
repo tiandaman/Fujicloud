@@ -366,7 +366,7 @@
     color: var(--text);
   }
   .search input {
-    width: 220px;
+    width: 180px;
     height: 30px;
     padding-left: 30px;
     transition:
@@ -406,7 +406,7 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
   .size {
-    width: 92px;
+    width: 76px;
     margin: 0 6px;
   }
   .pill {

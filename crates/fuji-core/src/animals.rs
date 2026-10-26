@@ -250,6 +250,77 @@ pub fn distinctive(v: &[f32]) -> Vec<f32> {
     d
 }
 
+/// DINOv2 (small), a model that sees fine detail: a candidate for telling
+/// one pet from another, measured against the smart search model in the
+/// real-model tests.
+const IDENTIFIER: &str = "dinov2_small.onnx";
+const IDENTIFIER_URL: &str =
+    "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model.onnx";
+
+pub fn download_identifier(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
+    download_files(
+        &[(IDENTIFIER_URL, dir.join("pets").join(IDENTIFIER))],
+        progress,
+    )
+}
+
+pub struct Identifier {
+    session: Mutex<Session>,
+}
+
+impl Identifier {
+    pub fn load(dir: &Path, threads: usize) -> Result<Self, Error> {
+        let env = environment()?;
+        let file = dir.join("pets").join(IDENTIFIER);
+        let fail = |e: &dyn std::fmt::Display| Error::Model(format!("{}: {e}", file.display()));
+        let builder = Session::builder(&env).map_err(|e| fail(&e))?;
+        let mut builder = builder
+            .with_intra_threads(threads.max(1))
+            .map_err(|e| fail(&e))?;
+        Ok(Self {
+            session: Mutex::new(builder.commit_from_file(&file).map_err(|e| fail(&e))?),
+        })
+    }
+
+    /// DINOv2's tokens for a pet's picture (as [`crop`] makes it): the class
+    /// token, then one per 14-pixel patch, each `dim` long.
+    pub fn tokens(&self, jpeg: &[u8]) -> Result<(Vec<f32>, usize), Error> {
+        const SIZE: u32 = 224;
+        const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+        const STD: [f32; 3] = [0.229, 0.224, 0.225];
+        let rgb = crate::thumbs::decode_rendition(jpeg, SIZE)?;
+        let src = Image::from_vec_u8(rgb.width, rgb.height, rgb.data, fr::PixelType::U8x3)
+            .map_err(model_err)?;
+        let mut dst = Image::new(SIZE, SIZE, fr::PixelType::U8x3);
+        fr::Resizer::new()
+            .resize(
+                &src,
+                &mut dst,
+                &fr::ResizeOptions::new()
+                    .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::CatmullRom)),
+            )
+            .map_err(model_err)?;
+        let plane = (SIZE * SIZE) as usize;
+        let mut input = vec![0f32; 3 * plane];
+        for (i, px) in dst.buffer().as_chunks::<3>().0.iter().enumerate() {
+            for c in 0..3 {
+                input[c * plane + i] = (px[c] as f32 / 255.0 - MEAN[c]) / STD[c];
+            }
+        }
+        let tensor = Tensor::from_array(([1usize, 3, SIZE as usize, SIZE as usize], input))
+            .map_err(model_err)?;
+        let mut session = self.session.lock();
+        let name = session.inputs()[0].name().to_owned();
+        let outputs = session
+            .run(ort::inputs![name => tensor])
+            .map_err(model_err)?;
+        let hidden = outputs.get("last_hidden_state").unwrap_or(&outputs[0]);
+        let (shape, data) = hidden.try_extract_tensor::<f32>().map_err(model_err)?;
+        let dim = *shape.last().unwrap_or(&1) as usize;
+        Ok((data.to_vec(), dim))
+    }
+}
+
 /// The square picture of a pet that's compared with other pets'.
 pub fn crop(image: &Rgb, animal: &Animal) -> Result<Vec<u8>, Error> {
     crate::thumbs::crop_square(image, animal.bbox, 1.1, 320)
@@ -600,6 +671,12 @@ mod tests {
             .expect("download smart search model");
         let detector = Detector::load(&models, 4).unwrap();
         let engine = Engine::load(&models, &SIGLIP_BASE, Device::Cpu, 4).unwrap();
+        download_identifier(&models, &|_, _| {}).expect("download DINOv2");
+        let dino = Identifier::load(&models, 4).unwrap();
+        // DINOv2 descriptors: class token, mean of the patches, both.
+        type Descriptors = [Vec<f32>; 3];
+        let mut prior_d: Vec<Descriptors> = Vec::new();
+        let mut pets_d: Vec<(usize, Descriptors)> = Vec::new();
 
         let breeds: Vec<(&str, usize)> = CATS
             .iter()
@@ -615,14 +692,29 @@ mod tests {
                 missed += 1;
                 continue;
             };
+            let jpeg = crop(&image, &pet).unwrap();
             let v = engine
-                .embed_images(&[crop(&image, &pet).unwrap()])
+                .embed_images(std::slice::from_ref(&jpeg))
                 .unwrap()
                 .remove(0);
+            let (tokens, dim) = dino.tokens(&jpeg).unwrap();
+            let cls = unit(tokens[..dim].to_vec());
+            let patches = tokens.len() / dim - 1;
+            let mean = unit(
+                (0..dim)
+                    .map(|j| {
+                        (1..=patches).map(|p| tokens[p * dim + j]).sum::<f32>() / patches as f32
+                    })
+                    .collect(),
+            );
+            let both = unit([cls.clone(), mean.clone()].concat());
+            let d = [cls, mean, both];
             if *breed >= CATS.len() || *i < LEARN {
                 prior.push(v);
+                prior_d.push(d);
             } else {
                 pets.push((*breed, v));
+                pets_d.push((*breed, d));
             }
         }
         println!(
@@ -642,31 +734,39 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        println!("as is: {}", stats(&pets));
-        for same in [0.80, 0.84, 0.86, 0.88, 0.90] {
-            println!(
-                "  as is, same at {same:.2}: three [{}] all [{}]",
-                score(&only_three(&pets), same),
-                score(&pets, same)
-            );
-        }
-        const AXES: usize = 8;
-        let (mean, axes) = learn(&prior, AXES);
-        for k in [0, 1, 2, 3, 4, 6, 8] {
-            let t: Vec<(usize, Vec<f32>)> = pets
-                .iter()
-                .map(|(b, v)| (*b, apply(v, &mean, &axes[..k])))
-                .collect();
-            println!("{k} axes: {}", stats(&t));
-            for same in [
-                0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60,
-            ] {
+        // Each candidate: as is, then with what pets share taken away.
+        let evaluate = |label: &str, prior: &[Vec<f32>], pets: &[(usize, Vec<f32>)]| {
+            println!("{label} as is: {}", stats(pets));
+            for same in [0.50, 0.60, 0.70, 0.80, 0.84, 0.88, 0.92] {
                 println!(
-                    "  {k} axes, same at {same:.2}: three [{}] all [{}]",
-                    score(&only_three(&t), same),
-                    score(&t, same)
+                    "  {label} as is, same at {same:.2}: three [{}] all [{}]",
+                    score(&only_three(pets), same),
+                    score(pets, same)
                 );
             }
+            let (mean, axes) = learn(prior, 8);
+            for k in [0, 2, 4, 8] {
+                let t: Vec<(usize, Vec<f32>)> = pets
+                    .iter()
+                    .map(|(b, v)| (*b, apply(v, &mean, &axes[..k])))
+                    .collect();
+                println!("{label} {k} axes: {}", stats(&t));
+                for same in [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60] {
+                    println!(
+                        "  {label} {k} axes, same at {same:.2}: three [{}] all [{}]",
+                        score(&only_three(&t), same),
+                        score(&t, same)
+                    );
+                }
+            }
+            (mean, axes)
+        };
+        let (mean, axes) = evaluate("siglip", &prior, &pets);
+        for (n, label) in ["dino-cls", "dino-mean", "dino-both"].iter().enumerate() {
+            let p: Vec<Vec<f32>> = prior_d.iter().map(|d| d[n].clone()).collect();
+            let t: Vec<(usize, Vec<f32>)> =
+                pets_d.iter().map(|(b, d)| (*b, d[n].clone())).collect();
+            evaluate(label, &p, &t);
         }
         // A newly learned basis as half floats (mean, then axes), to ship.
         if std::env::var_os("FUJICLOUD_PRINT_PET_BASIS").is_some() {
