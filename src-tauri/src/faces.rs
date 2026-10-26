@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use fuji_core::decode::Rgb;
 use fuji_core::faces::{self, FaceModels, MODEL_ID};
-use fuji_core::people::NewFace;
+use fuji_core::people::{NewFace, Subject};
 use fuji_core::thumbs::{self, Size};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -238,7 +238,7 @@ pub fn group(app: &AppHandle, state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-enum Picture {
+pub(crate) enum Picture {
     Ready(Rgb),
     Offline,
     Failed,
@@ -246,7 +246,7 @@ enum Picture {
 
 /// The photo as an upright picture: from the cached preview when there is
 /// one, else the thumbnail (made now if needed).
-fn picture(state: &AppState, id: i64) -> Picture {
+pub(crate) fn picture(state: &AppState, id: i64) -> Picture {
     let Ok((path, kind, size, mtime)) = state.lib.file_of(id) else {
         return Picture::Failed;
     };
@@ -274,10 +274,10 @@ fn picture(state: &AppState, id: i64) -> Picture {
         .map_or(Picture::Failed, Picture::Ready)
 }
 
-/// A square crop around a face, for avatars: from the preview if cached,
-/// else the thumbnail.
+/// A square crop around a face (or pet), for avatars: from the preview if
+/// cached, else the thumbnail.
 pub fn crop(state: &AppState, face_id: i64) -> Result<Vec<u8>, fuji_core::Error> {
-    let (photo, [x, y, w, h]) = state.lib.face(face_id)?;
+    let (photo, bbox, subject) = state.lib.face(face_id)?;
     let (path, kind, size, mtime) = state.lib.file_of(photo)?;
     let src = thumbs::Source {
         path: &path,
@@ -297,5 +297,10 @@ pub fn crop(state: &AppState, face_id: i64) -> Result<Vec<u8>, fuji_core::Error>
         None => state.cache.ensure(&src, Size::Thumb)?,
     };
     let image = thumbs::decode_rendition(&std::fs::read(file)?, SEARCH_EDGE)?;
-    thumbs::crop_square(&image, [x, y, w, h], 1.6, 160)
+    // A face needs room around it; a pet's box already takes in the pet.
+    let margin = match subject {
+        Subject::Person => 1.6,
+        Subject::Pet => 1.05,
+    };
+    thumbs::crop_square(&image, bbox, margin, 160)
 }

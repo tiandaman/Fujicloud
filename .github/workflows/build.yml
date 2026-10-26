@@ -54,6 +54,13 @@ jobs:
         env:
           FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
           FUJICLOUD_FACE_TEST: ${{ github.workspace }}/.models/face-test
+      # Pets: the detector finds cats and dogs, and the smart search model
+      # tells cats of different types apart.
+      - name: Pets (real models)
+        run: cargo test -p fuji-core -- --ignored --nocapture real_cats real_pets
+        env:
+          FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
+          FUJICLOUD_PET_TEST: ${{ github.workspace }}/.models/pet-test
 
   windows:
     name: Windows installer

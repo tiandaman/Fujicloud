@@ -99,8 +99,9 @@
 
   <div class="title">
     {#if store.collection.type === 'person'}
-      <button class="back" title="Back to People (Alt+←)" onclick={() => store.back()}>
-        <Icon name="back" size={15} stroke={2.2} /> <span class="label">People</span>
+      {@const where = store.personById.get(store.collection.id)?.kind === 'pet' ? 'Pets' : 'People'}
+      <button class="back" title="Back to {where} (Alt+←)" onclick={() => store.back()}>
+        <Icon name="back" size={15} stroke={2.2} /> <span class="label">{where}</span>
       </button>
     {/if}
     <h1 class="truncate">{store.collectionTitle}</h1>
@@ -111,6 +112,8 @@
       {#if store.collection.type === 'people'}
         {@const named = store.people.filter((p) => p.name).length}
         {named === 1 ? '1 person' : `${formatCount(named)} people`}
+      {:else if store.collection.type === 'pets'}
+        {plural(store.pets.filter((p) => p.name).length, 'pet')}
       {:else}
         {store.selection.size ? `${formatCount(store.selection.size)} selected · ` : ''}{plural(store.visible.length, 'photo')}
       {/if}
@@ -119,7 +122,7 @@
       {@const id = store.collection.id}
       <button
         class="btn small"
-        title="The same person was found twice: join them up"
+        title={store.personById.get(id)?.kind === 'pet' ? 'The same pet was found twice: join them up' : 'The same person was found twice: join them up'}
         onclick={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
           store.mergePicker = { x: r.left, y: r.bottom + 6, id };

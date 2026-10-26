@@ -2,7 +2,7 @@
 // browser (`npm run dev`) without the Rust backend or a camera.
 
 import type { Api } from './api';
-import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Person, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Person, PetsStatus, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 const FILMS = ['Classic Chrome', 'Classic Neg.', 'Provia', 'Velvia', 'Acros', 'Nostalgic Neg.', 'Reala Ace', 'Eterna', 'Astia', 'Pro Neg. Hi', 'Acros +R', 'Monochrome'];
 const FILM_WEIGHTS = [18, 16, 12, 9, 8, 7, 7, 5, 5, 4, 3, 2];
@@ -272,6 +272,7 @@ export function mockApi(): Api {
     smartSearch: false,
     smartGpu: true,
     faces: true,
+    pets: true,
     cacheVersion: 0,
   };
   let backup: BackupStatus = {
@@ -302,12 +303,36 @@ export function mockApi(): Api {
         faces: 0,
         photoIds: shown.filter((p) => p.id % (every as number) === 0).slice(0, 60 - i * 6).map((p) => p.id),
         hidden: false,
+        kind: 'person' as const,
       }));
+  // Three cats: one named, two waiting for a name.
+  if (!empty)
+    people.push(
+      ...(
+        [
+          ['Mochi', 23],
+          [null, 31],
+          [null, 43],
+        ] as const
+      ).map(([name, every], i) => ({
+        id: 21 + i,
+        name,
+        cover: (21 + i) * 1000,
+        faces: 0,
+        photoIds: shown.filter((p) => p.id % every === 1).slice(0, 40 - i * 8).map((p) => p.id),
+        hidden: false,
+        kind: 'pet' as const,
+      })),
+    );
   people = people.map((p) => ({ ...p, faces: p.photoIds.length }));
+  let pets: PetsStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 9, scanned: photos.length, error: null };
   const hiddenFaces = new Set<number>();
   let faces: FacesStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 39, scanned: photos.length, error: null };
   const avatar = (seed: number) => {
     const hue = (seed * 47) % 360;
+    // A cat: a round face with ears.
+    const cat = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='hsl(${hue} 30% 30%)'/><path d='M24 30 30 6l20 18 20-18 6 24' fill='hsl(${hue} 45% 70%)'/><circle cx='50' cy='52' r='30' fill='hsl(${hue} 45% 70%)'/><circle cx='39' cy='48' r='4' fill='#222'/><circle cx='61' cy='48' r='4' fill='#222'/><path d='M46 60h8l-4 5z' fill='#c66'/></svg>`;
+    if (seed >= 21 && seed < 40) return `data:image/svg+xml;utf8,${encodeURIComponent(cat)}`;
     const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='hsl(${hue} 35% 38%)'/><circle cx='50' cy='42' r='20' fill='hsl(${hue} 40% 78%)'/><ellipse cx='50' cy='96' rx='34' ry='26' fill='hsl(${hue} 40% 78%)'/></svg>`;
     return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   };
@@ -363,7 +388,7 @@ export function mockApi(): Api {
 
   return {
     native: false,
-    bootstrap: async (): Promise<Bootstrap> => ({ version: '0.2.0', sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup, faces }),
+    bootstrap: async (): Promise<Bootstrap> => ({ version: '0.2.0', sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup, faces, pets }),
     listPhotos: async () => photos,
     listSources: async () => sources,
     async photoDetail(id) {
@@ -440,12 +465,19 @@ export function mockApi(): Api {
       faces = { ...faces, enabled, phase: enabled ? 'ready' : 'off' };
       return faces;
     },
+    petsStatus: async () => pets,
+    async setPets(enabled) {
+      settings = { ...settings, pets: enabled, smartSearch: settings.smartSearch || enabled };
+      pets = { ...pets, enabled, phase: enabled ? 'ready' : 'off' };
+      return pets;
+    },
     listPeople: async () => people,
     async facesIn(photoId) {
       const found: FaceInPhoto[] = people
         .filter((p) => !p.hidden && p.photoIds.includes(photoId))
-        .map((p, i) => ({ id: p.cover + photoId, personId: p.id, name: p.name, bbox: [0.2 + i * 0.3, 0.2, 0.15, 0.2] }));
-      if (photoId % 5 === 0 && !hiddenFaces.has(90000 + photoId)) found.push({ id: 90000 + photoId, personId: null, name: null, bbox: [0.7, 0.3, 0.1, 0.14] });
+        .map((p, i) => ({ id: p.cover + photoId, personId: p.id, name: p.name, bbox: [0.2 + i * 0.3, 0.2, 0.15, 0.2], kind: p.kind }));
+      if (photoId % 5 === 0 && !hiddenFaces.has(90000 + photoId))
+        found.push({ id: 90000 + photoId, personId: null, name: null, bbox: [0.7, 0.3, 0.1, 0.14], kind: 'person' });
       return found;
     },
     async namePerson(id, name) {
@@ -460,9 +492,10 @@ export function mockApi(): Api {
     },
     async nameFace(faceId, name) {
       const photoId = faceId >= 90000 ? faceId - 90000 : faceId % 1000;
-      let person = people.find((p) => p.name?.toLowerCase() === name.trim().toLowerCase());
+      const kind = people.find((p) => faceId > p.cover && faceId - p.cover < 1000)?.kind ?? 'person';
+      let person = people.find((p) => p.kind === kind && p.name?.toLowerCase() === name.trim().toLowerCase());
       if (!person) {
-        person = { id: people.length + 100, name: name.trim(), cover: faceId, faces: 0, photoIds: [], hidden: false };
+        person = { id: people.length + 100, name: name.trim(), cover: faceId, faces: 0, photoIds: [], hidden: false, kind };
         people = [...people, person];
       }
       people = people.map((p) => (p.id === person!.id ? { ...p, photoIds: [...p.photoIds, photoId], faces: p.faces + 1 } : p));
@@ -495,7 +528,7 @@ export function mockApi(): Api {
       }
       hiddenFaces.add(faceId);
       const id = 500 + hiddenFaces.size;
-      people = [...people, { id, name: null, cover: faceId, faces: 1, photoIds: [faceId - 90000], hidden: true }];
+      people = [...people, { id, name: null, cover: faceId, faces: 1, photoIds: [faceId - 90000], hidden: true, kind: 'person' }];
       return id;
     },
     faceUrl: (id) => avatar(Math.floor(id / 1000) || id),

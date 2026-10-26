@@ -2,15 +2,19 @@
   import { api } from '../api';
   import { formatBytes, formatCount, plural } from '../format';
   import { store } from '../store.svelte';
-  import type { Person } from '../types';
+  import type { Person, Subject } from '../types';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import Icon from './Icon.svelte';
 
-  const named = $derived(store.people.filter((p) => p.name));
+  let { kind = 'person' }: { kind?: Subject } = $props();
+  const pets = $derived(kind === 'pet');
+  const everyone = $derived(pets ? store.pets : store.people);
+  const named = $derived(everyone.filter((p) => p.name));
   // A group needs a couple of photos before it's worth asking about.
-  const unnamed = $derived(store.people.filter((p) => !p.name && p.photoIds.length > 1));
-  const status = $derived(store.faces);
-  const hidden = $derived(store.hiddenPeople.filter((p) => p.photoIds.length > 0));
+  const unnamed = $derived(everyone.filter((p) => !p.name && p.photoIds.length > 1));
+  const status = $derived(pets ? store.petStatus : store.faces);
+  const hidden = $derived((pets ? store.hiddenPets : store.hiddenPeople).filter((p) => p.photoIds.length > 0));
+  const hideLabel = $derived(pets ? 'Hide: not my pet' : "Hide: I don't know them");
   let showHidden = $state(false);
 
   let drafts = $state<Record<number, string>>({});
@@ -78,13 +82,15 @@
           },
         },
         { separator: true },
-        { label: "Hide: I don't know them", icon: 'eye-off', action: () => hide([p.id]) },
+        { label: hideLabel, icon: 'eye-off', action: () => hide([p.id]) },
         { label: 'Forget this name', icon: 'x', action: () => store.deletePerson(p.id), hidden: !p.name },
       ],
     };
   }
 
-  function focus(el: HTMLInputElement) {
+  /** Renaming starts in the box; the "Add a name" boxes wait to be clicked. */
+  function focus(el: HTMLInputElement, on: boolean) {
+    if (!on) return;
     el.focus();
     el.select();
   }
@@ -110,7 +116,7 @@
         <Icon name="check" size={12} stroke={3} />
       </button>
       {#if !p.name}
-        <button class="corner dismiss" title="Hide: I don't know them" aria-label="Hide" onclick={() => hide([p.id])}>
+        <button class="corner dismiss" title={hideLabel} aria-label="Hide" onclick={() => hide([p.id])}>
           <Icon name="x" size={11} stroke={2.6} />
         </button>
       {/if}
@@ -122,9 +128,9 @@
   <input
     class="name-input"
     placeholder="Add a name"
-    list="people-names"
+    list={pets ? 'pet-names' : 'people-names'}
     bind:value={drafts[p.id]}
-    use:focus
+    use:focus={renaming === p.id}
     onkeydown={(e) => {
       if (e.key === 'Enter') save(p);
       if (e.key === 'Escape') renaming = null;
@@ -134,12 +140,23 @@
   />
 {/snippet}
 
-<datalist id="people-names">
-  {#each store.names as n (n)}<option value={n}></option>{/each}
+<datalist id={pets ? 'pet-names' : 'people-names'}>
+  {#each pets ? store.petNames : store.names as n (n)}<option value={n}></option>{/each}
 </datalist>
 
 <div class="people">
-  {#if !status?.enabled}
+  {#if !status?.enabled && pets}
+    <div class="intro">
+      <Icon name="paw" size={44} stroke={1.2} />
+      <h2>Find your pets</h2>
+      <p>
+        Fujicloud can find the cats and dogs in your photos and tell your pets apart, so you can name each one once and see every photo
+        they're in. It all happens on this PC: no photo ever leaves it. It uses the smart search model, which this turns on too, plus a
+        small detector downloaded once ({status?.downloadMb ?? 9} MB).
+      </p>
+      <button class="btn primary" onclick={() => store.setPets(true)}>Turn on pets</button>
+    </div>
+  {:else if !status?.enabled}
     <div class="intro">
       <Icon name="people" size={44} stroke={1.2} />
       <h2>Find the people in your photos</h2>
@@ -150,14 +167,19 @@
       <button class="btn primary" onclick={() => store.setFaces(true)}>Turn on face recognition</button>
     </div>
   {:else}
-    {#if status.phase === 'downloading' || status.phase === 'indexing'}
+    {#if status.phase === 'downloading' || status.phase === 'indexing' || status.phase === 'waiting'}
       <div class="progress">
         <span class="spin"><Icon name="sync" size={14} /></span>
         <span>
-          {#if status.phase === 'downloading'}Downloading face models… {status.total ? `${formatBytes(status.done)} of ${formatBytes(status.total)}` : ''}
-          {:else}Looking for faces… {formatCount(status.done)} of {formatCount(status.total)} photos{/if}
+          {#if status.phase === 'downloading'}Downloading {pets ? 'the pet detector' : 'face models'}… {status.total
+              ? `${formatBytes(status.done)} of ${formatBytes(status.total)}`
+              : ''}
+          {:else if status.phase === 'waiting'}Waiting for the smart search model to download (see Settings)…
+          {:else}Looking for {pets ? 'pets' : 'faces'}… {formatCount(status.done)} of {formatCount(status.total)} photos{/if}
         </span>
-        <div class="bar"><i style:width="{status.total ? (status.done / status.total) * 100 : 5}%"></i></div>
+        {#if status.phase !== 'waiting'}
+          <div class="bar"><i style:width="{status.total ? (status.done / status.total) * 100 : 5}%"></i></div>
+        {/if}
       </div>
     {:else if status.phase === 'error'}
       <p class="error">{status.error}</p>
@@ -165,7 +187,7 @@
 
     {#if named.length}
       <section>
-        <h2>People</h2>
+        <h2>{pets ? 'Pets' : 'People'}</h2>
         <div class="grid">
           {#each named as p (p.id)}
             <div class="person" oncontextmenu={(e) => personMenu(e, p)} role="presentation">
@@ -184,10 +206,15 @@
 
     {#if unnamed.length}
       <section>
-        <h2>Who's this?</h2>
+        <h2>{pets ? 'Which pet is this?' : "Who's this?"}</h2>
         <p class="hint">
-          Name a face and Fujicloud finds them in new photos too. Using a name that's already taken adds the photos to that person. Don't know
-          them? The × on their face hides them, and their new photos stay hidden too.
+          {#if pets}
+            Name a pet and Fujicloud finds them in new photos too. Using a name that's already taken adds the photos to that pet. Not yours?
+            The × hides them, and their new photos stay hidden too.
+          {:else}
+            Name a face and Fujicloud finds them in new photos too. Using a name that's already taken adds the photos to that person. Don't
+            know them? The × on their face hides them, and their new photos stay hidden too.
+          {/if}
         </p>
         <div class="grid">
           {#each unnamed as p (p.id)}
@@ -205,10 +232,17 @@
       <section class="hidden-people">
         <button class="link" onclick={() => (showHidden = !showHidden)}>
           <Icon name={showHidden ? 'down' : 'next'} size={12} />
-          {showHidden ? 'Hidden' : `Show ${hidden.length === 1 ? '1 hidden person' : `${hidden.length} hidden people`}`}
+          {showHidden
+            ? 'Hidden'
+            : pets
+              ? `Show ${plural(hidden.length, 'hidden pet')}`
+              : `Show ${hidden.length === 1 ? '1 hidden person' : `${hidden.length} hidden people`}`}
         </button>
         {#if showHidden}
-          <p class="hint">People you don't know. They're left out of People, the sidebar and photo info.</p>
+          <p class="hint">
+            {pets ? "Animals that aren't yours. They're left out of Pets" : "People you don't know. They're left out of People"}, the sidebar
+            and photo info.
+          </p>
           <div class="grid">
             {#each hidden as p (p.id)}
               <div class="person" oncontextmenu={(e) => personMenu(e, p)} role="presentation">
@@ -225,12 +259,17 @@
 
     {#if !named.length && !unnamed.length && status.phase !== 'downloading' && status.phase !== 'indexing'}
       <div class="intro">
-        <Icon name="people" size={44} stroke={1.2} />
-        <h2>No people found yet</h2>
+        <Icon name={pets ? 'paw' : 'people'} size={44} stroke={1.2} />
+        <h2>No {pets ? 'pets' : 'people'} found yet</h2>
         <p>
-          {status.scanned
-            ? `Searched ${plural(status.scanned, 'photo')}. People show up here once someone appears in at least two photos.`
-            : 'Faces are looked for in the background as thumbnails are built.'}
+          {#if status.phase === 'waiting'}
+            Pets are looked for once the smart search model is downloaded.
+          {:else if status.scanned}
+            Searched {plural(status.scanned, 'photo')}. {pets ? 'Pets show up here once one appears' : 'People show up here once someone appears'} in
+            at least two photos.
+          {:else}
+            {pets ? 'Pets' : 'Faces'} are looked for in the background as thumbnails are built.
+          {/if}
         </p>
       </div>
     {/if}
@@ -240,12 +279,12 @@
 {#if picked.length}
   <div class="merge-bar">
     <span>
-      {#if picked.length === 1}1 selected: pick another to merge{:else}{picked.length} selected: the same person?{/if}
+      {#if picked.length === 1}1 selected: pick another to merge{:else}{picked.length} selected: the same {pets ? 'pet' : 'person'}?{/if}
     </span>
     <button class="btn primary" disabled={picked.length < 2} onclick={merge}>
       <Icon name="people" size={14} /> Merge
     </button>
-    <button class="btn" title="Hide: I don't know them" onclick={() => hide(picked)}>
+    <button class="btn" title={hideLabel} onclick={() => hide(picked)}>
       <Icon name="eye-off" size={14} /> Hide
     </button>
     <button class="btn subtle" onclick={() => (picked = [])}>Cancel</button>

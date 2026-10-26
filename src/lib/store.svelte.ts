@@ -15,6 +15,7 @@ import type {
   Label,
   LayoutMode,
   Person,
+  PetsStatus,
   Photo,
   RecipeRow,
   ScanProgress,
@@ -148,14 +149,19 @@ class Store {
   sync = $state.raw<SyncStatus | null>(null);
   toasts = $state.raw<Toast[]>([]);
   backup = $state.raw<BackupStatus | null>(null);
-  /** Everyone, hidden strangers too. */
+  /** Everyone and every pet, hidden strangers too. */
   allPeople = $state.raw<Person[]>([]);
-  people = $derived(this.allPeople.filter((p) => !p.hidden));
-  hiddenPeople = $derived(this.allPeople.filter((p) => p.hidden));
+  people = $derived(this.allPeople.filter((p) => !p.hidden && p.kind === 'person'));
+  hiddenPeople = $derived(this.allPeople.filter((p) => p.hidden && p.kind === 'person'));
+  pets = $derived(this.allPeople.filter((p) => !p.hidden && p.kind === 'pet'));
+  hiddenPets = $derived(this.allPeople.filter((p) => p.hidden && p.kind === 'pet'));
   faces = $state.raw<FacesStatus | null>(null);
+  petStatus = $state.raw<PetsStatus | null>(null);
   personById = $derived(new Map(this.allPeople.map((p) => [p.id, p])));
   /** Named people, for name suggestions. */
   names = $derived(this.people.filter((p) => p.name).map((p) => p.name!));
+  /** Named pets, likewise. */
+  petNames = $derived(this.pets.filter((p) => p.name).map((p) => p.name!));
   version = $state('');
   /** Bumped when an offline source comes back, so missing thumbnails retry. */
   reachEpoch = $state(0);
@@ -268,7 +274,7 @@ class Store {
       : c.type === 'recipe' ? (p) => p.recipeKey === c.key && p.flag !== -1
       : c.type === 'country' ? (p) => p.country === c.value && p.flag !== -1
       : c.type === 'ids' || c.type === 'duplicates' || c.type === 'person' ? (p) => ids!.has(p.id)
-      : c.type === 'people' ? () => false
+      : c.type === 'people' || c.type === 'pets' ? () => false
       : (p) => !!similar && (similar.has(p.id) || (p.pairId != null && similar.has(p.pairId)));
     return this.photos.filter(test);
   });
@@ -434,7 +440,11 @@ class Store {
       case 'album': return this.albumById.get(c.id)?.name ?? 'Album';
       case 'duplicates': return 'Duplicates';
       case 'people': return 'People';
-      case 'person': return this.personById.get(c.id)?.name ?? 'Who is this?';
+      case 'pets': return 'Pets';
+      case 'person': {
+        const p = this.personById.get(c.id);
+        return p?.name ?? (p?.kind === 'pet' ? 'Which pet is this?' : 'Who is this?');
+      }
       case 'map': return 'Places';
       case 'source': return this.sources.find((s) => s.id === c.id)?.label ?? 'Folder';
       case 'recipe': {
@@ -467,6 +477,7 @@ class Store {
     this.smart = boot.smart;
     this.backup = boot.backup;
     this.faces = boot.faces;
+    this.petStatus = boot.pets;
     this.version = boot.version;
     await this.refresh();
     this.ready = true;
@@ -500,6 +511,10 @@ class Store {
     });
     await api.listen<FacesStatus>('faces', (f) => {
       this.faces = f;
+      if (f.phase === 'error' && f.error) this.toast(f.error, 'error');
+    });
+    await api.listen<PetsStatus>('pets', (f) => {
+      this.petStatus = f;
       if (f.phase === 'error' && f.error) this.toast(f.error, 'error');
     });
     await api.listen<BackupStatus>('backup', (b) => {
@@ -841,6 +856,22 @@ class Store {
     }
   }
 
+  /** Pets are told apart by the smart search model, so this turns it on too. */
+  async setPets(enabled: boolean) {
+    try {
+      this.petStatus = await api.setPets(enabled);
+      if (this.settings) this.settings = { ...this.settings, pets: enabled, smartSearch: this.settings.smartSearch || enabled };
+      if (enabled) this.smart = await api.smartStatus();
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Where a person's (or pet's) page goes back to. */
+  overviewOf(id: number): Collection {
+    return this.personById.get(id)?.kind === 'pet' ? { type: 'pets' } : { type: 'people' };
+  }
+
   /** Names a person or unnamed group; using a name already given merges them. */
   async namePerson(id: number, name: string) {
     if (!name.trim()) return;
@@ -912,7 +943,7 @@ class Store {
 
   /** Back from a person's photos to everyone. */
   back() {
-    if (this.collection.type === 'person' && this.viewerId == null) this.setCollection({ type: 'people' });
+    if (this.collection.type === 'person' && this.viewerId == null) this.setCollection(this.overviewOf(this.collection.id));
   }
 
   /** Strangers out of the way; their new photos stay hidden too. */
@@ -922,7 +953,7 @@ class Store {
       await api.hidePeople(ids, hidden);
       await this.loadPeople();
       const c = this.collection;
-      if (hidden && c.type === 'person' && ids.includes(c.id)) this.setCollection({ type: 'people' });
+      if (hidden && c.type === 'person' && ids.includes(c.id)) this.setCollection(this.overviewOf(c.id));
       const who = ids.length === 1 ? (this.personById.get(ids[0])?.name ?? 'them') : `${ids.length} people`;
       if (hidden) this.toast(`Hid ${who}. New photos of them stay hidden too.`, 'info', { label: 'Undo', run: () => this.hidePeople(ids, false) });
       else this.toast(`${who === 'them' ? 'They' : who} will show again`);
@@ -944,9 +975,10 @@ class Store {
 
   async deletePerson(id: number) {
     try {
+      const back = this.overviewOf(id);
       await api.deletePerson(id);
       await this.loadPeople();
-      if (this.collection.type === 'person' && this.collection.id === id) this.setCollection({ type: 'people' });
+      if (this.collection.type === 'person' && this.collection.id === id) this.setCollection(back);
     } catch (e) {
       this.toast(String(e), 'error');
     }

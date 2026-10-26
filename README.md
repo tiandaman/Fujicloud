@@ -40,8 +40,15 @@ thousands of images.
   under *People → Who's this?*, or a single face in the info panel, and new photos of
   that person are filed under them automatically. Right-click a photo in someone's view
   for *Not them*. If one person was found as two, Ctrl+click both on the People page and
-  press *Merge* (or use *Merge with…* on their page); a name is kept. Nothing leaves
+  press *Merge* (or use *Merge with…* on their page); a name is kept. Don't know
+  someone? The × on their face (or *Hide* in the right-click menu) hides them, and new
+  photos of them stay hidden; *Show hidden people* brings them back. Nothing leaves
   your network.
+- **Pets:** turn on *Settings → Pets* and cats and dogs are found (OpenCV's small YOLOX
+  detector) and told apart by the smart search model, which this turns on too. Name each
+  pet under *Pets → Which pet is this?*; naming, merging, *Not this pet* and hiding work
+  as for people. Pets that look much alike, such as two black cats, may be grouped
+  together; *Not this pet* sorts them out.
 - **Find duplicates:** *Duplicates* in the sidebar finds byte-for-byte copies (the same
   shot imported twice) and, with smart search on, near-identical shots taken moments
   apart. The best of each group (highest rated, then most pixels) is marked *KEEP*, and
@@ -243,3 +250,8 @@ via the [Xenova ONNX export](https://huggingface.co/Xenova/siglip-base-patch16-2
 [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface) (Apache 2.0) from
 OpenCV's model zoo; the face test uses example photos from
 [face_recognition](https://github.com/ageitgey/face_recognition), downloaded at test time.
+Pets are found with [YOLOX](https://github.com/opencv/opencv_zoo/tree/main/models/object_detection_yolox)
+(Apache 2.0), also from OpenCV's model zoo; the pet tests use
+[ImageNet sample images](https://github.com/EliSchwartz/imagenet-sample-images) and
+[Oxford-IIIT Pet](https://www.robots.ox.ac.uk/~vgg/data/pets/) (CC BY-SA 4.0) photos,
+downloaded at test time.

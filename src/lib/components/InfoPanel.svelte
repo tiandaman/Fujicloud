@@ -42,7 +42,7 @@
   $effect(() => {
     const id = photo?.id;
     void store.people;
-    if (id == null || !store.faces?.enabled) {
+    if (id == null || !(store.faces?.enabled || store.petStatus?.enabled)) {
       faces = [];
       return;
     }
@@ -248,15 +248,15 @@
                 <button class="truncate" title="Show photos of {f.name}" onclick={() => store.setCollection({ type: 'person', id: f.personId! })}>{f.name}</button>
               {:else}
                 <input
-                  placeholder="Who's this?"
-                  list="face-names"
+                  placeholder={f.kind === 'pet' ? 'Which pet?' : "Who's this?"}
+                  list={f.kind === 'pet' ? 'pet-face-names' : 'face-names'}
                   bind:value={naming[f.id]}
                   onkeydown={(e) => {
                     if (e.key === 'Enter') nameFace(f);
                     e.stopPropagation();
                   }}
                 />
-                <button class="dismiss" title="Hide: I don't know them" aria-label="Hide" onclick={() => hideFace(f)}>
+                <button class="dismiss" title={f.kind === 'pet' ? 'Hide: not my pet' : "Hide: I don't know them"} aria-label="Hide" onclick={() => hideFace(f)}>
                   <Icon name="x" size={10} stroke={2.4} />
                 </button>
               {/if}
@@ -264,6 +264,9 @@
           {/each}
           <datalist id="face-names">
             {#each store.names as n (n)}<option value={n}></option>{/each}
+          </datalist>
+          <datalist id="pet-face-names">
+            {#each store.petNames as n (n)}<option value={n}></option>{/each}
           </datalist>
         </div>
       {/if}

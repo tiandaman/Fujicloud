@@ -70,7 +70,10 @@
   >
     <Icon name="plus" size={15} />
     <!-- svelte-ignore a11y_autofocus -->
-    <input placeholder="New album…" bind:value={name} autofocus onkeydown={(e) => e.stopPropagation()} />
+    <input placeholder="New album…" bind:value={name} autofocus onkeydown={(e) => {
+        if (e.key === 'Escape') close();
+        e.stopPropagation();
+      }} />
   </form>
 </div>
 

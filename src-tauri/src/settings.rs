@@ -39,6 +39,8 @@ pub struct Settings {
     pub smart_gpu: bool,
     /// Find faces and group them into people (downloads two small models).
     pub faces: bool,
+    /// Find cats and dogs and tell them apart (with the smart search model).
+    pub pets: bool,
     /// Bumped by "Rebuild thumbnails" so the window stops reusing the old
     /// images it has cached.
     pub cache_version: u32,
@@ -58,6 +60,7 @@ impl Default for Settings {
             smart_search: false,
             smart_gpu: true,
             faces: false,
+            pets: false,
             cache_version: 0,
         }
     }

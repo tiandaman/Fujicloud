@@ -100,8 +100,10 @@
         <Welcome />
       {:else if store.collection.type === 'map'}
         <MapView />
-      {:else if store.collection.type === 'people'}
-        <PeopleView />
+      {:else if store.collection.type === 'people' || store.collection.type === 'pets'}
+        {#key store.collection.type}
+          <PeopleView kind={store.collection.type === 'pets' ? 'pet' : 'person'} />
+        {/key}
       {:else}
         <Grid />
         {#if store.showInfo}

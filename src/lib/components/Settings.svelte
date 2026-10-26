@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from '../api';
-  import { formatAgo, formatBytes, formatCount } from '../format';
+  import { formatAgo, formatBytes, formatCount, plural } from '../format';
   import { store } from '../store.svelte';
   import type { CacheInfo, Settings } from '../types';
   import Icon from './Icon.svelte';
@@ -312,10 +312,35 @@
             {:else if store.faces.phase === 'downloading'}Downloading models… {store.faces.total ? `${formatBytes(store.faces.done)} of ${formatBytes(store.faces.total)}` : 'connecting'}
             {:else if store.faces.phase === 'indexing'}Looking for faces… {formatCount(store.faces.done)} of {formatCount(store.faces.total)}
             {:else if store.faces.phase === 'error'}Problem: {store.faces.error}
-            {:else}Ready · {formatCount(store.faces.scanned)} photos searched · {store.people.filter((p) => p.name).length} people named{/if}
+            {:else}Ready · {formatCount(store.faces.scanned)} photos searched · {store.people.filter((p) => p.name).length === 1 ? '1 person' : `${store.people.filter((p) => p.name).length} people`} named{/if}
           </small>
         </div>
         <input type="checkbox" class="switch" checked={!!store.faces?.enabled} onchange={(e) => store.setFaces(e.currentTarget.checked)} />
+      </label>
+    </section>
+
+    <section>
+      <h3><Icon name="paw" size={16} /> Pets</h3>
+      <p class="hint">
+        Finds the cats and dogs in your photos and tells your pets apart, so you can name each one. It runs entirely on this PC, using a
+        small open detector from OpenCV (downloaded once, {store.petStatus?.downloadMb ?? 9} MB) and the smart search model, which this turns
+        on too. Pets that look much alike (two black cats) may be grouped together; "Not this pet" on their photos sorts them out.
+      </p>
+      <label class="row toggle">
+        <div>
+          <span>Recognise pets</span>
+          <small class="faint">
+            {#if !store.petStatus?.enabled}Off
+            {:else if store.petStatus.phase === 'downloading'}Downloading the detector… {store.petStatus.total
+                ? `${formatBytes(store.petStatus.done)} of ${formatBytes(store.petStatus.total)}`
+                : 'connecting'}
+            {:else if store.petStatus.phase === 'waiting'}Waiting for the smart search model to download
+            {:else if store.petStatus.phase === 'indexing'}Looking for pets… {formatCount(store.petStatus.done)} of {formatCount(store.petStatus.total)}
+            {:else if store.petStatus.phase === 'error'}Problem: {store.petStatus.error}
+            {:else}Ready · {formatCount(store.petStatus.scanned)} photos searched · {plural(store.pets.filter((p) => p.name).length, 'pet')} named{/if}
+          </small>
+        </div>
+        <input type="checkbox" class="switch" checked={!!store.petStatus?.enabled} onchange={(e) => store.setPets(e.currentTarget.checked)} />
       </label>
     </section>
 
@@ -351,7 +376,7 @@
     <section class="credits">
       <p class="faint">
         Place names © <a href="https://www.geonames.org" target="_blank" rel="noreferrer">GeoNames</a> (CC BY 4.0). Map © OpenStreetMap
-        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses OpenCV's YuNet and SFace models.
+        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses OpenCV's YuNet and SFace models; Pets uses OpenCV's YOLOX model.
       </p>
     </section>
 

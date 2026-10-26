@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, DuplicateGroup, FaceInPhoto, FacesStatus, Person, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, DuplicateGroup, FaceInPhoto, FacesStatus, Person, PetsStatus, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -25,6 +25,9 @@ export interface Api {
   removeFromAlbum(id: number, ids: number[]): Promise<void>;
   facesStatus(): Promise<FacesStatus>;
   setFaces(enabled: boolean): Promise<FacesStatus>;
+  petsStatus(): Promise<PetsStatus>;
+  /** Also switches smart search on: it tells pets apart. */
+  setPets(enabled: boolean): Promise<PetsStatus>;
   listPeople(): Promise<Person[]>;
   facesIn(photoId: number): Promise<FaceInPhoto[]>;
   /** Names a person or group; a name already in use merges them. Returns who they are now. */
@@ -111,6 +114,8 @@ function tauriApi(): Api {
     removeFromAlbum: (id, ids) => invoke('remove_from_album', { id, ids }),
     facesStatus: () => invoke('faces_status'),
     setFaces: (enabled) => invoke('set_faces', { enabled }),
+    petsStatus: () => invoke('pets_status'),
+    setPets: (enabled) => invoke('set_pets', { enabled }),
     listPeople: () => invoke('list_people'),
     facesIn: (id) => invoke('faces_in', { id }),
     namePerson: (id, name) => invoke('name_person', { id, name }),

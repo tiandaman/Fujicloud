@@ -1,6 +1,7 @@
 mod backup;
 mod faces;
 mod logfile;
+mod pets;
 mod protocol;
 mod reach;
 mod settings;
@@ -37,6 +38,7 @@ pub struct AppState {
     pub reach: reach::Reach,
     pub backup: backup::Backup,
     pub faces: faces::Faces,
+    pub pets: pets::Pets,
 }
 
 type Shared<'a> = State<'a, Arc<AppState>>;
@@ -77,6 +79,7 @@ struct Bootstrap {
     smart: smart::Status,
     backup: backup::Status,
     faces: faces::Status,
+    pets: pets::Status,
 }
 
 #[tauri::command]
@@ -95,6 +98,7 @@ fn bootstrap(app: AppHandle, state: Shared) -> CmdResult<Bootstrap> {
         smart: state.smart.status(&state),
         backup: state.backup.status(&state),
         faces: state.faces.status(&state),
+        pets: state.pets.status(&state),
     })
 }
 
@@ -233,6 +237,7 @@ pub(crate) fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
         let _ = app.emit("library-changed", ());
         smart::spawn(app.clone(), state.clone());
         faces::spawn(app.clone(), state.clone());
+        pets::spawn(app.clone(), state.clone());
         spawn_warm(app, state);
     });
 }
@@ -790,6 +795,36 @@ fn set_faces(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<faces::S
     Ok(state.faces.status(&state))
 }
 
+// ---- pets --------------------------------------------------------------------
+
+#[tauri::command]
+fn pets_status(state: Shared) -> pets::Status {
+    state.pets.status(&state)
+}
+
+/// Pets are told apart by the smart search model, so this switches smart
+/// search on too.
+#[tauri::command]
+fn set_pets(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<pets::Status> {
+    let smart_was_on = {
+        let mut settings = state.settings.write();
+        let was = settings.smart_search;
+        settings.pets = enabled;
+        settings.smart_search |= enabled;
+        settings.save(&state.settings_path).map_err(err)?;
+        was
+    };
+    if enabled {
+        if !smart_was_on {
+            smart::spawn(app.clone(), state.inner().clone());
+        }
+        pets::spawn(app, state.inner().clone());
+    } else {
+        state.pets.disable(&app, &state);
+    }
+    Ok(state.pets.status(&state))
+}
+
 #[tauri::command]
 async fn list_people(state: Shared<'_>) -> CmdResult<Vec<PersonRow>> {
     state.lib.people().map_err(err)
@@ -1057,6 +1092,7 @@ pub fn run() {
                 reach: reach::Reach::default(),
                 backup: backup::Backup::new(data.join("backup.json")),
                 faces: faces::Faces::default(),
+                pets: pets::Pets::default(),
             });
 
             #[cfg(windows)]
@@ -1077,6 +1113,7 @@ pub fn run() {
             // is downloading, and on a big network library the scan is slow.
             smart::spawn(handle.clone(), state.clone());
             faces::spawn(handle.clone(), state.clone());
+            pets::spawn(handle.clone(), state.clone());
             reach::spawn(handle.clone(), state.clone());
             backup::start(handle.clone(), state.clone());
             spawn_scan(handle, state);
@@ -1133,6 +1170,8 @@ pub fn run() {
             merge_people,
             hide_people,
             hide_face,
+            pets_status,
+            set_pets,
             search_smart,
             similar_photos,
         ])

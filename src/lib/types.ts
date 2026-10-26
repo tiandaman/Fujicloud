@@ -136,6 +136,7 @@ export interface Settings {
   smartSearch: boolean;
   smartGpu: boolean;
   faces: boolean;
+  pets: boolean;
   cacheVersion: number;
 }
 
@@ -149,6 +150,7 @@ export interface Bootstrap {
   smart: SmartStatus;
   backup: BackupStatus;
   faces: FacesStatus;
+  pets: PetsStatus;
 }
 
 /** Someone found in the photos: named, or a group of faces waiting for a name. */
@@ -161,7 +163,11 @@ export interface Person {
   photoIds: number[];
   /** A stranger, kept out of the way. */
   hidden: boolean;
+  kind: Subject;
 }
+
+/** Who a group of faces belongs to. */
+export type Subject = 'person' | 'pet';
 
 export interface FaceInPhoto {
   id: number;
@@ -169,6 +175,7 @@ export interface FaceInPhoto {
   name: string | null;
   /** x, y, width, height as fractions of the picture. */
   bbox: [number, number, number, number];
+  kind: Subject;
 }
 
 export interface FacesStatus {
@@ -181,6 +188,11 @@ export interface FacesStatus {
   /** Photos searched so far. */
   scanned: number;
   error: string | null;
+}
+
+export interface PetsStatus extends Omit<FacesStatus, 'phase'> {
+  /** `waiting` for the smart search model, which tells pets apart. */
+  phase: 'off' | 'downloading' | 'waiting' | 'indexing' | 'ready' | 'error';
 }
 
 export interface BackupStatus {
@@ -251,6 +263,7 @@ export type Collection =
   | { type: 'album'; id: number }
   | { type: 'duplicates' }
   | { type: 'people' }
+  | { type: 'pets' }
   | { type: 'person'; id: number }
   | { type: 'source'; id: number }
   | { type: 'film'; value: string }

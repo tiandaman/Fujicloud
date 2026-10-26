@@ -1,6 +1,8 @@
-//! People: faces grouped by who they are, and named.
+//! People and pets: faces grouped by who they are, and named.
 //!
-//! Each face found (see `faces`) is stored with its 128-number description.
+//! Each face found (see `faces`) is stored with its 128-number description;
+//! each pet found (see `animals`) with what the smart search model makes of
+//! it. People and pets are kept apart but handled the same way.
 //! Faces close to a known person's are filed under them; the rest are
 //! grouped with each other into unnamed people, waiting for a name. Naming a
 //! group, or saying "that's not them", is remembered: a face someone has
@@ -21,6 +23,51 @@ use crate::db::Library;
 /// about 0.75 there, different people about 0.1.
 pub const SAME_PERSON: f32 = 0.40;
 
+/// Similarity (of smart search vectors of pets' pictures) at which two
+/// pictures are taken to be the same pet. Checked against the real models in
+/// `animals`' tests.
+pub const SAME_PET: f32 = 0.80;
+
+/// Who a group of faces belongs to: a person, or a pet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Subject {
+    Person,
+    Pet,
+}
+
+impl Subject {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Subject::Person => "person",
+            Subject::Pet => "pet",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        if s == "pet" {
+            Subject::Pet
+        } else {
+            Subject::Person
+        }
+    }
+
+    fn same(self) -> f32 {
+        match self {
+            Subject::Person => SAME_PERSON,
+            Subject::Pet => SAME_PET,
+        }
+    }
+
+    /// Which table records the photos searched.
+    fn scans(self) -> &'static str {
+        match self {
+            Subject::Person => "face_scans",
+            Subject::Pet => "pet_scans",
+        }
+    }
+}
+
 pub(crate) const TABLES: &str = "
 CREATE TABLE IF NOT EXISTS people (
     id         INTEGER PRIMARY KEY,
@@ -28,7 +75,8 @@ CREATE TABLE IF NOT EXISTS people (
     name       TEXT COLLATE NOCASE,
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     -- Someone said they don't know this person.
-    hidden     INTEGER NOT NULL DEFAULT 0
+    hidden     INTEGER NOT NULL DEFAULT 0,
+    kind       TEXT NOT NULL DEFAULT 'person'
 );
 CREATE TABLE IF NOT EXISTS faces (
     id         INTEGER PRIMARY KEY,
@@ -40,7 +88,8 @@ CREATE TABLE IF NOT EXISTS faces (
     -- Someone said this face is this person.
     confirmed  INTEGER NOT NULL DEFAULT 0,
     -- Someone said this face is not this person.
-    not_person INTEGER
+    not_person INTEGER,
+    kind       TEXT NOT NULL DEFAULT 'person'
 );
 CREATE INDEX IF NOT EXISTS faces_photo ON faces(photo_id);
 CREATE INDEX IF NOT EXISTS faces_person ON faces(person_id);
@@ -49,17 +98,28 @@ CREATE TABLE IF NOT EXISTS face_scans (
     photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
     model    TEXT NOT NULL
 );
+-- And for pets.
+CREATE TABLE IF NOT EXISTS pet_scans (
+    photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+    model    TEXT NOT NULL
+);
 ";
 
-/// Libraries made before people could be hidden.
+/// Libraries made before people could be hidden, or pets found.
 pub(crate) fn migrate(conn: &rusqlite::Connection) -> Result<(), Error> {
-    let hidden: i64 = conn.query_row(
-        "SELECT count(*) FROM pragma_table_info('people') WHERE name = 'hidden'",
-        [],
-        |r| r.get(0),
-    )?;
-    if hidden == 0 {
-        conn.execute_batch("ALTER TABLE people ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")?;
+    for (table, column, decl) in [
+        ("people", "hidden", "INTEGER NOT NULL DEFAULT 0"),
+        ("people", "kind", "TEXT NOT NULL DEFAULT 'person'"),
+        ("faces", "kind", "TEXT NOT NULL DEFAULT 'person'"),
+    ] {
+        let has: i64 = conn.query_row(
+            &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+            [column],
+            |r| r.get(0),
+        )?;
+        if has == 0 {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+        }
     }
     Ok(())
 }
@@ -82,6 +142,7 @@ pub struct PersonRow {
     pub photo_ids: Vec<i64>,
     /// A stranger, kept out of the way.
     pub hidden: bool,
+    pub kind: Subject,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +153,7 @@ pub struct FaceRow {
     pub name: Option<String>,
     /// x, y, width, height as fractions of the picture.
     pub bbox: [f32; 4],
+    pub kind: Subject,
 }
 
 fn pack(v: &[f32]) -> Vec<u8> {
@@ -157,39 +219,77 @@ impl Library {
     /// Photos not yet searched for faces with `model`, newest first. A RAW
     /// stacked under its JPEG and movies are skipped.
     pub fn faces_todo(&self, model: &str) -> Result<Vec<i64>, Error> {
+        self.todo(Subject::Person, model)
+    }
+
+    /// Photos not yet searched for pets with `model`, newest first.
+    pub fn pets_todo(&self, model: &str) -> Result<Vec<i64>, Error> {
+        self.todo(Subject::Pet, model)
+    }
+
+    fn todo(&self, subject: Subject, model: &str) -> Result<Vec<i64>, Error> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare_cached(
+        let mut stmt = conn.prepare_cached(&format!(
             "SELECT p.id FROM photos p
-             WHERE NOT EXISTS (SELECT 1 FROM face_scans s WHERE s.photo_id = p.id AND s.model = ?1)
+             WHERE NOT EXISTS (SELECT 1 FROM {} s WHERE s.photo_id = p.id AND s.model = ?1)
                AND p.kind <> 'video'
                AND NOT (p.kind IN ('raf', 'dng') AND EXISTS
                     (SELECT 1 FROM photos j WHERE j.pair_key = p.pair_key
                        AND j.kind IN ('jpeg', 'heif', 'png')))
              ORDER BY p.taken_at DESC",
-        )?;
+            subject.scans()
+        ))?;
         let rows = stmt.query_map([model], |r| r.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Records the faces found in a photo (possibly none).
     pub fn store_faces(&self, photo_id: i64, model: &str, faces: &[NewFace]) -> Result<(), Error> {
+        self.store(Subject::Person, photo_id, model, faces)
+    }
+
+    /// Records the pets found in a photo (possibly none).
+    pub fn store_pets(&self, photo_id: i64, model: &str, pets: &[NewFace]) -> Result<(), Error> {
+        self.store(Subject::Pet, photo_id, model, pets)
+    }
+
+    fn store(
+        &self,
+        subject: Subject,
+        photo_id: i64,
+        model: &str,
+        faces: &[NewFace],
+    ) -> Result<(), Error> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         tx.execute(
-            "DELETE FROM faces WHERE photo_id = ?1 AND confirmed = 0",
-            [photo_id],
+            "DELETE FROM faces WHERE photo_id = ?1 AND confirmed = 0 AND kind = ?2",
+            params![photo_id, subject.as_str()],
         )?;
         {
             let mut insert = tx.prepare_cached(
-                "INSERT INTO faces (photo_id, x, y, w, h, score, embedding) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO faces (photo_id, x, y, w, h, score, embedding, kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             for f in faces {
                 let [x, y, w, h] = f.bbox;
-                insert.execute(params![photo_id, x, y, w, h, f.score, pack(&f.embedding)])?;
+                insert.execute(params![
+                    photo_id,
+                    x,
+                    y,
+                    w,
+                    h,
+                    f.score,
+                    pack(&f.embedding),
+                    subject.as_str()
+                ])?;
             }
         }
         tx.execute(
-            "INSERT OR REPLACE INTO face_scans (photo_id, model) VALUES (?1, ?2)",
+            &format!(
+                "INSERT OR REPLACE INTO {} (photo_id, model) VALUES (?1, ?2)",
+                subject.scans()
+            ),
             params![photo_id, model],
         )?;
         tx.commit()?;
@@ -198,25 +298,42 @@ impl Library {
 
     /// How many photos have been searched for faces.
     pub fn faces_scanned(&self, model: &str) -> Result<usize, Error> {
+        self.scanned(Subject::Person, model)
+    }
+
+    /// How many photos have been searched for pets.
+    pub fn pets_scanned(&self, model: &str) -> Result<usize, Error> {
+        self.scanned(Subject::Pet, model)
+    }
+
+    fn scanned(&self, subject: Subject, model: &str) -> Result<usize, Error> {
         Ok(self.conn.lock().query_row(
-            "SELECT count(*) FROM face_scans WHERE model = ?1",
+            &format!("SELECT count(*) FROM {} WHERE model = ?1", subject.scans()),
             [model],
             |r| r.get::<_, i64>(0),
         )? as usize)
     }
 
-    /// Files every face nobody has filed yet: under the person it looks
-    /// like, or into a new unnamed group with the faces it looks like.
+    /// Files every face (and pet) nobody has filed yet: under the person it
+    /// looks like, or into a new unnamed group with the faces it looks like.
     /// Returns whether anything changed.
     pub fn group_faces(&self) -> Result<bool, Error> {
+        let people = self.group(Subject::Person)?;
+        let pets = self.group(Subject::Pet)?;
+        Ok(people || pets)
+    }
+
+    fn group(&self, subject: Subject) -> Result<bool, Error> {
+        let same = subject.same();
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let mut people: HashMap<i64, Centroid> = HashMap::new();
         let mut loose = Vec::new();
         {
-            let mut stmt =
-                tx.prepare("SELECT id, person_id, not_person, embedding FROM faces ORDER BY id")?;
-            let mut rows = stmt.query([])?;
+            let mut stmt = tx.prepare(
+                "SELECT id, person_id, not_person, embedding FROM faces WHERE kind = ?1 ORDER BY id",
+            )?;
+            let mut rows = stmt.query([subject.as_str()])?;
             while let Some(r) = rows.next()? {
                 let embedding = unpack(&r.get::<_, Vec<u8>>(3)?);
                 match r.get::<_, Option<i64>>(1)? {
@@ -245,7 +362,7 @@ impl Library {
                 .map(|(id, c)| (*id, c.similarity(&face.embedding)))
                 .max_by(|a, b| a.1.total_cmp(&b.1));
             match best {
-                Some((person, sim)) if sim >= SAME_PERSON => {
+                Some((person, sim)) if sim >= same => {
                     people.get_mut(&person).unwrap().add(&face.embedding);
                     filed.push((face.id, person));
                 }
@@ -262,7 +379,7 @@ impl Library {
                 .map(|(i, g)| (i, g.0.similarity(&face.embedding)))
                 .max_by(|a, b| a.1.total_cmp(&b.1));
             match best {
-                Some((i, sim)) if sim >= SAME_PERSON => {
+                Some((i, sim)) if sim >= same => {
                     let g = &mut groups[i];
                     g.0.add(&face.embedding);
                     g.1.push(face.id);
@@ -276,7 +393,10 @@ impl Library {
             }
         }
         for (_, ids, _) in groups.into_iter().filter(|g| g.1.len() > 1) {
-            tx.execute("INSERT INTO people (name) VALUES (NULL)", [])?;
+            tx.execute(
+                "INSERT INTO people (name, kind) VALUES (NULL, ?1)",
+                [subject.as_str()],
+            )?;
             let person = tx.last_insert_rowid();
             filed.extend(ids.into_iter().map(|id| (id, person)));
         }
@@ -300,10 +420,10 @@ impl Library {
     pub fn people(&self) -> Result<Vec<PersonRow>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT f.person_id, p.name, p.hidden, f.id, f.photo_id, f.confirmed, f.score
+            "SELECT f.person_id, p.name, p.hidden, f.id, f.photo_id, f.confirmed, f.score, p.kind
              FROM faces f JOIN people p ON p.id = f.person_id",
         )?;
-        type Entry = (Option<String>, bool, Vec<Filed>);
+        type Entry = (Option<String>, bool, Subject, Vec<Filed>);
         let mut by_person: HashMap<i64, Entry> = HashMap::new();
         let mut rows = stmt.query([])?;
         while let Some(r) = rows.next()? {
@@ -311,10 +431,11 @@ impl Library {
                 (
                     r.get(1).ok().flatten(),
                     r.get::<_, i64>(2).is_ok_and(|h| h != 0),
+                    Subject::parse(&r.get::<_, String>(7).unwrap_or_default()),
                     Vec::new(),
                 )
             });
-            entry.2.push(Filed {
+            entry.3.push(Filed {
                 id: r.get(3)?,
                 photo: r.get(4)?,
                 confirmed: r.get::<_, i64>(5)? != 0,
@@ -322,21 +443,22 @@ impl Library {
             });
         }
         // Named people with no faces left still exist.
-        let mut named =
-            conn.prepare_cached("SELECT id, name, hidden FROM people WHERE name IS NOT NULL")?;
+        let mut named = conn
+            .prepare_cached("SELECT id, name, hidden, kind FROM people WHERE name IS NOT NULL")?;
         let mut rows = named.query([])?;
         while let Some(r) = rows.next()? {
             by_person.entry(r.get(0)?).or_insert_with(|| {
                 (
                     r.get(1).ok(),
                     r.get::<_, i64>(2).is_ok_and(|h| h != 0),
+                    Subject::parse(&r.get::<_, String>(3).unwrap_or_default()),
                     Vec::new(),
                 )
             });
         }
         let mut out: Vec<PersonRow> = by_person
             .into_iter()
-            .map(|(id, (name, hidden, faces))| {
+            .map(|(id, (name, hidden, kind, faces))| {
                 // The clearest face someone confirmed, else the clearest.
                 let cover = faces
                     .iter()
@@ -356,6 +478,7 @@ impl Library {
                     faces: faces.len(),
                     photo_ids,
                     hidden,
+                    kind,
                 }
             })
             .collect();
@@ -373,9 +496,9 @@ impl Library {
     pub fn faces_in(&self, photo_id: i64) -> Result<Vec<FaceRow>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT f.id, f.person_id, p.name, f.x, f.y, f.w, f.h
+            "SELECT f.id, f.person_id, p.name, f.x, f.y, f.w, f.h, f.kind
              FROM faces f LEFT JOIN people p ON p.id = f.person_id
-             WHERE f.photo_id = ?1 AND NOT coalesce(p.hidden, 0) ORDER BY f.x",
+             WHERE f.photo_id = ?1 AND NOT coalesce(p.hidden, 0) ORDER BY f.kind, f.x",
         )?;
         let rows = stmt.query_map([photo_id], |r| {
             Ok(FaceRow {
@@ -383,17 +506,24 @@ impl Library {
                 person_id: r.get(1)?,
                 name: r.get(2)?,
                 bbox: [r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?],
+                kind: Subject::parse(&r.get::<_, String>(7)?),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Which photo a face is in, and where.
-    pub fn face(&self, face_id: i64) -> Result<(i64, [f32; 4]), Error> {
+    /// Which photo a face (or pet) is in, and where.
+    pub fn face(&self, face_id: i64) -> Result<(i64, [f32; 4], Subject), Error> {
         Ok(self.conn.lock().query_row(
-            "SELECT photo_id, x, y, w, h FROM faces WHERE id = ?1",
+            "SELECT photo_id, x, y, w, h, kind FROM faces WHERE id = ?1",
             [face_id],
-            |r| Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?])),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?],
+                    Subject::parse(&r.get::<_, String>(5)?),
+                ))
+            },
         )?)
     }
 
@@ -403,9 +533,11 @@ impl Library {
         let name = name.trim();
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
+        // People and pets don't share names.
         let existing: Option<i64> = tx
             .query_row(
-                "SELECT id FROM people WHERE name = ?1 AND id <> ?2",
+                "SELECT id FROM people WHERE name = ?1 AND id <> ?2
+                   AND kind = (SELECT kind FROM people WHERE id = ?2)",
                 params![name, id],
                 |r| r.get(0),
             )
@@ -442,15 +574,24 @@ impl Library {
         let name = name.trim();
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
+        let kind: String =
+            tx.query_row("SELECT kind FROM faces WHERE id = ?1", [face_id], |r| {
+                r.get(0)
+            })?;
         let person = match tx
-            .query_row("SELECT id FROM people WHERE name = ?1", [name], |r| {
-                r.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT id FROM people WHERE name = ?1 AND kind = ?2",
+                params![name, kind],
+                |r| r.get::<_, i64>(0),
+            )
             .optional()?
         {
             Some(id) => id,
             None => {
-                tx.execute("INSERT INTO people (name) VALUES (?1)", [name])?;
+                tx.execute(
+                    "INSERT INTO people (name, kind) VALUES (?1, ?2)",
+                    params![name, kind],
+                )?;
                 tx.last_insert_rowid()
             }
         };
@@ -491,6 +632,20 @@ impl Library {
     pub fn merge_people(&self, from: &[i64], into: i64) -> Result<i64, Error> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
+        // A person and a pet are never one.
+        let kind_of = |id: i64| -> Result<Option<String>, Error> {
+            Ok(tx
+                .query_row("SELECT kind FROM people WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?)
+        };
+        let kind = kind_of(into)?;
+        let mut same = Vec::new();
+        for &id in from {
+            if kind_of(id)? == kind {
+                same.push(id);
+            }
+        }
+        let from = &same[..];
         let name_of = |id: i64| -> Result<Option<String>, Error> {
             Ok(tx
                 .query_row("SELECT name FROM people WHERE id = ?1", [id], |r| {
@@ -569,16 +724,25 @@ impl Library {
     pub fn hide_face(&self, face_id: i64) -> Result<i64, Error> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
-        let (current, named): (Option<i64>, bool) = tx.query_row(
-            "SELECT f.person_id, p.name IS NOT NULL
+        let (current, named, kind): (Option<i64>, bool, String) = tx.query_row(
+            "SELECT f.person_id, p.name IS NOT NULL, f.kind
              FROM faces f LEFT JOIN people p ON p.id = f.person_id WHERE f.id = ?1",
             [face_id],
-            |r| Ok((r.get(0)?, r.get::<_, Option<bool>>(1)?.unwrap_or(false))),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get::<_, Option<bool>>(1)?.unwrap_or(false),
+                    r.get(2)?,
+                ))
+            },
         )?;
         let person = match current {
             Some(group) if !named => group,
             _ => {
-                tx.execute("INSERT INTO people (name, hidden) VALUES (NULL, 1)", [])?;
+                tx.execute(
+                    "INSERT INTO people (name, hidden, kind) VALUES (NULL, 1, ?1)",
+                    [kind],
+                )?;
                 let person = tx.last_insert_rowid();
                 tx.execute(
                     "UPDATE faces SET person_id = ?2, not_person = coalesce(person_id, not_person)
@@ -849,6 +1013,54 @@ mod tests {
     }
 
     #[test]
+    fn pets_are_grouped_and_named_apart_from_people() {
+        let lib = library(4);
+        let p = ids(&lib);
+        // Max the person and Max the cat look alike to the numbers here
+        // (same axis), but are different kinds of description.
+        lib.store_faces(p[0], "m", &[face(0, 0.0)]).unwrap();
+        lib.store_faces(p[1], "m", &[face(0, 0.1)]).unwrap();
+        lib.store_pets(p[1], "s", &[face(0, 0.05)]).unwrap();
+        lib.store_pets(p[2], "s", &[face(0, 0.1)]).unwrap();
+        lib.store_pets(p[3], "s", &[face(4, 0.0)]).unwrap();
+        assert_eq!(lib.faces_todo("m").unwrap().len(), 2);
+        assert_eq!(lib.pets_todo("s").unwrap().len(), 1);
+        assert_eq!(lib.pets_scanned("s").unwrap(), 3);
+        lib.group_faces().unwrap();
+
+        let groups = lib.people().unwrap();
+        let person = groups.iter().find(|g| g.kind == Subject::Person).unwrap();
+        let pet = groups.iter().find(|g| g.kind == Subject::Pet).unwrap();
+        assert_eq!(groups.len(), 2, "the other pet waits for company");
+        assert_eq!(person.photo_ids, [p[0], p[1]]);
+        assert_eq!(pet.photo_ids, [p[1], p[2]]);
+        let (person, pet) = (person.id, pet.id);
+
+        // The same name doesn't make them one.
+        lib.name_person(person, "Max").unwrap();
+        assert_eq!(lib.name_person(pet, "max").unwrap(), pet);
+        assert_eq!(lib.people().unwrap().len(), 2);
+        // Nor does merging.
+        lib.merge_people(&[pet], person).unwrap();
+        assert_eq!(lib.people().unwrap().len(), 2);
+
+        // A pet's face in a photo says it's a pet; naming it finds the pet.
+        let faces = lib.faces_in(p[1]).unwrap();
+        assert_eq!(
+            faces.iter().map(|f| f.kind).collect::<Vec<_>>(),
+            [Subject::Person, Subject::Pet]
+        );
+        let other = lib.faces_in(p[3]).unwrap()[0].id;
+        assert_eq!(lib.name_face(other, "Max").unwrap(), pet);
+        assert_eq!(lib.face(other).unwrap().2, Subject::Pet);
+        // Searching a photo for faces again leaves its pets alone.
+        lib.store_faces(p[1], "m", &[]).unwrap();
+        assert_eq!(lib.faces_in(p[1]).unwrap().len(), 2, "confirmed faces stay");
+        lib.store_pets(p[3], "s", &[]).unwrap();
+        assert_eq!(lib.faces_in(p[3]).unwrap().len(), 1, "named pets stay");
+    }
+
+    #[test]
     fn libraries_from_before_hiding_are_upgraded() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.db");
@@ -864,6 +1076,7 @@ mod tests {
         let people = lib.people().unwrap();
         assert_eq!(people[0].name.as_deref(), Some("Ann"));
         assert!(!people[0].hidden);
+        assert_eq!(people[0].kind, Subject::Person);
         drop(lib);
         Library::open(&path).unwrap();
     }

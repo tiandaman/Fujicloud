@@ -10,8 +10,9 @@
   let query = $state('');
   let pos = $state({ left: 0, top: 0 });
   const me = $derived(store.personById.get(id));
+  const pet = $derived(me?.kind === 'pet');
   const others = $derived(
-    store.people.filter(
+    (pet ? store.pets : store.people).filter(
       (p) => p.id !== id && p.photoIds.length > 0 && (!query.trim() || (p.name ?? '').toLowerCase().includes(query.trim().toLowerCase())),
     ),
   );
@@ -50,8 +51,8 @@
 <div class="scrim" role="presentation" onclick={close}></div>
 <div class="picker" bind:this={el} style:left="{pos.left}px" style:top="{pos.top}px" role="dialog" aria-label="Merge with">
   <header>
-    <strong>Merge {me?.name ?? 'this person'} with…</strong>
-    <span class="faint">Same person found twice? Pick the other one.</span>
+    <strong>Merge {me?.name ?? (pet ? 'this pet' : 'this person')} with…</strong>
+    <span class="faint">Same {pet ? 'pet' : 'person'} found twice? Pick the other one.</span>
   </header>
   <input
     placeholder="Search names"
@@ -59,6 +60,7 @@
     use:focus
     onkeydown={(e) => {
       if (e.key === 'Enter' && others.length === 1) pick(others[0].id);
+      if (e.key === 'Escape') close();
       e.stopPropagation();
     }}
   />
@@ -70,10 +72,10 @@
         <span class="faint tabular">{plural(p.photoIds.length, 'photo')}</span>
       </button>
     {:else}
-      <p class="faint empty">No one {query.trim() ? `called “${query.trim()}”` : 'else yet'}.</p>
+      <p class="faint empty">{pet ? 'No pet' : 'No one'} {query.trim() ? `called “${query.trim()}”` : 'else yet'}.</p>
     {/each}
   </div>
-  <footer class="faint"><Icon name="people" size={12} /> Their photos join up; a name is kept.</footer>
+  <footer class="faint"><Icon name={pet ? 'paw' : 'people'} size={12} /> Their photos join up; a name is kept.</footer>
 </div>
 
 <style>

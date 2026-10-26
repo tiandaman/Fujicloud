@@ -94,17 +94,22 @@
 
   const named = $derived(store.people.filter((p) => p.name));
   const toName = $derived(store.people.filter((p) => !p.name && p.photoIds.length > 1).length);
+  const namedPets = $derived(store.pets.filter((p) => p.name));
+  const petsToName = $derived(store.pets.filter((p) => !p.name && p.photoIds.length > 1).length);
 
   function personMenu(e: MouseEvent, id: number) {
     e.preventDefault();
+    const pet = store.personById.get(id)?.kind === 'pet';
     menu = {
       x: e.clientX,
       y: e.clientY,
       items: [
-        { label: 'All people', icon: 'people', action: () => store.setCollection({ type: 'people' }) },
-        { label: 'Merge with…', icon: 'people', action: () => (store.mergePicker = { x: e.clientX, y: e.clientY, id }) },
+        pet
+          ? { label: 'All pets', icon: 'paw', action: () => store.setCollection({ type: 'pets' }) }
+          : { label: 'All people', icon: 'people', action: () => store.setCollection({ type: 'people' }) },
+        { label: 'Merge with…', icon: pet ? 'paw' : 'people', action: () => (store.mergePicker = { x: e.clientX, y: e.clientY, id }) },
         { separator: true },
-        { label: "Hide: I don't know them", icon: 'eye-off', action: () => store.hidePeople([id]) },
+        { label: pet ? 'Hide: not my pet' : "Hide: I don't know them", icon: 'eye-off', action: () => store.hidePeople([id]) },
         { label: 'Forget this name', icon: 'x', action: () => store.deletePerson(id) },
       ],
     };
@@ -225,6 +230,19 @@
     {#snippet peopleLead()}<span class="ico"><Icon name="people" size={16} /></span>{/snippet}
     {@render item({ type: 'people' }, store.faces?.enabled ? 'Everyone' : 'Find people…', store.faces?.enabled ? named.length : null, peopleLead)}
     {#each named.slice(0, 8) as p (p.id)}
+      <div oncontextmenu={(e) => personMenu(e, p.id)} role="presentation">
+        {#snippet lead()}<img class="avatar" src={api.faceUrl(p.cover)} alt="" draggable="false" />{/snippet}
+        {@render item({ type: 'person', id: p.id }, p.name!, p.photoIds.length, lead)}
+      </div>
+    {/each}
+
+    <div class="heading static">
+      Pets
+      {#if petsToName}<span class="to-name" title="Pets waiting for a name">{petsToName} to name</span>{/if}
+    </div>
+    {#snippet petsLead()}<span class="ico"><Icon name="paw" size={16} /></span>{/snippet}
+    {@render item({ type: 'pets' }, store.petStatus?.enabled ? 'All pets' : 'Find pets…', store.petStatus?.enabled ? namedPets.length : null, petsLead)}
+    {#each namedPets.slice(0, 8) as p (p.id)}
       <div oncontextmenu={(e) => personMenu(e, p.id)} role="presentation">
         {#snippet lead()}<img class="avatar" src={api.faceUrl(p.cover)} alt="" draggable="false" />{/snippet}
         {@render item({ type: 'person', id: p.id }, p.name!, p.photoIds.length, lead)}
