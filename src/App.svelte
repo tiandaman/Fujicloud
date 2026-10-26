@@ -7,6 +7,7 @@
   import Grid from './lib/components/Grid.svelte';
   import InfoPanel from './lib/components/InfoPanel.svelte';
   import MapView from './lib/components/MapView.svelte';
+  import MergePicker from './lib/components/MergePicker.svelte';
   import PeopleView from './lib/components/PeopleView.svelte';
   import Settings from './lib/components/Settings.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
@@ -32,7 +33,14 @@
 
   // Shortcuts that work in both the grid and the viewer.
   function onKey(e: KeyboardEvent) {
-    if (store.settingsOpen || store.compare || store.confirmation || store.exportDialog || (e.target as HTMLElement).closest('input, textarea, select'))
+    if (
+      store.settingsOpen ||
+      store.compare ||
+      store.confirmation ||
+      store.exportDialog ||
+      store.mergePicker ||
+      (e.target as HTMLElement).closest('input, textarea, select')
+    )
       return;
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl) {
@@ -49,7 +57,14 @@
       e.preventDefault();
       return;
     }
-    if (e.altKey) return;
+    if (e.altKey) {
+      // Alt+← steps back out of a person's photos, like a browser.
+      if (e.key === 'ArrowLeft' && store.collection.type === 'person') {
+        store.back();
+        e.preventDefault();
+      }
+      return;
+    }
     const key = e.key.toLowerCase();
     if (/^[0-5]$/.test(e.key)) store.rate(Number(e.key));
     else if (LABEL_KEYS[e.key]) store.label(LABEL_KEYS[e.key]);
@@ -66,7 +81,8 @@
   }
 </script>
 
-<svelte:window onkeydown={onKey} />
+<!-- The mouse's back button, too. -->
+<svelte:window onkeydown={onKey} onmouseup={(e) => e.button === 3 && store.back()} />
 
 <div class="app">
   {#if store.sidebar && store.ready}
@@ -107,6 +123,9 @@
 {/if}
 {#if store.settingsOpen && store.settings}
   <Settings />
+{/if}
+{#if store.mergePicker}
+  <MergePicker {...store.mergePicker} />
 {/if}
 {#if store.exportDialog}
   <ExportDialog ids={store.exportDialog.ids} />

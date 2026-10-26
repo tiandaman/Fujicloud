@@ -124,6 +124,8 @@ class Store {
   keepers = $derived(new Set((this.duplicates ?? []).map((g) => g.ids[0])));
   /** The export sheet, for these photos. */
   exportDialog = $state.raw<{ ids: number[] } | null>(null);
+  /** "Merge with…": who to merge `id` into. */
+  mergePicker = $state.raw<{ x: number; y: number; id: number } | null>(null);
   /** Export progress while one runs. */
   exporting = $state.raw<{ done: number; total: number } | null>(null);
   /** A question waiting for an answer (see `ask`). */
@@ -873,6 +875,43 @@ class Store {
   }
 
   /** Forgets a person's name; their faces go back to waiting for one. */
+  /** One person found as several: makes them one. Keeps a name if any of them
+   * has one; asks first when they have different names. */
+  async mergePeople(ids: number[], into?: number) {
+    const group = ids.map((id) => this.personById.get(id)).filter((p) => !!p);
+    if (group.length < 2) return;
+    const target =
+      group.find((p) => p.id === into) ??
+      [...group].sort((a, b) => Number(!!b.name) - Number(!!a.name) || b.photoIds.length - a.photoIds.length)[0];
+    const names = [...new Set(group.map((p) => p.name).filter((n) => !!n))];
+    const name = target.name ?? names[0] ?? null;
+    if (names.length > 1) {
+      const ok = await this.ask(
+        `Merge ${names.join(' and ')}?`,
+        `They become one person, called ${name}, with all of their photos together.`,
+        'Merge',
+      );
+      if (!ok) return;
+    }
+    try {
+      const now = await api.mergePeople(
+        group.filter((p) => p !== target).map((p) => p.id),
+        target.id,
+      );
+      await this.loadPeople();
+      const c = this.collection;
+      if (c.type === 'person' && group.some((p) => p.id === c.id)) this.setCollection({ type: 'person', id: now });
+      this.toast(name ? `Merged into ${name}` : `Merged ${group.length} groups`);
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Back from a person's photos to everyone. */
+  back() {
+    if (this.collection.type === 'person' && this.viewerId == null) this.setCollection({ type: 'people' });
+  }
+
   async deletePerson(id: number) {
     try {
       await api.deletePerson(id);

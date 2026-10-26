@@ -25,16 +25,20 @@
     store.albumPicker = null;
   }
 
+  // Closing unmounts the picker and its props with it, so each action reads
+  // the photos and the name before closing.
   async function toggle(id: number, all: boolean) {
+    const photos = ids;
     close();
-    if (all) await store.removeFromAlbum(id, ids);
-    else await store.addToAlbum(id, ids);
+    if (all) await store.removeFromAlbum(id, photos);
+    else await store.addToAlbum(id, photos);
   }
 
   async function create() {
-    if (!name.trim()) return;
+    const [album, photos] = [name.trim(), ids];
+    if (!album) return;
     close();
-    await store.createAlbum(name, ids);
+    await store.createAlbum(album, photos);
   }
 </script>
 

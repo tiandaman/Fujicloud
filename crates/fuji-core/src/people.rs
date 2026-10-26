@@ -455,6 +455,49 @@ impl Library {
         Ok(())
     }
 
+    /// The same person found twice: moves everyone in `from` into `into`.
+    /// If `into` has no name, it takes the first name among `from`.
+    /// Returns `into`.
+    pub fn merge_people(&self, from: &[i64], into: i64) -> Result<i64, Error> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let name_of = |id: i64| -> Result<Option<String>, Error> {
+            Ok(tx
+                .query_row("SELECT name FROM people WHERE id = ?1", [id], |r| {
+                    r.get::<_, Option<String>>(0)
+                })
+                .optional()?
+                .flatten())
+        };
+        if name_of(into)?.is_none() {
+            let mut names = Vec::new();
+            for &id in from {
+                names.extend(name_of(id)?);
+            }
+            if let Some(name) = names.first() {
+                tx.execute(
+                    "UPDATE people SET name = ?2 WHERE id = ?1",
+                    params![into, name],
+                )?;
+            }
+        }
+        for &id in from.iter().filter(|&&id| id != into) {
+            // Someone said these are the same person.
+            tx.execute(
+                "UPDATE faces SET person_id = ?2, confirmed = 1 WHERE person_id = ?1",
+                params![id, into],
+            )?;
+            // "Not them" now means not the merged person.
+            tx.execute(
+                "UPDATE faces SET not_person = ?2 WHERE not_person = ?1",
+                params![id, into],
+            )?;
+            tx.execute("DELETE FROM people WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(into)
+    }
+
     /// Forgets a person's name; their faces go back to being grouped.
     pub fn delete_person(&self, id: i64) -> Result<(), Error> {
         let conn = self.conn.lock();
@@ -589,6 +632,33 @@ mod tests {
                 .iter()
                 .any(|f| f.person_id == Some(cy) && f.name.as_deref() == Some("Cy"))
         );
+    }
+
+    #[test]
+    fn one_person_found_twice_is_merged() {
+        let lib = library(4);
+        let p = ids(&lib);
+        // The same person, looking different enough to make two groups.
+        lib.store_faces(p[0], "m", &[face(0, 0.0)]).unwrap();
+        lib.store_faces(p[1], "m", &[face(0, 0.1)]).unwrap();
+        lib.store_faces(p[2], "m", &[face(4, 0.0)]).unwrap();
+        lib.store_faces(p[3], "m", &[face(4, 0.1)]).unwrap();
+        lib.group_faces().unwrap();
+        let groups = lib.people().unwrap();
+        assert_eq!(groups.len(), 2);
+        let (a, b) = (groups[0].id, groups[1].id);
+        lib.name_person(b, "Eli").unwrap();
+
+        // Merging into the unnamed group keeps the name.
+        assert_eq!(lib.merge_people(&[b], a).unwrap(), a);
+        let people = lib.people().unwrap();
+        assert_eq!(people.len(), 1);
+        assert_eq!(people[0].name.as_deref(), Some("Eli"));
+        assert_eq!(people[0].photo_ids, p);
+
+        // Regrouping leaves the merged person alone.
+        assert!(!lib.group_faces().unwrap());
+        assert_eq!(lib.people().unwrap().len(), 1);
     }
 
     #[test]

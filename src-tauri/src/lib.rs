@@ -773,6 +773,12 @@ async fn remove_from_person(
     faces::group(&app, &state)
 }
 
+/// One person found as several: moves `from` into `into`.
+#[tauri::command]
+async fn merge_people(state: Shared<'_>, from: Vec<i64>, into: i64) -> CmdResult<i64> {
+    state.lib.merge_people(&from, into).map_err(err)
+}
+
 /// Forgets a person's name; their faces are grouped again, unnamed.
 #[tauri::command]
 async fn delete_person(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<()> {
@@ -1054,6 +1060,7 @@ pub fn run() {
             name_face,
             remove_from_person,
             delete_person,
+            merge_people,
             search_smart,
             similar_photos,
         ])

@@ -98,6 +98,11 @@
   </button>
 
   <div class="title">
+    {#if store.collection.type === 'person'}
+      <button class="back" title="Back to People (Alt+←)" onclick={() => store.back()}>
+        <Icon name="back" size={15} stroke={2.2} /> People
+      </button>
+    {/if}
     <h1 class="truncate">{store.collectionTitle}</h1>
     {#if store.collection.type === 'similar' || store.collection.type === 'ids'}
       <button class="clear" title="Back to all photos" aria-label="Back to all photos" onclick={() => store.setCollection({ type: 'all' })}><Icon name="x" size={12} stroke={2.2} /></button>
@@ -110,6 +115,19 @@
         {store.selection.size ? `${formatCount(store.selection.size)} selected · ` : ''}{plural(store.visible.length, 'photo')}
       {/if}
     </span>
+    {#if store.collection.type === 'person'}
+      {@const id = store.collection.id}
+      <button
+        class="btn small"
+        title="The same person was found twice: join them up"
+        onclick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          store.mergePicker = { x: r.left, y: r.bottom + 6, id };
+        }}
+      >
+        <Icon name="people" size={13} /> Merge with…
+      </button>
+    {/if}
     {#if store.collection.type === 'duplicates'}
       {#if store.findingDuplicates}
         <span class="faint">Looking…</span>
@@ -231,6 +249,25 @@
   .title span {
     font-size: 12px;
     white-space: nowrap;
+  }
+  .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    align-self: center;
+    margin-right: 2px;
+    padding: 3px 8px 3px 4px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: default;
+  }
+  .back:hover {
+    background: var(--hover);
   }
   .btn.small {
     align-self: center;

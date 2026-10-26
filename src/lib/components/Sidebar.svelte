@@ -102,6 +102,7 @@
       y: e.clientY,
       items: [
         { label: 'All people', icon: 'people', action: () => store.setCollection({ type: 'people' }) },
+        { label: 'Merge with…', icon: 'people', action: () => (store.mergePicker = { x: e.clientX, y: e.clientY, id }) },
         { separator: true },
         { label: 'Forget this name', icon: 'x', action: () => store.deletePerson(id) },
       ],

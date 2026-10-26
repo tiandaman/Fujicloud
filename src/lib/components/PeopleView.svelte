@@ -12,11 +12,26 @@
   const status = $derived(store.faces);
 
   let drafts = $state<Record<number, string>>({});
+  /** People picked for merging (Ctrl+click, or the tick on a face). */
+  let picked = $state<number[]>([]);
   let renaming = $state<number | null>(null);
   let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
-  function open(p: Person) {
+  function open(p: Person, e?: MouseEvent) {
+    if (e && (e.ctrlKey || e.metaKey || picked.length)) {
+      toggle(p);
+      return;
+    }
     store.setCollection({ type: 'person', id: p.id });
+  }
+
+  function toggle(p: Person) {
+    picked = picked.includes(p.id) ? picked.filter((id) => id !== p.id) : [...picked, p.id];
+  }
+
+  async function merge() {
+    await store.mergePeople(picked);
+    picked = [];
   }
 
   async function save(p: Person) {
@@ -33,7 +48,9 @@
       x: e.clientX,
       y: e.clientY,
       items: [
-        { label: 'Show photos', icon: 'photos', action: () => open(p) },
+        { label: 'Show photos', icon: 'photos', action: () => store.setCollection({ type: 'person', id: p.id }) },
+        { label: 'Merge with…', icon: 'people', action: () => (store.mergePicker = { x: e.clientX, y: e.clientY, id: p.id }) },
+        { label: picked.includes(p.id) ? 'Unselect' : 'Select to merge', icon: 'check', action: () => toggle(p) },
         {
           label: p.name ? 'Rename…' : 'Add a name…',
           icon: 'edit',
@@ -55,9 +72,20 @@
 </script>
 
 {#snippet face(p: Person, size: number)}
-  <button class="face" style:width="{size}px" style:height="{size}px" title="Show photos" onclick={() => open(p)}>
-    <img src={api.faceUrl(p.cover)} alt="" draggable="false" />
-  </button>
+  <div class="face-wrap" class:picked={picked.includes(p.id)}>
+    <button
+      class="face"
+      style:width="{size}px"
+      style:height="{size}px"
+      title={picked.length ? 'Select to merge' : 'Show photos (Ctrl+click to select)'}
+      onclick={(e) => open(p, e)}
+    >
+      <img src={api.faceUrl(p.cover)} alt="" draggable="false" />
+    </button>
+    <button class="tick" aria-label={picked.includes(p.id) ? 'Unselect' : 'Select to merge'} onclick={() => toggle(p)}>
+      <Icon name="check" size={12} stroke={3} />
+    </button>
+  </div>
 {/snippet}
 
 {#snippet nameInput(p: Person)}
@@ -154,6 +182,24 @@
   {/if}
 </div>
 
+{#if picked.length}
+  <div class="merge-bar">
+    <span>
+      {#if picked.length === 1}Pick the other one{:else}{picked.length} selected: the same person?{/if}
+    </span>
+    <button class="btn primary" disabled={picked.length < 2} onclick={merge}>
+      <Icon name="people" size={14} /> Merge
+    </button>
+    <button class="btn subtle" onclick={() => (picked = [])}>Cancel</button>
+  </div>
+{/if}
+
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === 'Escape' && picked.length && !store.mergePicker && !store.confirmation) picked = [];
+  }}
+/>
+
 {#if menu}
   <ContextMenu {...menu} onclose={() => (menu = null)} />
 {/if}
@@ -197,6 +243,63 @@
   }
   .person .faint {
     font-size: 11.5px;
+  }
+  .face-wrap {
+    position: relative;
+    border-radius: 50%;
+  }
+  .face-wrap.picked .face {
+    box-shadow: 0 0 0 3px var(--accent);
+  }
+  .tick {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.55);
+    box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.8);
+    color: transparent;
+    opacity: 0;
+    cursor: default;
+    transition: opacity 120ms;
+  }
+  .face-wrap:hover .tick,
+  .face-wrap.picked .tick {
+    opacity: 1;
+  }
+  .face-wrap.picked .tick {
+    background: var(--accent);
+    box-shadow: none;
+    color: #fff;
+  }
+  .merge-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 8px 8px 16px;
+    transform: translateX(-50%);
+    border-radius: 14px;
+    background: rgba(44, 44, 48, 0.94);
+    backdrop-filter: blur(20px) saturate(1.5);
+    box-shadow: var(--shadow-md), inset 0 0 0 0.5px var(--border);
+    font-size: 13px;
+    animation: rise 200ms var(--ease-out);
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translate(-50%, 8px);
+    }
   }
   .face {
     padding: 0;

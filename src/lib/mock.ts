@@ -469,6 +469,16 @@ export function mockApi(): Api {
     async removeFromPerson(id, photoIds) {
       people = people.map((p) => (p.id === id ? { ...p, photoIds: p.photoIds.filter((x) => !photoIds.includes(x)) } : p));
     },
+    async mergePeople(from, into) {
+      const target = people.find((p) => p.id === into)!;
+      const merged = people.filter((p) => from.includes(p.id) && p.id !== into);
+      const name = target.name ?? merged.find((p) => p.name)?.name ?? null;
+      const photoIds = [...new Set([...target.photoIds, ...merged.flatMap((p) => p.photoIds)])];
+      people = people
+        .filter((p) => !merged.includes(p))
+        .map((p) => (p.id === into ? { ...p, name, photoIds, faces: photoIds.length } : p));
+      return into;
+    },
     async deletePerson(id) {
       people = people.map((p) => (p.id === id ? { ...p, name: null } : p));
     },

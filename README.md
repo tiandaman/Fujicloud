@@ -39,7 +39,9 @@ thousands of images.
   (two small open models from OpenCV, YuNet and SFace, downloaded once). Name a group
   under *People → Who's this?*, or a single face in the info panel, and new photos of
   that person are filed under them automatically. Right-click a photo in someone's view
-  for *Not them*; using a name twice merges the two. Nothing leaves your network.
+  for *Not them*. If one person was found as two, Ctrl+click both on the People page and
+  press *Merge* (or use *Merge with…* on their page); a name is kept. Nothing leaves
+  your network.
 - **Find duplicates:** *Duplicates* in the sidebar finds byte-for-byte copies (the same
   shot imported twice) and, with smart search on, near-identical shots taken moments
   apart. The best of each group (highest rated, then most pixels) is marked *KEEP*, and
