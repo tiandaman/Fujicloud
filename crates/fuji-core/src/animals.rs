@@ -218,7 +218,7 @@ fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
 
 /// What pets have in common as DINOv2 sees them: the average pet (as half
 /// floats), learned from held-out Oxford-IIIT Pet photos by
-/// `real_pets_are_told_apart`, which prints it.
+/// `real_pets_are_told_apart`, which checks it.
 const BASIS: &[u8] = include_bytes!("pet_mean.bin");
 /// Main ways pets vary also taken away: none, which measured best for DINOv2.
 const BASIS_AXES: usize = 0;
@@ -770,13 +770,24 @@ mod tests {
             }
             (mean, axes)
         };
-        let (mean, axes) = evaluate("siglip", &prior, &pets);
+        evaluate("siglip", &prior, &pets);
         for (n, label) in ["dino-cls", "dino-mean", "dino-both"].iter().enumerate() {
             let p: Vec<Vec<f32>> = prior_d.iter().map(|d| d[n].clone()).collect();
             let t: Vec<(usize, Vec<f32>)> =
                 pets_d.iter().map(|(b, d)| (*b, d[n].clone())).collect();
             let (mean, _) = evaluate(label, &p, &t);
-            if n == 0 {
+            if n > 0 {
+                continue;
+            }
+            // The average pet the app ships must be the one learned here;
+            // if not (a new model, say), print the new one to ship.
+            let off = mean
+                .iter()
+                .zip(&basis().0)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            println!("shipped average pet differs by at most {off:.5}");
+            if off > 1e-3 {
                 let hex: String = mean
                     .iter()
                     .flat_map(|x| half::f16::from_f32(*x).to_le_bytes())
@@ -785,24 +796,12 @@ mod tests {
                 for (i, line) in hex.as_bytes().chunks(256).enumerate() {
                     println!("pet-mean {i:03} {}", std::str::from_utf8(line).unwrap());
                 }
-            }
-        }
-        // A newly learned basis as half floats (mean, then axes), to ship.
-        if std::env::var_os("FUJICLOUD_PRINT_PET_BASIS").is_some() {
-            let mut hex = String::new();
-            for x in mean.iter().chain(axes.iter().flatten()) {
-                for byte in half::f16::from_f32(*x).to_le_bytes() {
-                    hex.push_str(&format!("{byte:02x}"));
-                }
-            }
-            for (n, line) in hex.as_bytes().chunks(256).enumerate() {
-                println!("basis {n:03} {}", std::str::from_utf8(line).unwrap());
+                panic!("pet_mean.bin is out of date: replace it with the pet-mean lines above");
             }
         }
 
-        // The shipped basis, grouped exactly as the app does: three cats of
+        // Pets described and grouped exactly as the app does: three cats of
         // different types must come out as three pets.
-        // DINOv2's class token, as the app describes pets.
         let described: Vec<(usize, Vec<f32>)> =
             pets_d.iter().map(|(b, d)| (*b, d[0].clone())).collect();
         let shipped: Vec<(usize, Vec<f32>)> = described
