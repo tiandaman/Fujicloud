@@ -101,6 +101,10 @@ jobs:
       # release never blocks getting an installer.
       - name: Core tests on Windows (incl. ONNX Runtime)
         run: cargo test -p fuji-core
+      # Movie posters without File Explorer's help: a real H.264 clip is
+      # decoded with Media Foundation.
+      - name: Movie frames on Windows
+        run: cargo test -p fuji-core -- --ignored --nocapture real_movie
       - uses: actions/cache@v4
         with:
           path: .models

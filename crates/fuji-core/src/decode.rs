@@ -54,19 +54,82 @@ pub fn image_at(path: &Path, kind: Kind, long_edge: u32) -> Result<Rgb, Error> {
     }
 }
 
-/// A DNG's JPEG preview, colour-managed and turned upright.
-fn dng(path: &Path, long_edge: u32) -> Result<Rgb, Error> {
-    let (jpeg, orientation) = crate::dng::preview(path)?;
-    let (mut data, w, h) = crate::thumbs::decode_scaled(&jpeg, long_edge)?;
-    if let Some(icc) = jpeg_icc(&jpeg) {
-        to_srgb(&mut data, &icc);
+/// Where the largest JPEG picture embedded in `bytes` starts (EXIF
+/// thumbnails, RAW and DNG previews), if one decodes. The file's own start
+/// is skipped: this is for when the file itself couldn't be read.
+pub fn embedded_jpeg(bytes: &[u8]) -> Option<usize> {
+    let mut best: Option<(u64, usize)> = None;
+    let mut from = 1;
+    for _ in 0..64 {
+        let Some(found) = bytes
+            .get(from..)?
+            .windows(3)
+            .position(|w| w == [0xFF, 0xD8, 0xFF])
+        else {
+            break;
+        };
+        let at = from + found;
+        from = at + 3;
+        let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(&bytes[at..]));
+        let Some(area) = d
+            .read_info()
+            .ok()
+            .and_then(|()| d.info())
+            .map(|i| i.width as u64 * i.height as u64)
+        else {
+            continue;
+        };
+        if area >= 32 * 32
+            && best.is_none_or(|b| area > b.0)
+            && crate::thumbs::decode_scaled(&bytes[at..], 64).is_ok()
+        {
+            best = Some((area, at));
+        }
     }
+    best.map(|b| b.1)
+}
+
+/// A DNG's preview, colour-managed and turned upright.
+fn dng(path: &Path, long_edge: u32) -> Result<Rgb, Error> {
+    use crate::dng::Picture;
+    let (picture, orientation) = crate::dng::preview(path)?;
+    let (data, w, h) = match picture {
+        Picture::Jpeg(jpeg) => {
+            let (mut data, w, h) = crate::thumbs::decode_scaled(&jpeg, long_edge)?;
+            if let Some(icc) = jpeg_icc(&jpeg) {
+                to_srgb(&mut data, &icc);
+            }
+            (data, w, h)
+        }
+        Picture::Rgb(rgb) => (rgb.data, rgb.width, rgb.height),
+        Picture::Jxl(bytes) => jxl(&bytes)?,
+    };
     let (data, width, height) = crate::thumbs::orient(data, w, h, orientation);
     Ok(Rgb {
         data,
         width,
         height,
     })
+}
+
+/// A JPEG XL picture as 8-bit sRGB: `(pixels, width, height)`.
+fn jxl(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), Error> {
+    let jxl_err = |e: Box<dyn std::error::Error + Send + Sync>| err(format!("JPEG XL: {e}"));
+    let mut image = jxl_oxide::JxlImage::builder()
+        .read(std::io::Cursor::new(bytes))
+        .map_err(jxl_err)?;
+    if image.width() as u64 * image.height() as u64 > crate::MAX_PIXELS {
+        return Err(err("JPEG XL picture too large"));
+    }
+    image.request_color_encoding(jxl_oxide::EnumColourEncoding::srgb(
+        jxl_oxide::RenderingIntent::Relative,
+    ));
+    let render = image.render_frame(0).map_err(jxl_err)?;
+    let mut stream = render.stream_no_alpha();
+    let (w, h, channels) = (stream.width(), stream.height(), stream.channels() as usize);
+    let mut samples = vec![0u8; w as usize * h as usize * channels];
+    stream.write_to_buffer::<u8>(&mut samples);
+    Ok((to_rgb(&samples, channels, channels == 4, Alpha::None), w, h))
 }
 
 /// What a file really holds when it isn't what its name says. Phones and
@@ -158,13 +221,7 @@ fn png(bytes: &[u8]) -> Result<Rgb, Error> {
     let channels = frame.color_type.samples();
     let data = match channels {
         3 => buf,
-        _ => buf
-            .chunks_exact(channels)
-            .flat_map(|px| match px.len() {
-                1 | 2 => [px[0]; 3],
-                _ => [px[0], px[1], px[2]],
-            })
-            .collect(),
+        _ => to_rgb(&buf, channels, false, Alpha::Straight),
     };
     Ok(Rgb {
         data,
@@ -287,22 +344,67 @@ fn tiff(path: &Path) -> Result<Rgb, Error> {
         .flatten()
         .unwrap_or(1);
     let icc = d.get_tag_u8_vec(tiff::tags::Tag::IccProfile).ok();
+    let extra_samples = d.get_tag_u16_vec(tiff::tags::Tag::ExtraSamples).ok();
     let color = d.colortype().map_err(tiff_err)?;
-    // Samples as 8-bit: 16-bit keeps its high byte.
-    let samples: Vec<u8> = match d.read_image().map_err(tiff_err)? {
-        D::U8(v) => v,
-        D::U16(v) => v.into_iter().map(|s| (s >> 8) as u8).collect(),
-        _ => return Err(err("floating-point TIFFs aren't supported")),
-    };
-    let (channels, cmyk) = match color {
-        C::RGB(_) => (3, false),
-        C::RGBA(_) => (4, false),
-        C::Gray(_) => (1, false),
-        C::GrayA(_) => (2, false),
-        C::CMYK(_) => (4, true),
+    // Every plane: Photoshop's "Per Channel" pixel order stores each colour
+    // separately.
+    let mut result = D::U8(Vec::new());
+    let layout = d.read_image_to_buffer(&mut result).map_err(tiff_err)?;
+    let (channels, bits) = match color {
+        C::RGB(b) | C::YCbCr(b) => (3, b),
+        C::RGBA(b) | C::CMYK(b) => (4, b),
+        C::Gray(b) => (1, b),
+        C::GrayA(b) => (2, b),
+        C::CMYKA(b) => (5, b),
+        C::Multiband {
+            bit_depth,
+            num_samples,
+        } => (num_samples as usize, bit_depth),
         other => return Err(err(format!("TIFF colour type {other:?} isn't supported"))),
     };
-    let mut data = to_rgb(&samples, channels, cmyk);
+    // Samples as 8-bit.
+    let mut samples: Vec<u8> = match result {
+        D::U8(v) if bits < 8 => widen_bits(&v, w, h, channels, bits, layout.row_stride),
+        D::U8(v) => v,
+        D::U16(v) => v.into_iter().map(|s| (s >> 8) as u8).collect(),
+        D::U32(v) => v.into_iter().map(|s| (s >> 24) as u8).collect(),
+        D::I8(v) => v.into_iter().map(|s| (s as i16 + 128) as u8).collect(),
+        D::I16(v) => v
+            .into_iter()
+            .map(|s| ((s as i32 + 32768) >> 8) as u8)
+            .collect(),
+        // Floating point (Photoshop's 32 bits per channel) is linear light.
+        D::F16(v) => v.into_iter().map(|s| linear_to_srgb8(s.to_f32())).collect(),
+        D::F32(v) => v.into_iter().map(linear_to_srgb8).collect(),
+        D::F64(v) => v.into_iter().map(|s| linear_to_srgb8(s as f32)).collect(),
+        _ => return Err(err("this TIFF's sample format isn't supported")),
+    };
+    let pixels = w as usize * h as usize;
+    if layout.planes > 1 {
+        if samples.len() < pixels * channels {
+            return Err(err("this TIFF is too large to read"));
+        }
+        samples = (0..pixels)
+            .flat_map(|i| (0..channels).map(move |c| (c, i)))
+            .map(|(c, i)| samples[c * pixels + i])
+            .collect();
+    }
+    if samples.len() < pixels * channels {
+        return Err(err("this TIFF holds less picture than its size says"));
+    }
+    let cmyk = matches!(color, C::CMYK(_) | C::CMYKA(_));
+    let alpha = match extra_samples.as_deref() {
+        Some([1, ..]) => Alpha::Premultiplied,
+        Some([2, ..]) => Alpha::Straight,
+        // Unspecified extra samples aren't transparency.
+        Some(_) => Alpha::None,
+        None if matches!(color, C::RGBA(_) | C::GrayA(_)) => Alpha::Straight,
+        None => Alpha::None,
+    };
+    let mut data = match color {
+        C::YCbCr(_) => ycbcr_to_rgb(&samples),
+        _ => to_rgb(&samples, channels, cmyk, alpha),
+    };
     if let Some(icc) = icc.filter(|_| !cmyk) {
         to_srgb(&mut data, &icc);
     }
@@ -314,17 +416,103 @@ fn tiff(path: &Path) -> Result<Rgb, Error> {
     })
 }
 
-/// Interleaved samples (1–4 per pixel) → packed RGB.
-fn to_rgb(samples: &[u8], channels: usize, cmyk: bool) -> Vec<u8> {
+/// 1, 2 or 4-bit samples (rows padded to whole bytes) as 8-bit.
+fn widen_bits(
+    packed: &[u8],
+    w: u32,
+    h: u32,
+    channels: usize,
+    bits: u8,
+    row_stride: Option<std::num::NonZeroUsize>,
+) -> Vec<u8> {
+    let per_row = w as usize * channels;
+    let stride = row_stride.map_or((per_row * bits as usize).div_ceil(8), |s| s.get());
+    let max = (1u16 << bits) - 1;
+    let mut out = Vec::with_capacity(per_row * h as usize);
+    for row in packed.chunks(stride).take(h as usize) {
+        for i in 0..per_row {
+            let bit = i * bits as usize;
+            let byte = row.get(bit / 8).copied().unwrap_or(0);
+            let shift = 8 - bits as usize - bit % 8;
+            let v = (byte >> shift) as u16 & max;
+            out.push((v * 255 / max) as u8);
+        }
+    }
+    out
+}
+
+/// A linear-light sample (0–1) as 8-bit sRGB.
+fn linear_to_srgb8(v: f32) -> u8 {
+    let v = if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let s = if v <= 0.003_130_8 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
+    (s * 255.0).round() as u8
+}
+
+/// Full-range YCbCr (as JPEG uses) → RGB.
+fn ycbcr_to_rgb(samples: &[u8]) -> Vec<u8> {
+    samples
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .flat_map(|&[y, cb, cr]| {
+            let (y, cb, cr) = (y as f32, cb as f32 - 128.0, cr as f32 - 128.0);
+            [
+                y + 1.402 * cr,
+                y - 0.344_136 * cb - 0.714_136 * cr,
+                y + 1.772 * cb,
+            ]
+            .map(|v| v.round().clamp(0.0, 255.0) as u8)
+        })
+        .collect()
+}
+
+/// What the sample after the colour ones means.
+#[derive(Clone, Copy, PartialEq)]
+enum Alpha {
+    /// Nothing to do with transparency (or no such sample).
+    None,
+    Straight,
+    /// Colour already multiplied by it.
+    Premultiplied,
+}
+
+/// Interleaved samples (1–5 per pixel) → packed RGB. Transparent parts are
+/// shown on white, as other viewers do.
+fn to_rgb(samples: &[u8], channels: usize, cmyk: bool, alpha: Alpha) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len() / channels * 3);
+    let colour = if cmyk {
+        4
+    } else if channels <= 2 {
+        1
+    } else {
+        3
+    };
     for px in samples.chunks_exact(channels) {
-        match (channels, cmyk) {
-            (4, true) => {
+        let rgb = match (channels, cmyk) {
+            (4 | 5, true) => {
                 let k = 255 - px[3] as u16;
-                out.extend([0, 1, 2].map(|c| ((255 - px[c] as u16) * k / 255) as u8));
+                [0, 1, 2].map(|c| ((255 - px[c] as u16) * k / 255) as u8)
             }
-            (1 | 2, _) => out.extend([px[0]; 3]),
-            _ => out.extend_from_slice(&px[..3]),
+            (1 | 2, _) => [px[0]; 3],
+            _ => [px[0], px[1], px[2]],
+        };
+        match px.get(colour).filter(|_| alpha != Alpha::None) {
+            Some(&a) if a < 255 => {
+                let (a, clear) = (a as u16, 255 - a as u16);
+                out.extend(rgb.map(|v| match alpha {
+                    Alpha::Premultiplied => (v as u16 + clear).min(255) as u8,
+                    _ => ((v as u16 * a + 255 * clear) / 255) as u8,
+                }));
+            }
+            _ => out.extend(rgb),
         }
     }
     out
@@ -489,7 +677,7 @@ fn psd(path: &Path) -> Result<Rgb, Error> {
     if cmyk {
         samples.iter_mut().for_each(|s| *s = 255 - *s);
     }
-    let mut data = to_rgb(&samples, planes, cmyk);
+    let mut data = to_rgb(&samples, planes, cmyk, Alpha::None);
 
     // Without "Maximize compatibility" the composite is blank; the small
     // embedded thumbnail is better than a white rectangle.

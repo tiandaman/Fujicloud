@@ -28,6 +28,8 @@ thiserror = "2"
 tiff = "0.11"
 heic-decoder = "=0.1.1"
 png = "0.18"
+# JPEG XL previews in DNG 1.7 files (newer ProRAW, Adobe DNG Converter).
+jxl-oxide = { version = "0.12", default-features = false }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 half = { version = "2", optional = true }
 ort = { version = "=2.0.0-rc.15", optional = true, features = ["half"] }

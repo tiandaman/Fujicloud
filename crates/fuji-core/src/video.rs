@@ -124,6 +124,32 @@ fn video_size(moov: &[u8]) -> Option<(u32, u32)> {
         })
 }
 
+/// How the video track is turned for display, as an EXIF orientation (1, 3,
+/// 6 or 8): iPhones film portrait sideways and say so in the matrix.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn video_orientation(moov: &[u8]) -> u16 {
+    children(moov)
+        .into_iter()
+        .filter(|(k, _)| k == b"trak")
+        .find_map(|(_, trak)| {
+            let tkhd = child(trak, b"tkhd")?;
+            let matrix = if tkhd.first()? == &1 { 52 } else { 40 };
+            // Sound tracks have no size.
+            if be32(tkhd, matrix + 36)? == 0 {
+                return None;
+            }
+            let at = |i: usize| be32(tkhd, matrix + 4 * i).map(|v| (v as i32).signum());
+            Some(match (at(0)?, at(1)?, at(3)?, at(4)?) {
+                // (a, b, c, d): right becomes down, i.e. turned clockwise.
+                (0, 1, -1, 0) => 6,
+                (0, -1, 1, 0) => 8,
+                (-1, 0, 0, -1) => 3,
+                _ => 1,
+            })
+        })
+        .unwrap_or(1)
+}
+
 /// QuickTime `meta` items: `keys` names, `ilst` values (UTF-8 only).
 fn apple_items(moov: &[u8]) -> Vec<(String, String)> {
     let Some(meta) = child(moov, b"meta") else {
@@ -238,9 +264,130 @@ pub fn read(path: &Path) -> Result<PhotoMeta, Error> {
 /// A frame of the movie as upright RGB, at least `long_edge` on its long
 /// side where Windows can manage it. Uses the same thumbnail handlers as
 /// File Explorer, so any format with a codec installed works (iPhone HEVC
-/// needs Microsoft's free HEVC Video Extensions).
+/// needs Microsoft's free HEVC Video Extensions). When Explorer won't make
+/// one (thumbnails switched off, or a share it won't preview), a frame is
+/// decoded directly instead.
 #[cfg(windows)]
 pub fn poster(path: &Path, long_edge: u32) -> Result<crate::decode::Rgb, Error> {
+    shell_poster(path, long_edge)
+        .or_else(|shell| decoded_frame(path).map_err(|frame| bad(&format!("{shell}; {frame}"))))
+}
+
+/// A frame decoded with Media Foundation, about a second in (first frames
+/// are often black), turned upright by the track's matrix.
+#[cfg(windows)]
+pub fn decoded_frame(path: &Path) -> Result<crate::decode::Rgb, Error> {
+    use windows::Win32::Media::MediaFoundation::*;
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+    use windows::Win32::System::Variant::VT_I8;
+    use windows::core::{GUID, HSTRING};
+
+    let orientation = read_moov(path).map_or(1, |moov| video_orientation(&moov));
+    let mf = |e: windows::core::Error| bad(&format!("Windows couldn't decode a frame ({e})"));
+    // SAFETY: Media Foundation calls on this thread; the buffer is unlocked
+    // and everything started is shut down before returning.
+    unsafe {
+        let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let started = MFStartup(MF_VERSION, MFSTARTUP_FULL).is_ok();
+        let result = (|| -> Result<crate::decode::Rgb, Error> {
+            let mut attributes = None;
+            MFCreateAttributes(&mut attributes, 1).map_err(mf)?;
+            let attributes = attributes.ok_or_else(|| bad("no attributes"))?;
+            // Let the reader convert whatever the codec gives to RGB.
+            attributes
+                .SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)
+                .map_err(mf)?;
+            let reader = MFCreateSourceReaderFromURL(&HSTRING::from(path.as_os_str()), &attributes)
+                .map_err(mf)?;
+            let stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+            reader
+                .SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)
+                .map_err(mf)?;
+            reader.SetStreamSelection(stream, true).map_err(mf)?;
+            let rgb = MFCreateMediaType().map_err(mf)?;
+            rgb.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+                .map_err(mf)?;
+            rgb.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32)
+                .map_err(mf)?;
+            reader.SetCurrentMediaType(stream, None, &rgb).map_err(mf)?;
+            let current = reader.GetCurrentMediaType(stream).map_err(mf)?;
+            let size = current.GetUINT64(&MF_MT_FRAME_SIZE).map_err(mf)?;
+            let (w, h) = ((size >> 32) as usize, (size & 0xFFFF_FFFF) as usize);
+            if w == 0 || h == 0 || w * h > crate::MAX_PIXELS as usize {
+                return Err(bad("odd frame size"));
+            }
+            let stride = current
+                .GetUINT32(&MF_MT_DEFAULT_STRIDE)
+                .map_or(w as isize * 4, |s| s as i32 as isize);
+
+            let duration = reader
+                .GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION)
+                .map_or(0, |v| v.Anonymous.Anonymous.Anonymous.uhVal);
+            // 100 ns units: a second in, or a tenth of a short clip.
+            let mut at = PROPVARIANT::default();
+            (*at.Anonymous.Anonymous).vt = VT_I8;
+            (*at.Anonymous.Anonymous).Anonymous.hVal = (duration / 10).min(10_000_000) as i64;
+            let _ = reader.SetCurrentPosition(&GUID::zeroed(), &at);
+
+            for _ in 0..240 {
+                let mut flags = 0u32;
+                let mut sample = None;
+                reader
+                    .ReadSample(stream, 0, None, Some(&mut flags), None, Some(&mut sample))
+                    .map_err(mf)?;
+                if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+                    break;
+                }
+                let Some(sample) = sample else {
+                    continue;
+                };
+                let buffer = sample.ConvertToContiguousBuffer().map_err(mf)?;
+                let mut bytes = std::ptr::null_mut();
+                let mut len = 0u32;
+                buffer.Lock(&mut bytes, None, Some(&mut len)).map_err(mf)?;
+                let data = std::slice::from_raw_parts(bytes, len as usize);
+                let row = stride.unsigned_abs();
+                let mut out = Vec::with_capacity(w * h * 3);
+                for y in 0..h {
+                    // A negative stride means the rows run bottom-up.
+                    let line = if stride < 0 { h - 1 - y } else { y };
+                    let Some(px) = data.get(line * row..line * row + w * 4) else {
+                        break;
+                    };
+                    out.extend(
+                        px.as_chunks::<4>()
+                            .0
+                            .iter()
+                            .flat_map(|p| [p[2], p[1], p[0]]),
+                    );
+                }
+                let _ = buffer.Unlock();
+                if out.len() < w * h * 3 {
+                    return Err(bad("short frame"));
+                }
+                let (data, width, height) =
+                    crate::thumbs::orient(out, w as u32, h as u32, orientation);
+                return Ok(crate::decode::Rgb {
+                    data,
+                    width,
+                    height,
+                });
+            }
+            Err(bad("no frame"))
+        })();
+        if started {
+            let _ = MFShutdown();
+        }
+        if com {
+            CoUninitialize();
+        }
+        result
+    }
+}
+
+#[cfg(windows)]
+fn shell_poster(path: &Path, long_edge: u32) -> Result<crate::decode::Rgb, Error> {
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::{
         BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC,
@@ -573,6 +720,48 @@ pub(crate) mod tests {
         assert_eq!(meta.lat, Some(64.1466));
         assert_eq!(meta.lon, Some(-21.9426));
         assert_eq!(meta.altitude, Some(12.345));
+    }
+
+    #[test]
+    fn a_movie_says_which_way_up_it_is() {
+        let file = iphone_clip();
+        let path = std::env::temp_dir().join(format!("fuji-video-o-{}.mov", std::process::id()));
+        std::fs::write(&path, &file).unwrap();
+        let moov = read_moov(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        // iPhone portrait: turned clockwise, past the sound track.
+        assert_eq!(video_orientation(&moov), 6);
+        assert_eq!(video_orientation(&[]), 1);
+    }
+
+    /// The Media Foundation frame grabber on a real H.264 clip (Windows,
+    /// downloaded; run with `--ignored`).
+    #[test]
+    #[ignore]
+    #[cfg(all(windows, feature = "smart-search"))]
+    fn real_movie_frames_are_decoded() {
+        let dir = std::env::temp_dir().join("fujicloud-movie-test");
+        let path = dir.join("movie_5.mp4");
+        crate::embed::download_files(
+            &[(
+                "https://raw.githubusercontent.com/web-platform-tests/wpt/master/media/movie_5.mp4",
+                path.clone(),
+            )],
+            &|_, _| {},
+        )
+        .expect("download clip");
+        let frame = decoded_frame(&path).expect("frame");
+        println!("frame {}x{}", frame.width, frame.height);
+        assert!(frame.width >= 100 && frame.height >= 100);
+        // Not a blank frame.
+        let (lo, hi) = frame
+            .data
+            .iter()
+            .fold((255u8, 0u8), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+        assert!(hi - lo > 40, "flat frame {lo}..{hi}");
+        // And the full poster path, Explorer first.
+        let poster = poster(&path, 512).expect("poster");
+        println!("poster {}x{}", poster.width, poster.height);
     }
 
     #[test]

@@ -107,11 +107,28 @@ impl Cache {
     }
 
     fn generate(&self, src: &Source, size: Size, path: PathBuf) -> Result<PathBuf, Error> {
+        match self.generate_from_picture(src, size, &path) {
+            // A damaged or unusual file can usually still show the small
+            // picture embedded in it (EXIF thumbnail, RAW or DNG preview).
+            Err(e @ (Error::Decode(_) | Error::Unsupported(_))) if src.kind != Kind::Video => {
+                match embedded_renditions(src.path)? {
+                    Some(r) => {
+                        log::warn!("{}: {e}; showing its embedded preview", src.path.display());
+                        self.store(src, &r)?;
+                        Ok(path)
+                    }
+                    None => Err(e),
+                }
+            }
+            other => other.map(|()| path),
+        }
+    }
+
+    fn generate_from_picture(&self, src: &Source, size: Size, path: &Path) -> Result<(), Error> {
         // HEIF and PSD/TIFF edits are expensive to decode (and may be large
         // network reads): make both renditions from one decode.
         if !matches!(src.kind, Kind::Jpeg | Kind::Raf) {
-            self.store_decoded(src, decode::image(src.path, src.kind)?)?;
-            return Ok(path);
+            return self.store_decoded(src, decode::image(src.path, src.kind)?);
         }
 
         // A preview is a much better source than a 40MP original when
@@ -124,12 +141,11 @@ impl Cache {
             None => source_jpeg(src)?,
         };
         if preview.is_none() && decode::disguise(&bytes).is_some() {
-            self.store_decoded(src, decode::disguised(&bytes)?)?;
-            return Ok(path);
+            return self.store_decoded(src, decode::disguised(&bytes)?);
         }
         let out = render(&bytes, size.long_edge(), size.quality(), preview.is_none())?;
-        write_atomic(&path, &out.jpeg)?;
-        Ok(path)
+        write_atomic(path, &out.jpeg)?;
+        Ok(())
     }
 
     /// Stores both renditions of an already-decoded, upright image.
@@ -164,6 +180,29 @@ impl Cache {
         fs::remove_dir_all(&self.root)?;
         fs::create_dir_all(&self.root)
     }
+}
+
+/// Renditions from the largest JPEG picture embedded in a file, for files
+/// whose own picture can't be read. Turned as the file says.
+fn embedded_renditions(path: &Path) -> Result<Option<Renditions>, Error> {
+    // Reading a huge file whole just for this isn't worth it.
+    if fs::metadata(path)?.len() > 400 << 20 {
+        return Ok(None);
+    }
+    let bytes = fs::read(path)?;
+    let Some(at) = decode::embedded_jpeg(&bytes) else {
+        return Ok(None);
+    };
+    let orientation = exif::Reader::new()
+        .read_from_container(&mut Cursor::new(&bytes))
+        .map_or(1, |e| meta::orientation(&e));
+    let (rgb, w, h) = decode_scaled(&bytes[at..], Size::Preview.long_edge())?;
+    let (data, width, height) = orient(rgb, w, h, orientation);
+    Ok(Some(render_rgb_all(decode::Rgb {
+        data,
+        width,
+        height,
+    })?))
 }
 
 /// The JPEG bytes a rendition is built from.
@@ -364,7 +403,31 @@ pub(crate) fn decode_scaled(jpeg: &[u8], long_edge: u32) -> Result<(Vec<u8>, u32
         .scale(target_w as u16, target_h as u16)
         .map_err(decode_err)?;
     let pixels = decoder.decode().map_err(decode_err)?;
-    Ok((to_rgb(pixels, info.pixel_format), dw as u32, dh as u32))
+    let adobe = has_adobe_marker(jpeg);
+    Ok((
+        to_rgb(pixels, info.pixel_format, adobe),
+        dw as u32,
+        dh as u32,
+    ))
+}
+
+/// Whether a JPEG carries Adobe's APP14 segment, as Photoshop's do. Its CMYK
+/// is stored inverted (0 = full ink).
+fn has_adobe_marker(jpeg: &[u8]) -> bool {
+    let mut at = 2;
+    while at + 4 <= jpeg.len() && jpeg[at] == 0xFF {
+        let marker = jpeg[at + 1];
+        // Start of scan: no more header segments.
+        if marker == 0xDA {
+            break;
+        }
+        let len = u16::from_be_bytes([jpeg[at + 2], jpeg[at + 3]]) as usize;
+        if marker == 0xEE && jpeg[at + 4..].starts_with(b"Adobe") {
+            return true;
+        }
+        at += 2 + len;
+    }
+    false
 }
 
 /// Fits upright sRGB pixels inside `long_edge` and encodes them as JPEG.
@@ -441,7 +504,7 @@ pub fn fit(w: u32, h: u32, long_edge: u32) -> (u32, u32) {
     )
 }
 
-fn to_rgb(pixels: Vec<u8>, format: jpeg_decoder::PixelFormat) -> Vec<u8> {
+fn to_rgb(pixels: Vec<u8>, format: jpeg_decoder::PixelFormat, adobe: bool) -> Vec<u8> {
     use jpeg_decoder::PixelFormat as P;
     match format {
         P::RGB24 => pixels,
@@ -453,12 +516,15 @@ fn to_rgb(pixels: Vec<u8>, format: jpeg_decoder::PixelFormat) -> Vec<u8> {
             .iter()
             .flat_map(|&[hi, _]| [hi, hi, hi])
             .collect(),
-        // Adobe-style inverted CMYK, which is what jpeg-decoder hands back.
+        // jpeg-decoder inverts what's stored (and turns YCCK into the same
+        // form). Photoshop stores CMYK inverted, so for its files (marked
+        // Adobe) that gives ink amounts; others store ink, now inverted.
         P::CMYK32 => pixels
             .as_chunks::<4>()
             .0
             .iter()
-            .flat_map(|&[c, m, y, k]| {
+            .flat_map(|&px| {
+                let [c, m, y, k] = if adobe { px.map(|v| 255 - v) } else { px };
                 let k = k as u16;
                 [
                     (c as u16 * k / 255) as u8,
@@ -519,6 +585,70 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file whose own picture is damaged still gets a thumbnail, from the
+    /// preview embedded in it.
+    #[test]
+    fn damaged_photos_fall_back_to_their_embedded_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let preview = crate::test_jpeg(320, 240, None);
+        // A JPEG start that leads nowhere, the preview, then junk.
+        let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x04, 0xFF, 0xFF];
+        bytes.extend_from_slice(&preview);
+        bytes.extend_from_slice(&[0x55; 4096]);
+        let path = dir.path().join("damaged.jpg");
+        fs::write(&path, &bytes).unwrap();
+        let cache = Cache::new(dir.path().join("cache")).unwrap();
+        let src = Source {
+            path: &path,
+            kind: Kind::Jpeg,
+            size: bytes.len() as u64,
+            mtime: 1,
+        };
+        let thumb = cache.ensure(&src, Size::Thumb).unwrap();
+        let image = decode_rendition(&fs::read(thumb).unwrap(), 4096).unwrap();
+        assert_eq!((image.width, image.height), (320, 240));
+        assert!(cache.get(&src, Size::Preview).is_some());
+
+        // Nothing embedded: still an error.
+        fs::write(&path, [0xFF, 0xD8, 0xFF, 0xC0, 0, 4, 1, 2]).unwrap();
+        let src = Source { size: 8, ..src };
+        assert!(cache.ensure(&src, Size::Thumb).is_err());
+    }
+
+    /// Photoshop's CMYK JPEGs (stored inverted, marked Adobe), plain and
+    /// YCCK-coded, come out in the right colours.
+    #[test]
+    fn photoshop_cmyk_jpegs_keep_their_colours() {
+        // Ink amounts: red (M+Y), cyan, white (no ink), black (K).
+        let inks: [[u8; 4]; 4] = [[0, 255, 255, 0], [255, 0, 0, 0], [0; 4], [0, 0, 0, 255]];
+        let expect = [[255, 0, 0], [0, 255, 255], [255, 255, 255], [0, 0, 0]];
+        for coding in [
+            jpeg_encoder::ColorType::Cmyk,
+            jpeg_encoder::ColorType::CmykAsYcck,
+        ] {
+            // 4 blocks of 16×16, one per ink. The encoder stores them
+            // inverted and marks the file Adobe, as Photoshop does.
+            let (w, h) = (64u16, 16u16);
+            let stored: Vec<u8> = (0..h as usize * w as usize)
+                .flat_map(|i| inks[i % w as usize / 16])
+                .collect();
+            let mut jpeg = Vec::new();
+            jpeg_encoder::Encoder::new(&mut jpeg, 95)
+                .encode(&stored, w, h, coding)
+                .unwrap();
+            assert!(has_adobe_marker(&jpeg));
+            let (rgb, dw, _) = decode_scaled(&jpeg, 64).unwrap();
+            for (n, want) in expect.iter().enumerate() {
+                let at = (8 * dw as usize + n * 16 + 8) * 3;
+                let got = &rgb[at..at + 3];
+                assert!(
+                    got.iter().zip(want).all(|(g, w)| g.abs_diff(*w) < 12),
+                    "{coding:?} ink {n}: {got:?}, want {want:?}"
+                );
+            }
+        }
+    }
 
     /// A JPEG whose header claims an enormous size is refused before any big
     /// buffer is allocated.
