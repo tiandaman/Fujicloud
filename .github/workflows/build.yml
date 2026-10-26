@@ -104,6 +104,17 @@ jobs:
             target/release/bundle/nsis/*.exe
             target/release/bundle/msi/*.msi
           if-no-files-found: error
+      # The installed app, started with a library of awkward files and every
+      # analysis on, must still be running minutes later.
+      - name: App starts and keeps running
+        shell: pwsh
+        run: pwsh scripts/smoke-test.ps1 -Seconds 180 -Screens smoke-screens
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test-screens
+          path: smoke-screens
+          if-no-files-found: ignore
       # The checks below run after the upload, so a lint added in a new Rust
       # release never blocks getting an installer.
       - name: Core tests on Windows (incl. ONNX Runtime)

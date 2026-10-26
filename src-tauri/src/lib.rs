@@ -84,6 +84,7 @@ struct Bootstrap {
 
 #[tauri::command]
 fn bootstrap(app: AppHandle, state: Shared) -> CmdResult<Bootstrap> {
+    log::info!("window opened");
     let settings = state.settings.read().clone();
     let editor = settings
         .editor_path
@@ -1039,6 +1040,10 @@ fn open_log_folder(app: AppHandle) -> CmdResult<()> {
 // ---- app ---------------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+fn on(yes: bool) -> &'static str {
+    if yes { "on" } else { "off" }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1094,6 +1099,18 @@ pub fn run() {
                 state.effects.store(mica, Ordering::Relaxed);
             }
 
+            {
+                // What this run will do in the background, for the log.
+                let s = state.settings.read();
+                log::info!(
+                    "library open: {} folders; smart search {}, graphics card {}, faces {}, pets {}",
+                    state.lib.sources().map_or(0, |s| s.len()),
+                    on(s.smart_search),
+                    on(s.smart_gpu),
+                    on(s.faces),
+                    on(s.pets)
+                );
+            }
             app.manage(state.clone());
             sidecars::start(state.clone());
             sidecars::flush(&state);

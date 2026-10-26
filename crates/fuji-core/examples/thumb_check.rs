@@ -27,6 +27,18 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn main() {
+    // On a thread like the app's image workers (Rust's default 2 MB stack),
+    // not the bigger main thread: a decoder that needs more stack must show
+    // up here, since in the app it takes the whole program down.
+    std::thread::Builder::new()
+        .name("fuji-img-check".into())
+        .spawn(check)
+        .expect("spawn")
+        .join()
+        .expect("thumb_check crashed");
+}
+
+fn check() {
     let mut args = std::env::args().skip(1);
     let (mut dirs, mut keep) = (Vec::new(), None);
     while let Some(a) = args.next() {
