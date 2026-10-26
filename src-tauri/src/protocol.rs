@@ -156,6 +156,11 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
         mtime,
     };
 
+    // A movie converted for the window (see `prepare_movie`), from the cache.
+    if kind == "v" {
+        return movie(&state.cache.movie_path(&src), request);
+    }
+
     // While the Shield is off, serve what the cache holds and fail fast
     // otherwise, so the window shows a placeholder instead of waiting.
     if state.reach.covers(&file) {

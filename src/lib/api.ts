@@ -47,6 +47,9 @@ export interface Api {
   /** Starts dragging the photos' files out of the window, into another app. */
   dragOut(ids: number[]): Promise<void>;
   openFolder(path: string): Promise<void>;
+  /** Converts a movie the window can't play; `convertedUrl` then serves it. */
+  prepareMovie(id: number): Promise<void>;
+  convertedUrl(p: Photo): string;
   openInEditor(ids: number[]): Promise<string>;
   reveal(id: number): Promise<void>;
   openDefault(id: number): Promise<void>;
@@ -121,6 +124,8 @@ function tauriApi(): Api {
       await startDrag({ item: files.paths, icon: files.icon });
     },
     openFolder: (path) => invoke('open_folder', { path }),
+    prepareMovie: (id) => invoke('prepare_movie', { id }),
+    convertedUrl: (p) => `${base}/v/${p.id}?v=${p.mtime}`,
     openInEditor: (ids) => invoke('open_in_editor', { ids }),
     reveal: (id) => invoke('reveal', { id }),
     openDefault: (id) => invoke('open_default', { id }),

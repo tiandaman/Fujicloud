@@ -332,6 +332,152 @@ pub fn poster(_: &Path, _: u32) -> Result<crate::decode::Rgb, Error> {
     Err(Error::Unsupported(crate::Kind::Video))
 }
 
+/// Re-encodes a movie as H.264/AAC MP4 with Windows' own codecs, for the
+/// web view, which can't play every format Windows can (iPhone HEVC).
+/// `progress` gets 0–1.
+#[cfg(windows)]
+pub fn transcode_h264(src: &Path, dest: &Path, progress: &dyn Fn(f32)) -> Result<(), Error> {
+    use windows::Win32::Media::MediaFoundation::*;
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+    use windows::core::{GUID, HSTRING, IUnknown, Interface};
+
+    let mf = |e: windows::core::Error| bad(&format!("Windows couldn't convert the movie ({e})"));
+    // SAFETY: Media Foundation calls on this thread; everything started is
+    // shut down before returning.
+    unsafe {
+        let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let started = MFStartup(MF_VERSION, MFSTARTUP_FULL).is_ok();
+        let result = (|| -> Result<(), Error> {
+            let resolver = MFCreateSourceResolver().map_err(mf)?;
+            let mut kind = MF_OBJECT_INVALID;
+            let mut object: Option<IUnknown> = None;
+            resolver
+                .CreateObjectFromURL(
+                    &HSTRING::from(src.as_os_str()),
+                    (MF_RESOLUTION_MEDIASOURCE.0 | MF_RESOLUTION_READ.0) as u32,
+                    None,
+                    &mut kind,
+                    &mut object,
+                )
+                .map_err(mf)?;
+            let source: IMFMediaSource =
+                object.ok_or_else(|| bad("no movie"))?.cast().map_err(mf)?;
+            let duration = source
+                .CreatePresentationDescriptor()
+                .and_then(|pd| pd.GetUINT64(&MF_PD_DURATION))
+                .unwrap_or(0);
+
+            let attributes = || -> Result<IMFAttributes, Error> {
+                let mut a = None;
+                MFCreateAttributes(&mut a, 8).map_err(mf)?;
+                a.ok_or_else(|| bad("no attributes"))
+            };
+            let profile = MFCreateTranscodeProfile().map_err(mf)?;
+            let video = attributes()?;
+            video
+                .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+                .map_err(mf)?;
+            video
+                .SetUINT32(&MF_MT_AVG_BITRATE, 12_000_000)
+                .map_err(mf)?;
+            profile.SetVideoAttributes(&video).map_err(mf)?;
+            let audio = attributes()?;
+            audio
+                .SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_AAC)
+                .map_err(mf)?;
+            audio.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, 2).map_err(mf)?;
+            audio
+                .SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, 48_000)
+                .map_err(mf)?;
+            audio
+                .SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)
+                .map_err(mf)?;
+            audio
+                .SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24_000)
+                .map_err(mf)?;
+            profile.SetAudioAttributes(&audio).map_err(mf)?;
+            let container = attributes()?;
+            container
+                .SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MPEG4)
+                .map_err(mf)?;
+            // Size, frame rate and the rest as in the original.
+            container
+                .SetUINT32(
+                    &MF_TRANSCODE_ADJUST_PROFILE,
+                    MF_TRANSCODE_ADJUST_PROFILE_USE_SOURCE_ATTRIBUTES.0 as u32,
+                )
+                .map_err(mf)?;
+            profile.SetContainerAttributes(&container).map_err(mf)?;
+
+            let topology =
+                MFCreateTranscodeTopology(&source, &HSTRING::from(dest.as_os_str()), &profile)
+                    .map_err(mf)?;
+            let session = MFCreateMediaSession(None).map_err(mf)?;
+            session.SetTopology(0, &topology).map_err(mf)?;
+            session
+                .Start(&GUID::zeroed(), &PROPVARIANT::default())
+                .map_err(mf)?;
+            let clock: Option<IMFPresentationClock> =
+                session.GetClock().ok().and_then(|c| c.cast().ok());
+            let mut outcome = Ok(());
+            let mut closing = false;
+            loop {
+                let event = match session.GetEvent(MF_EVENT_FLAG_NO_WAIT) {
+                    Ok(event) => event,
+                    Err(e) if e.code() == MF_E_NO_EVENTS_AVAILABLE => {
+                        if let (Some(clock), true) = (&clock, duration > 0)
+                            && let Ok(t) = clock.GetTime()
+                        {
+                            progress((t as f64 / duration as f64).clamp(0.0, 1.0) as f32);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        continue;
+                    }
+                    Err(e) => {
+                        outcome = Err(mf(e));
+                        break;
+                    }
+                };
+                let kind = event.GetType().unwrap_or(0);
+                if let Ok(status) = event.GetStatus()
+                    && status.is_err()
+                    && outcome.is_ok()
+                {
+                    outcome = Err(mf(status.into()));
+                }
+                if kind == MESessionClosed.0 as u32 {
+                    break;
+                }
+                if (kind == MESessionEnded.0 as u32 || outcome.is_err()) && !closing {
+                    closing = true;
+                    if session.Close().is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = source.Shutdown();
+            let _ = session.Shutdown();
+            if outcome.is_ok() {
+                progress(1.0);
+            }
+            outcome
+        })();
+        if started {
+            let _ = MFShutdown();
+        }
+        if com {
+            CoUninitialize();
+        }
+        result
+    }
+}
+
+#[cfg(not(windows))]
+pub fn transcode_h264(_: &Path, _: &Path, _: &dyn Fn(f32)) -> Result<(), Error> {
+    Err(Error::Unsupported(crate::Kind::Video))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

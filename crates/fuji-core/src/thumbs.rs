@@ -83,6 +83,15 @@ impl Cache {
             .join(format!("{hash:016x}_{}.jpg", size.suffix()))
     }
 
+    /// Where a movie converted for playback is kept.
+    pub fn movie_path(&self, src: &Source) -> PathBuf {
+        let jpeg = self.path_for(src, Size::Preview);
+        let name = jpeg.file_name().unwrap_or_default().to_string_lossy();
+        self.root
+            .join("movies")
+            .join(name.replace(&format!("_{}.jpg", Size::Preview.suffix()), ".mp4"))
+    }
+
     pub fn get(&self, src: &Source, size: Size) -> Option<PathBuf> {
         let path = self.path_for(src, size);
         path.is_file().then_some(path)

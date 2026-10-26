@@ -21,7 +21,8 @@
         "center": true,
         "transparent": true,
         "theme": "Dark",
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-features=PlatformHEVCDecoderSupport --autoplay-policy=no-user-gesture-required"
       }
     ],
     "security": {

@@ -508,6 +508,14 @@ export function mockApi(): Api {
       return { files: ids.length, failed: [] };
     },
     dragOut: async () => {},
+    async prepareMovie(id) {
+      for (let i = 1; i <= 10; i++) {
+        await delay(120);
+        emit('movie-progress', { id, progress: i / 10 });
+      }
+      throw new Error('no converter in the browser preview');
+    },
+    convertedUrl: (p) => sceneFor(p),
     openFolder: async () => {},
     openInEditor: async () => 'Photoshop',
     reveal: async () => {},

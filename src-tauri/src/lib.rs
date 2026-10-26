@@ -508,6 +508,63 @@ fn recycles(_: &Path) -> bool {
     true
 }
 
+// ---- movies --------------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+struct MovieProgress {
+    id: i64,
+    /// 0–1.
+    progress: f32,
+}
+
+/// Converts a movie the window can't play (iPhone HEVC) to H.264 with
+/// Windows' own codecs, once; `/v/<id>` serves the result.
+#[tauri::command]
+async fn prepare_movie(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // One at a time: each one keeps the CPU (or GPU) busy.
+        static ONE: Mutex<()> = Mutex::new(());
+        let _one = ONE.lock();
+        let (path, kind, size, mtime) = state.lib.file_of(id).map_err(err)?;
+        if kind != Kind::Video {
+            return Err("Not a movie".to_owned());
+        }
+        reachable(&state, &path)?;
+        let src = thumbs::Source {
+            path: &path,
+            kind,
+            size,
+            mtime,
+        };
+        let dest = state.cache.movie_path(&src);
+        if dest.is_file() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(dest.parent().unwrap()).map_err(err)?;
+        let part = dest.with_extension("converting.mp4");
+        let _ = std::fs::remove_file(&part);
+        let last = Mutex::new(Instant::now());
+        let result = fuji_core::video::transcode_h264(&path, &part, &|progress| {
+            let mut last = last.lock();
+            if last.elapsed() > Duration::from_millis(200) || progress >= 1.0 {
+                *last = Instant::now();
+                let _ = app.emit("movie-progress", MovieProgress { id, progress });
+            }
+        });
+        match result {
+            Ok(()) => std::fs::rename(&part, &dest).map_err(err),
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                log::warn!("converting {}: {e}", path.display());
+                Err(e.to_string())
+            }
+        }
+    })
+    .await
+    .map_err(err)?
+}
+
 // ---- hand-off to other apps -------------------------------------------------
 
 #[derive(Serialize)]
@@ -1043,6 +1100,7 @@ pub fn run() {
             rebuild_thumbnails,
             delete_photos,
             find_duplicates,
+            prepare_movie,
             export_photos,
             drag_files,
             open_folder,

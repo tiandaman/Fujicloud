@@ -6,6 +6,7 @@
   import Icon from './Icon.svelte';
   import InfoPanel from './InfoPanel.svelte';
   import Stars from './Stars.svelte';
+  import type { Photo } from '../types';
 
   const INFO_W = 320;
   const PAD_TOP = 60;
@@ -29,6 +30,34 @@
   const live = $derived(store.liveMovie(photo));
   let playingLive = $state(false);
   let movieFailed = $state(false);
+  // Movies the window can't play (iPhone HEVC) are converted once by Windows.
+  let converted = $state<Record<number, boolean>>({});
+  let converting = $state<{ id: number; progress: number } | null>(null);
+  /** The converted copy came out sideways: turn it upright. */
+  let turned = $state(false);
+
+  const movieUrl = (p: Photo) => (converted[p.id] ? api.convertedUrl(p) : api.originalUrl(p));
+
+  async function cannotPlay(p: Photo) {
+    if (converted[p.id] || !api.native || converting) {
+      movieFailed = true;
+      return;
+    }
+    converting = { id: p.id, progress: 0 };
+    try {
+      await api.prepareMovie(p.id);
+      converted[p.id] = true;
+    } catch {
+      movieFailed = true;
+    } finally {
+      converting = null;
+    }
+  }
+
+  function checkTurn(e: Event, p: Photo) {
+    const v = e.currentTarget as HTMLVideoElement;
+    turned = !!converted[p.id] && v.videoWidth > 0 && v.videoWidth > v.videoHeight !== p.width > p.height;
+  }
   const stageW = $derived(vw - (store.showInfo ? INFO_W : 0));
 
   /** Where the photo sits at "fit" zoom, in window coordinates. */
@@ -151,6 +180,7 @@
       wantOriginal = false;
       playingLive = false;
       movieFailed = false;
+      turned = false;
       for (const d of [1, -1, 2]) {
         const p = order[idx + d];
         if (p) new Image().src = api.previewUrl(p);
@@ -183,6 +213,12 @@
   });
 
   onMount(() => {
+    let stop: (() => void) | undefined;
+    api
+      .listen<{ id: number; progress: number }>('movie-progress', (m) => {
+        if (converting?.id === m.id) converting = m;
+      })
+      .then((u) => (stop = u));
     const rect = store.grid?.rectOf(id);
     store.hiddenId = rect ? id : null;
     backdrop.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: 'ease-out' });
@@ -191,6 +227,7 @@
       : frame!.animate([{ opacity: 0, transform: 'scale(0.96)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing: EASE });
     anim.finished.then(() => (store.hiddenId = null)).catch(() => {});
     showChrome();
+    return () => stop?.();
   });
 
   async function close() {
@@ -331,14 +368,20 @@
             <!-- svelte-ignore a11y_media_has_caption -->
             <video
               class="layer movie"
-              src={api.originalUrl(photo)}
+              class:turned
+              style:width={turned ? `${fit.h}px` : null}
+              style:height={turned ? `${fit.w}px` : null}
+              style:left={turned ? `${(fit.w - fit.h) / 2}px` : null}
+              style:top={turned ? `${(fit.h - fit.w) / 2}px` : null}
+              src={movieUrl(photo)}
               poster={api.previewUrl(photo)}
               controls
               autoplay
               playsinline
               onpointerdown={(e) => e.stopPropagation()}
               ondblclick={(e) => e.stopPropagation()}
-              onerror={() => (movieFailed = true)}
+              onloadedmetadata={(e) => checkTurn(e, photo)}
+              onerror={() => cannotPlay(photo)}
             ></video>
           {:else}
             <img class="layer" src={api.previewUrl(photo)} alt={photo.name} draggable="false" decoding="async" use:fadeIn />
@@ -349,14 +392,17 @@
               <!-- svelte-ignore a11y_media_has_caption -->
               <video
                 class="layer movie"
-                src={api.originalUrl(live)}
+                class:turned
+                style:width={turned ? `${fit.h}px` : null}
+                style:height={turned ? `${fit.w}px` : null}
+                style:left={turned ? `${(fit.w - fit.h) / 2}px` : null}
+                style:top={turned ? `${(fit.h - fit.w) / 2}px` : null}
+                src={movieUrl(live)}
                 autoplay
                 playsinline
+                onloadedmetadata={(e) => checkTurn(e, live)}
                 onended={() => (playingLive = false)}
-                onerror={() => {
-                  playingLive = false;
-                  movieFailed = true;
-                }}
+                onerror={() => cannotPlay(live)}
               ></video>
             {/if}
           {/if}
@@ -365,12 +411,21 @@
     {/if}
   </div>
 
-  {#if photo && movieFailed}
+  {#if photo && converting}
+    <div class="movie-failed" style:width="{stageW}px">
+      <div>
+        <strong>Getting this movie ready…</strong>
+        <p class="muted">It's in a format the window can't play (iPhone HEVC), so Windows is converting it, once.</p>
+        <div class="convert"><i style:width="{Math.max(4, converting.progress * 100)}%"></i></div>
+      </div>
+    </div>
+  {:else if photo && movieFailed}
     <div class="movie-failed" style:width="{stageW}px">
       <div>
         <strong>This movie can't play here</strong>
         <p class="muted">
-          iPhone movies are HEVC. Windows plays them once Microsoft's <em>HEVC Video Extensions</em> are installed from the Microsoft Store.
+          Windows couldn't convert it either. iPhone movies are HEVC: installing Microsoft's free <em>HEVC Video Extensions</em> from the
+          Microsoft Store usually fixes it.
         </p>
         <button class="btn" onclick={() => api.openDefault((live ?? photo).id).catch((e) => store.toast(String(e), 'error'))}>
           <Icon name="open" size={14} /> Open in another app
@@ -541,6 +596,23 @@
   .layer.movie {
     opacity: 1;
     background: #000;
+  }
+  .layer.movie.turned {
+    inset: auto;
+    transform: rotate(90deg);
+  }
+  .convert {
+    height: 4px;
+    margin-top: 12px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+  }
+  .convert i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 200ms;
   }
   .movie-failed {
     position: absolute;

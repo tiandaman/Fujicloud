@@ -100,14 +100,14 @@
   <div class="title">
     {#if store.collection.type === 'person'}
       <button class="back" title="Back to People (Alt+←)" onclick={() => store.back()}>
-        <Icon name="back" size={15} stroke={2.2} /> People
+        <Icon name="back" size={15} stroke={2.2} /> <span class="label">People</span>
       </button>
     {/if}
     <h1 class="truncate">{store.collectionTitle}</h1>
     {#if store.collection.type === 'similar' || store.collection.type === 'ids'}
       <button class="clear" title="Back to all photos" aria-label="Back to all photos" onclick={() => store.setCollection({ type: 'all' })}><Icon name="x" size={12} stroke={2.2} /></button>
     {/if}
-    <span class="faint tabular">
+    <span class="count faint tabular">
       {#if store.collection.type === 'people'}
         {@const named = store.people.filter((p) => p.name).length}
         {named === 1 ? '1 person' : `${formatCount(named)} people`}
@@ -125,7 +125,7 @@
           store.mergePicker = { x: r.left, y: r.bottom + 6, id };
         }}
       >
-        <Icon name="people" size={13} /> Merge with…
+        <Icon name="people" size={13} /> <span class="label">Merge with…</span>
       </button>
     {/if}
     {#if store.collection.type === 'duplicates'}
@@ -133,13 +133,13 @@
         <span class="faint">Looking…</span>
       {:else if store.sections.length}
         <button class="btn small" title="In every group, reject all but the photo marked KEEP" onclick={() => store.rejectExtras()}>
-          <Icon name="x" size={13} /> Reject all extras
+          <Icon name="x" size={13} /> <span class="label">Reject all extras</span>
         </button>
       {/if}
     {/if}
     {#if store.collection.type === 'rejected' && store.visible.length}
       <button class="btn danger small" title="Move every rejected photo to the Recycle Bin" onclick={() => store.deleteRejected()}>
-        <Icon name="trash" size={13} /> Delete all rejected…
+        <Icon name="trash" size={13} /> <span class="label">Delete all rejected…</span>
       </button>
     {/if}
   </div>
@@ -239,6 +239,33 @@
     min-width: 0;
     flex: 1;
     padding-left: 4px;
+    overflow: hidden;
+    /* Narrow windows: buttons drop their words before anything overlaps. */
+    container: title / inline-size;
+  }
+  .title > :global(*) {
+    flex-shrink: 0;
+  }
+  .title > h1 {
+    flex-shrink: 1;
+    min-width: 3.5em;
+  }
+  .title > .count {
+    flex-shrink: 3;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  @container title (max-width: 560px) {
+    .btn.small .label {
+      display: none;
+    }
+  }
+  @container title (max-width: 400px) {
+    .count,
+    .back .label {
+      display: none;
+    }
   }
   h1 {
     margin: 0;
@@ -346,7 +373,7 @@
   }
   .search input:focus,
   .search.smart input {
-    width: 300px;
+    width: clamp(190px, 24vw, 300px);
   }
   .search input::-webkit-search-cancel-button {
     filter: invert(0.7);
