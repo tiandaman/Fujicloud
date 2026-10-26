@@ -191,7 +191,7 @@
           <div class="grow">
             <strong class="truncate">{placeName(photo) ?? 'Somewhere on Earth'}</strong>
             <span class="muted tabular">
-              {photo.gpsEstimated ? 'Estimated from a nearby shot' : `${photo.lat.toFixed(4)}, ${photo.lon.toFixed(4)}${detail?.altitude != null ? ` · ${Math.round(detail.altitude)} m` : ''}`}
+              {photo.gpsEstimated ? 'Estimated from photos taken around the same time' : `${photo.lat.toFixed(4)}, ${photo.lon.toFixed(4)}${detail?.altitude != null ? ` · ${Math.round(detail.altitude)} m` : ''}`}
             </span>
           </div>
           <button class="icon-btn" title="Show on map" aria-label="Show on map" onclick={() => store.showOnMap(photo)}><Icon name="globe" size={16} /></button>

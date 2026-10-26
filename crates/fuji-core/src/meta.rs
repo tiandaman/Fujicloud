@@ -14,6 +14,9 @@ use crate::{Error, Kind, fuji, raf};
 pub struct PhotoMeta {
     /// Capture time as naive local seconds since the epoch (camera clock).
     pub taken_at: Option<i64>,
+    /// The camera clock's offset from UTC in minutes, when it says (iPhones
+    /// always do; Fujifilm bodies with their time zone set do).
+    pub utc_offset: Option<i32>,
     /// Display dimensions, i.e. already swapped for portrait orientation.
     pub width: u32,
     pub height: u32,
@@ -36,6 +39,25 @@ pub struct PhotoMeta {
     pub altitude: Option<f64>,
     /// Length in seconds, for movies.
     pub duration: Option<f64>,
+}
+
+/// "+09:00", "-0700" or "Z" → minutes east of UTC.
+pub fn utc_offset(s: &str) -> Option<i32> {
+    let s = s.trim().trim_end_matches('\0');
+    if s == "Z" {
+        return Some(0);
+    }
+    let sign = match s.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let digits: String = s[1..].chars().filter(char::is_ascii_digit).collect();
+    if digits.len() != 4 {
+        return None;
+    }
+    let (h, m): (i32, i32) = (digits[..2].parse().ok()?, digits[2..].parse().ok()?);
+    (h <= 14 && m < 60).then_some(sign * (h * 60 + m))
 }
 
 /// Reads metadata touching as few bytes as possible: for JPEG the reader stops
@@ -229,6 +251,18 @@ fn from_exif(exif: &Exif) -> PhotoMeta {
             Some(Value::Ascii(v)) => v.first().and_then(|s| parse_exif_datetime(s)),
             _ => None,
         });
+    let utc_offset = [
+        Tag::OffsetTimeOriginal,
+        Tag::OffsetTimeDigitized,
+        Tag::OffsetTime,
+    ]
+    .into_iter()
+    .find_map(|tag| match field(tag) {
+        Some(Value::Ascii(v)) => v
+            .first()
+            .and_then(|s| utc_offset(std::str::from_utf8(s).ok()?)),
+        _ => None,
+    });
 
     let camera = camera_name(text(Tag::Make), text(Tag::Model));
     let lens = text(Tag::LensModel).map(|l| phone_lens(&l));
@@ -243,6 +277,7 @@ fn from_exif(exif: &Exif) -> PhotoMeta {
 
     PhotoMeta {
         taken_at,
+        utc_offset,
         width,
         height,
         orientation,
@@ -346,4 +381,21 @@ pub fn all_fields(path: &Path, kind: Kind) -> Result<Vec<(String, String)>, Erro
             )
         })
         .collect())
+}
+
+#[cfg(test)]
+mod offset_tests {
+    use super::utc_offset;
+
+    #[test]
+    fn utc_offsets_are_read_in_every_spelling() {
+        assert_eq!(utc_offset("+09:00"), Some(540));
+        assert_eq!(utc_offset("-07:00"), Some(-420));
+        assert_eq!(utc_offset("+0530"), Some(330));
+        assert_eq!(utc_offset("Z"), Some(0));
+        assert_eq!(utc_offset("+05:45\0"), Some(345));
+        assert_eq!(utc_offset("+9"), None);
+        assert_eq!(utc_offset("   :  "), None);
+        assert_eq!(utc_offset("+25:00"), None);
+    }
 }

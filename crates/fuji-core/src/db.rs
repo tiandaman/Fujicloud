@@ -88,6 +88,8 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("region", "TEXT"),
     ("country", "TEXT"),
     ("edit_of", "INTEGER"),
+    // Minutes east of UTC of the camera's clock, when the file says.
+    ("utc_offset", "INTEGER"),
 ];
 
 /// Columns added later that hold user data or only matter for new kinds of
@@ -110,6 +112,45 @@ CREATE INDEX IF NOT EXISTS photos_recipe ON photos(recipe_key);
 
 /// Shots this close in time to a geotagged one inherit its location.
 const LOCATION_WINDOW_SECS: i64 = 30 * 60;
+/// Between two geotagged shots at most this far either side of it…
+const STAY_WINDOW_SECS: i64 = 4 * 3600;
+/// …and this close together, you stayed in the area: so did the camera.
+const STAY_KM: f64 = 1.0;
+
+/// Kilometres between two points (haversine).
+fn km_between(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (la1, la2) = (a.0.to_radians(), b.0.to_radians());
+    let (dla, dlo) = ((b.0 - a.0).to_radians(), (b.1 - a.1).to_radians());
+    let h = (dla / 2.0).sin().powi(2) + la1.cos() * la2.cos() * (dlo / 2.0).sin().powi(2);
+    2.0 * 6371.0 * h.sqrt().asin()
+}
+
+/// Latitude, longitude, town, region and country.
+type Located = (f64, f64, Option<String>, Option<String>, Option<String>);
+
+/// A geotagged shot to borrow a location from, at a time on some clock.
+type Anchor<'a> = (i64, &'a Located);
+
+/// The location for a shot at `t`, from `anchors` sorted by time on the same
+/// clock: the nearest one within half an hour, or, further away, the nearer
+/// of two either side that are close together (you stayed put).
+fn borrow<'a>(anchors: &[Anchor<'a>], t: i64) -> Option<&'a Located> {
+    let i = anchors.partition_point(|(at, _)| *at < t);
+    let before = i.checked_sub(1).and_then(|j| anchors.get(j));
+    let after = anchors.get(i);
+    let nearest = [before, after]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(at, _)| (at - t).abs())?;
+    if (nearest.0 - t).abs() <= LOCATION_WINDOW_SECS {
+        return Some(nearest.1);
+    }
+    let (b, a) = (before?, after?);
+    (t - b.0 <= STAY_WINDOW_SECS
+        && a.0 - t <= STAY_WINDOW_SECS
+        && km_between((b.1.0, b.1.1), (a.1.0, a.1.1)) <= STAY_KM)
+        .then_some(nearest.1)
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -363,9 +404,9 @@ impl Library {
                 "INSERT INTO photos (source_id, path, folder, name, kind, pair_key, size, mtime, taken_at,
                     width, height, orientation, camera, lens, focal_length, aperture, shutter, iso,
                     exposure_comp, film_sim, grain, dynamic_range, recipe, recipe_key,
-                    lat, lon, altitude, gps_estimated, town, region, country, duration)
+                    lat, lon, altitude, gps_estimated, town, region, country, duration, utc_offset)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                    ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, 0, ?28, ?29, ?30, ?31)
+                    ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, 0, ?28, ?29, ?30, ?31, ?32)
                  ON CONFLICT(path) DO UPDATE SET
                     source_id = excluded.source_id, size = excluded.size, mtime = excluded.mtime,
                     taken_at = excluded.taken_at, width = excluded.width, height = excluded.height,
@@ -376,7 +417,8 @@ impl Library {
                     recipe = excluded.recipe, recipe_key = excluded.recipe_key,
                     lat = excluded.lat, lon = excluded.lon, altitude = excluded.altitude,
                     gps_estimated = 0, town = excluded.town, region = excluded.region,
-                    country = excluded.country, duration = excluded.duration",
+                    country = excluded.country, duration = excluded.duration,
+                    utc_offset = excluded.utc_offset",
             )?;
             for p in photos {
                 let m = &p.meta;
@@ -427,6 +469,7 @@ impl Library {
                     p.place.as_ref().and_then(|pl| pl.region.clone()),
                     p.place.as_ref().map(|pl| pl.country.clone()),
                     m.duration,
+                    m.utc_offset,
                 ])?;
             }
         }
@@ -903,49 +946,69 @@ impl Library {
 
     // ---- places ------------------------------------------------------------
 
-    /// Gives photos without GPS the location of the nearest-in-time geotagged
-    /// shot within half an hour (location sync can lag or drop out), and
-    /// clears estimates that no longer have a source. Returns how many
-    /// photos have an estimated location.
+    /// Gives photos without GPS (most camera shots) a location borrowed from
+    /// geotagged ones (the phone's): the nearest in time within half an hour
+    /// (location sync can lag or drop out), or, when geotagged shots either
+    /// side within a few hours were taken close together, theirs. Clocks
+    /// are compared in UTC where both files say their offset, so a camera
+    /// left on home time abroad still matches. Clears estimates that no
+    /// longer have a source. Returns how many photos have an estimated
+    /// location.
     pub fn infer_locations(&self) -> Result<usize, Error> {
-        type Loc = (f64, f64, Option<String>, Option<String>, Option<String>);
+        type Loc = Located;
         let mut conn = self.conn.lock();
-        let rows: Vec<(i64, Option<i64>, Option<Loc>, bool)> = conn
+        type Row = (i64, Option<i64>, Option<i32>, Option<Loc>, bool);
+        let rows: Vec<Row> = conn
             .prepare(
-                "SELECT id, taken_at, lat, lon, town, region, country, gps_estimated FROM photos",
+                "SELECT id, taken_at, utc_offset, lat, lon, town, region, country, gps_estimated
+                 FROM photos",
             )?
             .query_map([], |r| {
-                let lat: Option<f64> = r.get(2)?;
-                let lon: Option<f64> = r.get(3)?;
+                let lat: Option<f64> = r.get(3)?;
+                let lon: Option<f64> = r.get(4)?;
                 let loc = lat.zip(lon).map(|(lat, lon)| {
                     (
                         lat,
                         lon,
-                        r.get(4).ok().flatten(),
                         r.get(5).ok().flatten(),
                         r.get(6).ok().flatten(),
+                        r.get(7).ok().flatten(),
                     )
                 });
-                Ok((r.get(0)?, r.get(1)?, loc, r.get::<_, i64>(7)? != 0))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    loc,
+                    r.get::<_, i64>(8)? != 0,
+                ))
             })?
             .collect::<Result<_, _>>()?;
 
-        let mut anchors: Vec<(i64, &Loc)> = rows
-            .iter()
-            .filter(|(_, _, loc, est)| !est && loc.is_some())
-            .filter_map(|(_, t, loc, _)| Some((t.as_ref().copied()?, loc.as_ref()?)))
+        // Geotagged shots by wall-clock time, and by UTC where known.
+        let sources = || {
+            rows.iter()
+                .filter(|(_, _, _, loc, est)| !est && loc.is_some())
+                .filter_map(|(_, t, off, loc, _)| Some((t.as_ref().copied()?, *off, loc.as_ref()?)))
+        };
+        let mut by_clock: Vec<(i64, &Loc)> = sources().map(|(t, _, loc)| (t, loc)).collect();
+        let mut by_utc: Vec<(i64, &Loc)> = sources()
+            .filter_map(|(t, off, loc)| Some((t - off? as i64 * 60, loc)))
             .collect();
-        anchors.sort_by_key(|(t, _)| *t);
-
-        let nearest = |t: i64| -> Option<&Loc> {
-            let i = anchors.partition_point(|(at, _)| *at < t);
-            [i.checked_sub(1), Some(i)]
-                .into_iter()
-                .flatten()
-                .filter_map(|j| anchors.get(j))
-                .filter(|(at, _)| (at - t).abs() <= LOCATION_WINDOW_SECS)
-                .min_by_key(|(at, _)| (at - t).abs())
-                .map(|(_, loc)| *loc)
+        let mut zoneless: Vec<(i64, &Loc)> = sources()
+            .filter(|(_, off, _)| off.is_none())
+            .map(|(t, _, loc)| (t, loc))
+            .collect();
+        by_clock.sort_by_key(|(t, _)| *t);
+        by_utc.sort_by_key(|(t, _)| *t);
+        zoneless.sort_by_key(|(t, _)| *t);
+        let nearest = |t: i64, offset: Option<i32>| -> Option<&Loc> {
+            match offset {
+                // Against shots that say their zone, in UTC; against ones
+                // that don't, on the wall clock.
+                Some(off) => borrow(&by_utc, t - off as i64 * 60).or_else(|| borrow(&zoneless, t)),
+                None => borrow(&by_clock, t),
+            }
         };
 
         let tx = conn.transaction()?;
@@ -959,11 +1022,11 @@ impl Library {
                 "UPDATE photos SET lat = NULL, lon = NULL, town = NULL, region = NULL, country = NULL,
                  gps_estimated = 0 WHERE id = ?1",
             )?;
-            for (id, taken, loc, est) in &rows {
+            for (id, taken, offset, loc, est) in &rows {
                 if loc.is_some() && !est {
                     continue;
                 }
-                match taken.and_then(nearest) {
+                match taken.and_then(|t| nearest(t, *offset)) {
                     Some((lat, lon, town, region, country)) => {
                         set.execute(params![id, lat, lon, town, region, country])?;
                         estimated += 1;
@@ -1073,7 +1136,7 @@ impl Library {
                     taken_at = o.taken_at, camera = o.camera, lens = o.lens,
                     focal_length = o.focal_length, aperture = o.aperture, shutter = o.shutter,
                     iso = o.iso, lat = o.lat, lon = o.lon, gps_estimated = o.gps_estimated,
-                    town = o.town, region = o.region, country = o.country
+                    town = o.town, region = o.region, country = o.country, utc_offset = o.utc_offset
                  FROM photos AS o
                  WHERE e.edit_of = o.id AND (e.kind IN ('tiff', 'psd') OR e.camera IS NULL)",
             )?;
@@ -1410,6 +1473,65 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    /// A camera without GPS between two phone shots taken in one place, hours
+    /// apart: it was there too. Between two places, it can't be told.
+    #[test]
+    fn a_stay_between_two_phone_shots_places_the_camera() {
+        let lib = Library::open_in_memory().unwrap();
+        let src = lib.add_source(Path::new("/lib")).unwrap();
+        let (harbour, nearby) = (Some((64.1500, -21.9500)), Some((64.1530, -21.9450)));
+        let vik = Some((63.4186, -19.0060));
+        let h = 3600;
+        lib.upsert(
+            src.id,
+            &[
+                // A stay: phone shots 2.5 h apart, 400 m apart.
+                shot("/lib/phone1.JPG", 10 * h, harbour, None),
+                shot("/lib/fuji1.JPG", 11 * h, None, None),
+                shot("/lib/fuji2.JPG", 12 * h, None, None),
+                shot("/lib/phone2.JPG", 10 * h + 9000, nearby, None),
+                // A drive: phone shots far apart; the camera in between can't be placed.
+                shot("/lib/phone3.JPG", 20 * h, harbour, None),
+                shot("/lib/fuji3.JPG", 21 * h, None, None),
+                shot("/lib/phone4.JPG", 22 * h, vik, None),
+                // Long after anything: no.
+                shot("/lib/fuji4.JPG", 30 * h, None, None),
+            ],
+        )
+        .unwrap();
+        lib.infer_locations().unwrap();
+        let rows = lib.photos().unwrap();
+        let get = |n: &str| rows.iter().find(|r| r.name == n).unwrap().clone();
+        assert_eq!(get("fuji1.JPG").lat, Some(64.15), "nearer the first shot");
+        assert_eq!(get("fuji2.JPG").lat, Some(64.153), "nearer the second");
+        assert!(get("fuji1.JPG").gps_estimated);
+        assert_eq!(get("fuji3.JPG").lat, None);
+        assert_eq!(get("fuji4.JPG").lat, None);
+    }
+
+    /// Abroad with the camera still on home time: matched in UTC when both
+    /// files say their offset.
+    #[test]
+    fn clocks_in_different_zones_are_matched_in_utc() {
+        let lib = Library::open_in_memory().unwrap();
+        let src = lib.add_source(Path::new("/lib")).unwrap();
+        let tokyo = Some((35.6762, 139.6503));
+        let mut phone = shot("/lib/IMG_1.HEIC", 100_000 + 14 * 3600, tokyo, None);
+        phone.meta.utc_offset = Some(9 * 60);
+        // 05:00 UTC on a camera set to Los Angeles (−7 h): 22:00 the day before.
+        let mut fuji = shot("/lib/DSCF1.JPG", 100_000 - 2 * 3600 + 10 * 60, None, None);
+        fuji.meta.utc_offset = Some(-7 * 60);
+        // The same wall-clock time without a zone: 16 h from the phone shot.
+        let zoneless = shot("/lib/DSCF2.JPG", 100_000 - 2 * 3600 + 10 * 60, None, None);
+        lib.upsert(src.id, &[phone, fuji, zoneless]).unwrap();
+        assert_eq!(lib.infer_locations().unwrap(), 1);
+        let rows = lib.photos().unwrap();
+        let get = |n: &str| rows.iter().find(|r| r.name == n).unwrap().clone();
+        assert_eq!(get("DSCF1.JPG").lat, Some(35.6762));
+        assert_eq!(get("DSCF1.JPG").country.as_deref(), Some("JP"));
+        assert_eq!(get("DSCF2.JPG").lat, None);
     }
 
     #[test]

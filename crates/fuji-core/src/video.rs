@@ -234,18 +234,22 @@ pub fn read(path: &Path) -> Result<PhotoMeta, Error> {
     };
     let header = child(&moov, b"mvhd").and_then(movie_header);
     let (width, height) = video_size(&moov).unwrap_or((0, 0));
-    let taken_at = item("com.apple.quicktime.creationdate")
-        .and_then(|d| local_date(&d))
-        .or_else(|| {
-            header
-                .map(|(created, _)| created - QT_EPOCH)
-                .filter(|t| *t > 0)
-        });
+    let created = item("com.apple.quicktime.creationdate");
+    let utc_offset = created
+        .as_deref()
+        .and_then(|d| d.get(19..))
+        .and_then(crate::meta::utc_offset);
+    let taken_at = created.and_then(|d| local_date(&d)).or_else(|| {
+        header
+            .map(|(created, _)| created - QT_EPOCH)
+            .filter(|t| *t > 0)
+    });
     let place = item("com.apple.quicktime.location.ISO6709")
         .or_else(|| udta_location(&moov))
         .and_then(|s| iso6709(&s));
     Ok(PhotoMeta {
         taken_at,
+        utc_offset,
         width,
         height,
         orientation: 1,
@@ -704,6 +708,7 @@ pub(crate) mod tests {
 
         assert_eq!((meta.width, meta.height), (1080, 1920), "portrait");
         assert_eq!(meta.duration, Some(1.5));
+        assert_eq!(meta.utc_offset, Some(120), "from the creation date's +0200");
         assert_eq!(meta.camera.as_deref(), Some("iPhone 16 Pro"));
         // Local wall-clock time, like a camera's EXIF date.
         assert_eq!(
