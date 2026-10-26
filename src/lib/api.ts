@@ -26,7 +26,6 @@ export interface Api {
   facesStatus(): Promise<FacesStatus>;
   setFaces(enabled: boolean): Promise<FacesStatus>;
   petsStatus(): Promise<PetsStatus>;
-  /** Also switches smart search on: it tells pets apart. */
   setPets(enabled: boolean): Promise<PetsStatus>;
   listPeople(): Promise<Person[]>;
   facesIn(photoId: number): Promise<FaceInPhoto[]>;

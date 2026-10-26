@@ -802,22 +802,14 @@ fn pets_status(state: Shared) -> pets::Status {
     state.pets.status(&state)
 }
 
-/// Pets are told apart by the smart search model, so this switches smart
-/// search on too.
 #[tauri::command]
 fn set_pets(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<pets::Status> {
-    let smart_was_on = {
+    {
         let mut settings = state.settings.write();
-        let was = settings.smart_search;
         settings.pets = enabled;
-        settings.smart_search |= enabled;
         settings.save(&state.settings_path).map_err(err)?;
-        was
-    };
+    }
     if enabled {
-        if !smart_was_on {
-            smart::spawn(app.clone(), state.inner().clone());
-        }
         pets::spawn(app, state.inner().clone());
     } else {
         state.pets.disable(&app, &state);

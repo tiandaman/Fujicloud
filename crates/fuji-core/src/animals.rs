@@ -1,11 +1,12 @@
 //! Finding cats and dogs in photos, entirely on this PC.
 //!
 //! YOLOX-S (8-bit, from OpenCV's model zoo) finds animals and boxes them.
-//! Telling one pet from another is done by comparing what the smart search
-//! model makes of each pet's crop: coat colour, pattern and shape (see
-//! [`crate::people`], which groups and names pets the way it does people).
-//! To that model every cat looks much like every other cat, so what all pets
-//! share is taken away first ([`distinctive`]).
+//! DINOv2 (small, Meta's), a model that sees fine detail, describes each
+//! pet's picture: coat colour, pattern, markings and shape. Measured on
+//! Oxford-IIIT Pet it tells cats apart with a much wider margin than the
+//! smart search model, and it needs nothing else switched on. Pictures are
+//! compared with the average pet taken away ([`distinctive`]); see
+//! [`crate::people`], which groups and names pets the way it does people.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -22,10 +23,11 @@ use crate::embed::{download_files, environment, model_err};
 
 const DETECTOR: &str = "object_detection_yolox_2022nov_int8.onnx";
 const URL: &str = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/object_detection_yolox/object_detection_yolox_2022nov_int8.onnx";
-pub const DOWNLOAD_MB: u32 = 9;
+/// The detector (9 MB) and DINOv2 (88 MB) together, for the UI.
+pub const DOWNLOAD_MB: u32 = 97;
 /// Stored with each photo searched: the detector, and the model that tells
 /// pets apart.
-pub const MODEL_ID: &str = "yolox-2022nov-int8+siglip-base-patch16-224";
+pub const MODEL_ID: &str = "yolox-2022nov-int8+dinov2-small";
 
 const SIDE: usize = 640;
 /// Detections less sure than this are dropped.
@@ -66,12 +68,18 @@ fn path(dir: &Path) -> PathBuf {
 }
 
 pub fn is_downloaded(dir: &Path) -> bool {
-    path(dir).is_file()
+    path(dir).is_file() && dir.join("pets").join(IDENTIFIER).is_file()
 }
 
-/// Fetches the detector (~9 MB). `progress(done, total)` in bytes.
+/// Fetches the detector and DINOv2 (~97 MB). `progress(done, total)` in bytes.
 pub fn download(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
-    download_files(&[(URL, path(dir))], progress)
+    download_files(
+        &[
+            (URL, path(dir)),
+            (IDENTIFIER_URL, dir.join("pets").join(IDENTIFIER)),
+        ],
+        progress,
+    )
 }
 
 pub struct Detector {
@@ -208,13 +216,12 @@ fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     inter / (a[2] * a[3] + b[2] * b[3] - inter).max(1e-6)
 }
 
-/// What pets have in common as the smart search model sees them: the
-/// average pet and the four main ways pets vary (cat or dog, pose, light),
-/// as half floats. Learned from Oxford-IIIT Pet photos by
-/// `real_pets_are_told_apart` (set `FUJICLOUD_PRINT_PET_BASIS` to print a
-/// new one).
-const BASIS: &[u8] = include_bytes!("pet_basis.bin");
-const BASIS_AXES: usize = 4;
+/// What pets have in common as DINOv2 sees them: the average pet (as half
+/// floats), learned from held-out Oxford-IIIT Pet photos by
+/// `real_pets_are_told_apart`, which prints it.
+const BASIS: &[u8] = include_bytes!("pet_mean.bin");
+/// Main ways pets vary also taken away: none, which measured best for DINOv2.
+const BASIS_AXES: usize = 0;
 
 fn basis() -> &'static (Vec<f32>, Vec<Vec<f32>>) {
     static BASIS_F32: OnceLock<(Vec<f32>, Vec<Vec<f32>>)> = OnceLock::new();
@@ -232,9 +239,9 @@ fn basis() -> &'static (Vec<f32>, Vec<Vec<f32>>) {
     })
 }
 
-/// A pet's smart search vector with what all pets share taken away, for
-/// comparing one pet with another. Measured on Oxford-IIIT Pet: cats of one
-/// breed score about 0.29 on these, cats of different breeds about 0.
+/// A pet's description with what all pets share taken away, for comparing
+/// one pet with another. Measured on Oxford-IIIT Pet: cats of one breed
+/// score about 0.48 on these, cats of different breeds about 0.02.
 pub fn distinctive(v: &[f32]) -> Vec<f32> {
     let (mean, axes) = basis();
     if v.len() != mean.len() {
@@ -250,19 +257,10 @@ pub fn distinctive(v: &[f32]) -> Vec<f32> {
     d
 }
 
-/// DINOv2 (small), a model that sees fine detail: a candidate for telling
-/// one pet from another, measured against the smart search model in the
-/// real-model tests.
+/// DINOv2 (small), which tells one pet from another.
 const IDENTIFIER: &str = "dinov2_small.onnx";
 const IDENTIFIER_URL: &str =
     "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model.onnx";
-
-pub fn download_identifier(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
-    download_files(
-        &[(IDENTIFIER_URL, dir.join("pets").join(IDENTIFIER))],
-        progress,
-    )
-}
 
 pub struct Identifier {
     session: Mutex<Session>,
@@ -280,6 +278,17 @@ impl Identifier {
         Ok(Self {
             session: Mutex::new(builder.commit_from_file(&file).map_err(|e| fail(&e))?),
         })
+    }
+
+    /// A pet's picture (as [`crop`] makes it) described: DINOv2's class
+    /// token, L2-normalised.
+    pub fn describe(&self, jpeg: &[u8]) -> Result<Vec<f32>, Error> {
+        let (tokens, dim) = self.tokens(jpeg)?;
+        let cls = tokens
+            .get(..dim)
+            .ok_or_else(|| model_err("no class token"))?;
+        let n = cls.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+        Ok(cls.iter().map(|x| x / n).collect())
     }
 
     /// DINOv2's tokens for a pet's picture (as [`crop`] makes it): the class
@@ -363,8 +372,8 @@ mod tests {
     #[test]
     fn what_pets_share_is_taken_away() {
         let (mean, axes) = basis();
-        assert_eq!((mean.len(), axes.len()), (768, BASIS_AXES));
-        let v: Vec<f32> = (0..768)
+        assert_eq!((mean.len(), axes.len()), (384, BASIS_AXES));
+        let v: Vec<f32> = (0..384)
             .map(|i| ((i * 37) % 101) as f32 / 100.0 - 0.5)
             .collect();
         let d = distinctive(&v);
@@ -671,7 +680,7 @@ mod tests {
             .expect("download smart search model");
         let detector = Detector::load(&models, 4).unwrap();
         let engine = Engine::load(&models, &SIGLIP_BASE, Device::Cpu, 4).unwrap();
-        download_identifier(&models, &|_, _| {}).expect("download DINOv2");
+        // `download` above fetched DINOv2 too.
         let dino = Identifier::load(&models, 4).unwrap();
         // DINOv2 descriptors: class token, mean of the patches, both.
         type Descriptors = [Vec<f32>; 3];
@@ -766,7 +775,17 @@ mod tests {
             let p: Vec<Vec<f32>> = prior_d.iter().map(|d| d[n].clone()).collect();
             let t: Vec<(usize, Vec<f32>)> =
                 pets_d.iter().map(|(b, d)| (*b, d[n].clone())).collect();
-            evaluate(label, &p, &t);
+            let (mean, _) = evaluate(label, &p, &t);
+            if n == 0 {
+                let hex: String = mean
+                    .iter()
+                    .flat_map(|x| half::f16::from_f32(*x).to_le_bytes())
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                for (i, line) in hex.as_bytes().chunks(256).enumerate() {
+                    println!("pet-mean {i:03} {}", std::str::from_utf8(line).unwrap());
+                }
+            }
         }
         // A newly learned basis as half floats (mean, then axes), to ship.
         if std::env::var_os("FUJICLOUD_PRINT_PET_BASIS").is_some() {
@@ -783,10 +802,15 @@ mod tests {
 
         // The shipped basis, grouped exactly as the app does: three cats of
         // different types must come out as three pets.
-        let shipped: Vec<(usize, Vec<f32>)> =
-            pets.iter().map(|(b, v)| (*b, distinctive(v))).collect();
+        // DINOv2's class token, as the app describes pets.
+        let described: Vec<(usize, Vec<f32>)> =
+            pets_d.iter().map(|(b, d)| (*b, d[0].clone())).collect();
+        let shipped: Vec<(usize, Vec<f32>)> = described
+            .iter()
+            .map(|(b, v)| (*b, distinctive(v)))
+            .collect();
         println!("shipped: {}", stats(&shipped));
-        let ours = only_three(&pets);
+        let ours = only_three(&described);
         let lib = crate::db::Library::open_in_memory().unwrap();
         let src = lib.add_source(Path::new("/lib")).unwrap();
         let rows: Vec<crate::db::NewPhoto> = (0..ours.len())

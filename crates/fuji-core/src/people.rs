@@ -24,14 +24,14 @@ use crate::db::Library;
 /// over 0.27, and they were grouped perfectly anywhere from 0.25 to 0.55.
 pub const SAME_PERSON: f32 = 0.40;
 
-/// Similarity (of smart search vectors of pets' pictures, with what all pets
-/// share taken away: see `animals::distinctive`) at which two pictures are
+/// Similarity (of DINOv2 descriptions of pets' pictures, with the average
+/// pet taken away: see `animals::distinctive`) at which two pictures are
 /// taken to be the same pet. Checked against the real models in `animals`'
-/// tests: cats of one breed scored about 0.29 there, cats of different breeds
-/// about 0, and one pet in two photos is closer still than two of a breed.
-/// Leans towards keeping pets apart: a pet split in two is merged in a
-/// click, two pets as one take sorting out photo by photo.
-pub const SAME_PET: f32 = 0.25;
+/// tests: three cats of different types came out as three pets anywhere from
+/// 0.20 to 0.40, and one pet in two photos is closer still than two cats of
+/// a breed. Leans towards keeping pets apart: a pet split in two is merged
+/// in a click, two pets as one take sorting out photo by photo.
+pub const SAME_PET: f32 = 0.35;
 
 /// Who a group of faces belongs to: a person, or a pet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

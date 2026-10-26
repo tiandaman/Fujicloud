@@ -151,8 +151,7 @@
       <h2>Find your pets</h2>
       <p>
         Fujicloud can find the cats and dogs in your photos and tell your pets apart, so you can name each one once and see every photo
-        they're in. It all happens on this PC: no photo ever leaves it. It uses the smart search model, which this turns on too, plus a
-        small detector downloaded once ({status?.downloadMb ?? 9} MB).
+        they're in. It all happens on this PC: no photo ever leaves it. Two models are downloaded once ({status?.downloadMb ?? 97} MB).
       </p>
       <button class="btn primary" onclick={() => store.setPets(true)}>Turn on pets</button>
     </div>
@@ -167,19 +166,16 @@
       <button class="btn primary" onclick={() => store.setFaces(true)}>Turn on face recognition</button>
     </div>
   {:else}
-    {#if status.phase === 'downloading' || status.phase === 'indexing' || status.phase === 'waiting'}
+    {#if status.phase === 'downloading' || status.phase === 'indexing'}
       <div class="progress">
         <span class="spin"><Icon name="sync" size={14} /></span>
         <span>
-          {#if status.phase === 'downloading'}Downloading {pets ? 'the pet detector' : 'face models'}… {status.total
+          {#if status.phase === 'downloading'}Downloading {pets ? 'pet models' : 'face models'}… {status.total
               ? `${formatBytes(status.done)} of ${formatBytes(status.total)}`
               : ''}
-          {:else if status.phase === 'waiting'}Waiting for the smart search model to download (see Settings)…
           {:else}Looking for {pets ? 'pets' : 'faces'}… {formatCount(status.done)} of {formatCount(status.total)} photos{/if}
         </span>
-        {#if status.phase !== 'waiting'}
-          <div class="bar"><i style:width="{status.total ? (status.done / status.total) * 100 : 5}%"></i></div>
-        {/if}
+        <div class="bar"><i style:width="{status.total ? (status.done / status.total) * 100 : 5}%"></i></div>
       </div>
     {:else if status.phase === 'error'}
       <p class="error">{status.error}</p>
@@ -262,9 +258,7 @@
         <Icon name={pets ? 'paw' : 'people'} size={44} stroke={1.2} />
         <h2>No {pets ? 'pets' : 'people'} found yet</h2>
         <p>
-          {#if status.phase === 'waiting'}
-            Pets are looked for once the smart search model is downloaded.
-          {:else if status.scanned}
+          {#if status.scanned}
             Searched {plural(status.scanned, 'photo')}. {pets ? 'Pets show up here once one appears' : 'People show up here once someone appears'} in
             at least two photos.
           {:else}

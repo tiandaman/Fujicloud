@@ -45,7 +45,7 @@ thousands of images.
   photos of them stay hidden; *Show hidden people* brings them back. Nothing leaves
   your network.
 - **Pets:** turn on *Settings → Pets* and cats and dogs are found (OpenCV's small YOLOX
-  detector) and told apart by the smart search model, which this turns on too. Name each
+  detector) and told apart by Meta's DINOv2, a model that sees fine detail. Name each
   pet under *Pets → Which pet is this?*; naming, merging, *Not this pet* and hiding work
   as for people. Pets that look much alike, such as two black cats, may be grouped
   together; *Not this pet* sorts them out.
@@ -252,7 +252,9 @@ pretrained models are for non-commercial use, such as a personal library); the f
 use example photos from [face_recognition](https://github.com/ageitgey/face_recognition)
 and [LFW](https://vis-www.cs.umass.edu/lfw/), downloaded at test time.
 Pets are found with [YOLOX](https://github.com/opencv/opencv_zoo/tree/main/models/object_detection_yolox)
-(Apache 2.0), also from OpenCV's model zoo; the pet tests use
+(Apache 2.0), also from OpenCV's model zoo, and told apart with Meta's
+[DINOv2](https://github.com/facebookresearch/dinov2) (Apache 2.0, via the
+[Xenova ONNX export](https://huggingface.co/Xenova/dinov2-small)); the pet tests use
 [ImageNet sample images](https://github.com/EliSchwartz/imagenet-sample-images) and
 [Oxford-IIIT Pet](https://www.robots.ox.ac.uk/~vgg/data/pets/) (CC BY-SA 4.0) photos,
 downloaded at test time.

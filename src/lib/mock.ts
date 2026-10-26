@@ -325,7 +325,7 @@ export function mockApi(): Api {
       })),
     );
   people = people.map((p) => ({ ...p, faces: p.photoIds.length }));
-  let pets: PetsStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 9, scanned: photos.length, error: null };
+  let pets: PetsStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 97, scanned: photos.length, error: null };
   const hiddenFaces = new Set<number>();
   let faces: FacesStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 183, scanned: photos.length, error: null };
   const avatar = (seed: number) => {
@@ -467,7 +467,7 @@ export function mockApi(): Api {
     },
     petsStatus: async () => pets,
     async setPets(enabled) {
-      settings = { ...settings, pets: enabled, smartSearch: settings.smartSearch || enabled };
+      settings = { ...settings, pets: enabled };
       pets = { ...pets, enabled, phase: enabled ? 'ready' : 'off' };
       return pets;
     },

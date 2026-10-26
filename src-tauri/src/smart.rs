@@ -124,7 +124,7 @@ impl Smart {
 
     /// The loaded model: on the GPU when preferred and DirectML starts,
     /// otherwise on the CPU (if that variant is downloaded).
-    pub(crate) fn engine(&self, state: &AppState) -> Result<Arc<Engine>, String> {
+    fn engine(&self, state: &AppState) -> Result<Arc<Engine>, String> {
         let mut slot = self.engine.lock();
         if let Some(engine) = slot.as_ref() {
             return Ok(engine.clone());
@@ -246,8 +246,6 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
                 }
             }
             smart.running.store(false, Ordering::Release);
-            // Pets wait for this model.
-            crate::pets::spawn(app, state);
         })
         .expect("spawn smart search thread");
 }

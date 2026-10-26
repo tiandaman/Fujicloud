@@ -856,12 +856,10 @@ class Store {
     }
   }
 
-  /** Pets are told apart by the smart search model, so this turns it on too. */
   async setPets(enabled: boolean) {
     try {
       this.petStatus = await api.setPets(enabled);
-      if (this.settings) this.settings = { ...this.settings, pets: enabled, smartSearch: this.settings.smartSearch || enabled };
-      if (enabled) this.smart = await api.smartStatus();
+      if (this.settings) this.settings = { ...this.settings, pets: enabled };
     } catch (e) {
       this.toast(String(e), 'error');
     }

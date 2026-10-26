@@ -191,8 +191,7 @@ export interface FacesStatus {
 }
 
 export interface PetsStatus extends Omit<FacesStatus, 'phase'> {
-  /** `waiting` for the smart search model, which tells pets apart. */
-  phase: 'off' | 'downloading' | 'waiting' | 'indexing' | 'ready' | 'error';
+  phase: 'off' | 'downloading' | 'indexing' | 'ready' | 'error';
 }
 
 export interface BackupStatus {

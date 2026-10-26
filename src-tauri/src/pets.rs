@@ -1,14 +1,13 @@
-//! Pets orchestration: download the small animal detector on request, look
-//! for cats and dogs in every photo in the background, and tell them apart
-//! with the smart search model (which this switches on too).
+//! Pets orchestration: download the small animal detector and DINOv2 on
+//! request, look for cats and dogs in every photo in the background, and
+//! tell them apart.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use fuji_core::animals::{self, Detector, MODEL_ID};
-use fuji_core::embed::{Device, SIGLIP_BASE};
+use fuji_core::animals::{self, Detector, Identifier, MODEL_ID};
 use fuji_core::people::NewFace;
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -23,8 +22,6 @@ pub enum Phase {
     #[default]
     Off,
     Downloading,
-    /// For the smart search model to download.
-    Waiting,
     Indexing,
     Ready,
     Error,
@@ -46,17 +43,12 @@ pub struct Status {
 
 #[derive(Default)]
 pub struct Pets {
-    detector: Mutex<Option<Arc<Detector>>>,
+    models: Mutex<Option<Arc<(Detector, Identifier)>>>,
     status: Mutex<Status>,
     running: AtomicBool,
     again: AtomicBool,
     /// Photos that couldn't be read; not retried this session.
     failed: Mutex<HashSet<i64>>,
-}
-
-fn smart_model_ready(state: &AppState) -> bool {
-    SIGLIP_BASE.is_downloaded(&state.models_dir, Device::Cpu)
-        || SIGLIP_BASE.is_downloaded(&state.models_dir, Device::Gpu(None))
 }
 
 impl Pets {
@@ -70,8 +62,6 @@ impl Pets {
         } else if s.phase == Phase::Off {
             s.phase = if !animals::is_downloaded(&state.models_dir) {
                 Phase::Downloading
-            } else if !smart_model_ready(state) {
-                Phase::Waiting
             } else {
                 Phase::Ready
             };
@@ -84,26 +74,29 @@ impl Pets {
         let _ = app.emit("pets", self.status(state));
     }
 
-    fn detector(&self, state: &AppState) -> Result<Arc<Detector>, String> {
-        let mut slot = self.detector.lock();
-        if let Some(d) = slot.as_ref() {
-            return Ok(d.clone());
+    fn models(&self, state: &AppState) -> Result<Arc<(Detector, Identifier)>, String> {
+        let mut slot = self.models.lock();
+        if let Some(m) = slot.as_ref() {
+            return Ok(m.clone());
         }
         // Leave most of the CPU for browsing.
         let threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 4).max(1));
-        let detector =
-            Arc::new(Detector::load(&state.models_dir, threads).map_err(|e| e.to_string())?);
-        *slot = Some(detector.clone());
-        Ok(detector)
+        let dir = &state.models_dir;
+        let models = Arc::new((
+            Detector::load(dir, threads).map_err(|e| e.to_string())?,
+            Identifier::load(dir, threads).map_err(|e| e.to_string())?,
+        ));
+        *slot = Some(models.clone());
+        Ok(models)
     }
 
     pub fn disable(&self, app: &AppHandle, state: &AppState) {
-        *self.detector.lock() = None;
+        *self.models.lock() = None;
         self.update(app, state, |s| *s = Status::default());
     }
 }
 
-/// Downloads the detector if needed, then looks for pets in every photo not
+/// Downloads the models if needed, then looks for pets in every photo not
 /// searched yet. Extra calls while a run is going make it look once more.
 pub fn spawn(app: AppHandle, state: Arc<AppState>) {
     if !state.settings.read().pets {
@@ -162,20 +155,12 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         })
         .map_err(|e| {
             format!(
-                "{e}. Check that this PC can reach media.githubusercontent.com, then switch pets off and on to try again."
+                "{e}. Check that this PC can reach media.githubusercontent.com and huggingface.co, then switch pets off and on to try again."
             )
         })?;
     }
-    // Smart search tells pets apart; it starts this again once it's ready.
-    if !smart_model_ready(state) {
-        pets.update(app, state, |s| {
-            s.phase = Phase::Waiting;
-            s.error = None;
-        });
-        return Ok(());
-    }
-    let detector = pets.detector(state)?;
-    let engine = state.smart.engine(state)?;
+    let models = pets.models(state)?;
+    let (detector, identifier) = (&models.0, &models.1);
 
     let failed = pets.failed.lock().clone();
     let todo: Vec<i64> = state
@@ -200,15 +185,10 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
             Picture::Ready(image) => {
                 let found = fuji_core::guard(|| {
                     let animals = detector.animals(&image)?;
-                    let crops = animals
+                    let vectors = animals
                         .iter()
-                        .map(|a| animals::crop(&image, a))
+                        .map(|a| identifier.describe(&animals::crop(&image, a)?))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let vectors = if crops.is_empty() {
-                        Vec::new()
-                    } else {
-                        engine.embed_images(&crops)?
-                    };
                     Ok(animals
                         .into_iter()
                         .zip(vectors)
