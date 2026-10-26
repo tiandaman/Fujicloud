@@ -23,10 +23,14 @@ use crate::db::Library;
 /// about 0.75 there, different people about 0.1.
 pub const SAME_PERSON: f32 = 0.40;
 
-/// Similarity (of smart search vectors of pets' pictures) at which two
-/// pictures are taken to be the same pet. Checked against the real models in
-/// `animals`' tests.
-pub const SAME_PET: f32 = 0.80;
+/// Similarity (of smart search vectors of pets' pictures, with what all pets
+/// share taken away: see `animals::distinctive`) at which two pictures are
+/// taken to be the same pet. Checked against the real models in `animals`'
+/// tests: cats of one breed scored about 0.29 there, cats of different breeds
+/// about 0, and one pet in two photos is closer still than two of a breed.
+/// Leans towards keeping pets apart: a pet split in two is merged in a
+/// click, two pets as one take sorting out photo by photo.
+pub const SAME_PET: f32 = 0.25;
 
 /// Who a group of faces belongs to: a person, or a pet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -56,6 +60,15 @@ impl Subject {
         match self {
             Subject::Person => SAME_PERSON,
             Subject::Pet => SAME_PET,
+        }
+    }
+
+    /// A stored description in the form faces (or pets) are compared in.
+    fn comparable(self, v: Vec<f32>) -> Vec<f32> {
+        match self {
+            #[cfg(feature = "smart-search")]
+            Subject::Pet => crate::animals::distinctive(&v),
+            _ => v,
         }
     }
 
@@ -370,7 +383,7 @@ impl Library {
             )?;
             let mut rows = stmt.query([subject.as_str()])?;
             while let Some(r) = rows.next()? {
-                let embedding = unpack(&r.get::<_, Vec<u8>>(3)?);
+                let embedding = subject.comparable(unpack(&r.get::<_, Vec<u8>>(3)?));
                 match r.get::<_, Option<i64>>(1)? {
                     Some(person) => people
                         .entry(person)

@@ -4,8 +4,11 @@
 //! Telling one pet from another is done by comparing what the smart search
 //! model makes of each pet's crop: coat colour, pattern and shape (see
 //! [`crate::people`], which groups and names pets the way it does people).
+//! To that model every cat looks much like every other cat, so what all pets
+//! share is taken away first ([`distinctive`]).
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use fast_image_resize::{self as fr, images::Image};
 use ort::session::Session;
@@ -205,6 +208,48 @@ fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     inter / (a[2] * a[3] + b[2] * b[3] - inter).max(1e-6)
 }
 
+/// What pets have in common as the smart search model sees them: the
+/// average pet and the four main ways pets vary (cat or dog, pose, light),
+/// as half floats. Learned from Oxford-IIIT Pet photos by
+/// `real_pets_are_told_apart` (set `FUJICLOUD_PRINT_PET_BASIS` to print a
+/// new one).
+const BASIS: &[u8] = include_bytes!("pet_basis.bin");
+const BASIS_AXES: usize = 4;
+
+fn basis() -> &'static (Vec<f32>, Vec<Vec<f32>>) {
+    static BASIS_F32: OnceLock<(Vec<f32>, Vec<Vec<f32>>)> = OnceLock::new();
+    BASIS_F32.get_or_init(|| {
+        let values: Vec<f32> = BASIS
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| half::f16::from_le_bytes(*b).to_f32())
+            .collect();
+        let d = values.len() / (BASIS_AXES + 1);
+        let mut parts = values.chunks_exact(d).map(<[f32]>::to_vec);
+        let mean = parts.next().unwrap_or_default();
+        (mean, parts.collect())
+    })
+}
+
+/// A pet's smart search vector with what all pets share taken away, for
+/// comparing one pet with another. Measured on Oxford-IIIT Pet: cats of one
+/// breed score about 0.29 on these, cats of different breeds about 0.
+pub fn distinctive(v: &[f32]) -> Vec<f32> {
+    let (mean, axes) = basis();
+    if v.len() != mean.len() {
+        return v.to_vec();
+    }
+    let mut d: Vec<f32> = v.iter().zip(mean).map(|(x, m)| x - m).collect();
+    for u in axes {
+        let c: f32 = d.iter().zip(u).map(|(x, y)| x * y).sum();
+        d.iter_mut().zip(u).for_each(|(x, y)| *x -= c * y);
+    }
+    let n = d.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+    d.iter_mut().for_each(|x| *x /= n);
+    d
+}
+
 /// The square picture of a pet that's compared with other pets'.
 pub fn crop(image: &Rgb, animal: &Animal) -> Result<Vec<u8>, Error> {
     crate::thumbs::crop_square(image, animal.bbox, 1.1, 320)
@@ -242,6 +287,24 @@ mod tests {
             .collect();
         download_files(&files, &|_, _| {}).expect("download photos");
         dir
+    }
+
+    #[test]
+    fn what_pets_share_is_taken_away() {
+        let (mean, axes) = basis();
+        assert_eq!((mean.len(), axes.len()), (768, BASIS_AXES));
+        let v: Vec<f32> = (0..768)
+            .map(|i| ((i * 37) % 101) as f32 / 100.0 - 0.5)
+            .collect();
+        let d = distinctive(&v);
+        let norm: f32 = d.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-3);
+        for u in axes {
+            let along: f32 = d.iter().zip(u).map(|(a, b)| a * b).sum();
+            assert!(along.abs() < 1e-2, "{along}");
+        }
+        // Descriptions of another size (another model) are left as they are.
+        assert_eq!(distinctive(&[1.0, 0.0]), [1.0, 0.0]);
     }
 
     /// The real detector on real photos (run with `--ignored`).
@@ -605,44 +668,70 @@ mod tests {
                 );
             }
         }
-        // The learned basis as half floats (mean, then axes), to ship.
-        let mut hex = String::new();
-        for x in mean.iter().chain(axes.iter().flatten()) {
-            for byte in half::f16::from_f32(*x).to_le_bytes() {
-                hex.push_str(&format!("{byte:02x}"));
+        // A newly learned basis as half floats (mean, then axes), to ship.
+        if std::env::var_os("FUJICLOUD_PRINT_PET_BASIS").is_some() {
+            let mut hex = String::new();
+            for x in mean.iter().chain(axes.iter().flatten()) {
+                for byte in half::f16::from_f32(*x).to_le_bytes() {
+                    hex.push_str(&format!("{byte:02x}"));
+                }
+            }
+            for (n, line) in hex.as_bytes().chunks(256).enumerate() {
+                println!("basis {n:03} {}", std::str::from_utf8(line).unwrap());
             }
         }
-        for (n, line) in hex.as_bytes().chunks(256).enumerate() {
-            println!("basis {n:03} {}", std::str::from_utf8(line).unwrap());
-        }
 
-        // As the app groups them today.
+        // The shipped basis, grouped exactly as the app does: three cats of
+        // different types must come out as three pets.
+        let shipped: Vec<(usize, Vec<f32>)> =
+            pets.iter().map(|(b, v)| (*b, distinctive(v))).collect();
+        println!("shipped: {}", stats(&shipped));
         let ours = only_three(&pets);
-        let groups = crate::people::cluster(
-            ours.iter()
-                .enumerate()
-                .map(|(i, p)| crate::people::Loose {
-                    id: i as i64,
-                    not_person: None,
-                    embedding: p.1.clone(),
-                })
-                .collect(),
-            crate::people::SAME_PET,
-        );
-        println!("app today: {}", score(&ours, crate::people::SAME_PET));
+        let lib = crate::db::Library::open_in_memory().unwrap();
+        let src = lib.add_source(Path::new("/lib")).unwrap();
+        let rows: Vec<crate::db::NewPhoto> = (0..ours.len())
+            .map(|i| crate::db::NewPhoto {
+                path: PathBuf::from(format!("/lib/{i}.jpg")),
+                kind: crate::Kind::Jpeg,
+                size: 1,
+                mtime: 1,
+                meta: Default::default(),
+                place: None,
+            })
+            .collect();
+        lib.upsert(src.id, &rows).unwrap();
+        let mut ids: Vec<i64> = lib.photos().unwrap().iter().map(|p| p.id).collect();
+        ids.sort();
+        for (id, pet) in ids.iter().zip(&ours) {
+            let pet = crate::people::NewFace {
+                bbox: [0.1, 0.1, 0.5, 0.5],
+                score: 0.9,
+                embedding: pet.1.clone(),
+            };
+            lib.store_pets(*id, "test", &[pet]).unwrap();
+        }
+        lib.group_faces().unwrap();
+        let breed_of = |photo: i64| ours[ids.iter().position(|&i| i == photo).unwrap()].0;
+        let groups = lib.people().unwrap();
         for g in &groups {
+            let names: Vec<&str> = g.photo_ids.iter().map(|&p| CATS[breed_of(p)]).collect();
+            println!("pet {}: {names:?}", g.id);
             let top = three
                 .iter()
-                .map(|&b| g.iter().filter(|&&i| ours[i as usize].0 == b).count())
+                .map(|&b| g.photo_ids.iter().filter(|&&p| breed_of(p) == b).count())
                 .max()
                 .unwrap();
-            assert!(top * 10 >= g.len() * 8, "a group mixes breeds: {g:?}");
+            assert!(
+                top * 10 >= g.photo_ids.len() * 8,
+                "pet {} mixes breeds",
+                g.id
+            );
         }
         for &b in &three {
             let total = ours.iter().filter(|p| p.0 == b).count();
             let best = groups
                 .iter()
-                .map(|g| g.iter().filter(|&&i| ours[i as usize].0 == b).count())
+                .map(|g| g.photo_ids.iter().filter(|&&p| breed_of(p) == b).count())
                 .max()
                 .unwrap_or(0);
             assert!(best * 2 > total, "{}: {best} of {total} together", CATS[b]);
