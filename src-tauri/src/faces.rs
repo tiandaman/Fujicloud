@@ -178,7 +178,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         (s.done, s.total, s.error) = (0, total, None);
     });
 
-    let mut last_group = Instant::now();
+    let mut regroup = Regroup::new(Subject::Person);
     for (n, &id) in todo.iter().enumerate() {
         if !state.settings.read().faces {
             return Ok(());
@@ -214,15 +214,12 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
             }
         }
         // New people appear as the library is worked through.
-        if last_group.elapsed() > Duration::from_secs(20) {
-            last_group = Instant::now();
-            group(app, state)?;
-        }
+        regroup.run(app, state, false)?;
         if n % 10 == 9 || n + 1 == todo.len() {
             faces.update(app, state, |s| s.done = n as u64 + 1);
         }
     }
-    group(app, state)?;
+    regroup.run(app, state, true)?;
     faces.update(app, state, |s| {
         s.phase = Phase::Ready;
         (s.done, s.total) = (total, total);
@@ -236,6 +233,42 @@ pub fn group(app: &AppHandle, state: &AppState) -> Result<(), String> {
         let _ = app.emit("people-changed", ());
     }
     Ok(())
+}
+
+/// Grouping while a search works through the library: every 20 s at first,
+/// but never more than a fifth of the time, as on a big library a pass takes
+/// seconds.
+pub(crate) struct Regroup {
+    subject: Subject,
+    last: Instant,
+    took: Duration,
+}
+
+impl Regroup {
+    pub fn new(subject: Subject) -> Self {
+        Self {
+            subject,
+            last: Instant::now(),
+            took: Duration::ZERO,
+        }
+    }
+
+    /// Groups if it's time, or `now`.
+    pub fn run(&mut self, app: &AppHandle, state: &AppState, now: bool) -> Result<(), String> {
+        if !now && self.last.elapsed() < Duration::from_secs(20).max(self.took * 4) {
+            return Ok(());
+        }
+        let start = Instant::now();
+        let changed = state
+            .lib
+            .group_of(self.subject)
+            .map_err(|e| e.to_string())?;
+        if changed {
+            let _ = app.emit("people-changed", ());
+        }
+        (self.last, self.took) = (Instant::now(), start.elapsed());
+        Ok(())
+    }
 }
 
 pub(crate) enum Picture {

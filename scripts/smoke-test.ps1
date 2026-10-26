@@ -123,3 +123,7 @@ Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $started }
     Where-Object { $_.Message -match 'fujicloud' } |
     ForEach-Object { "$($_.TimeCreated) $($_.ProviderName): $($_.Message)" }
 if ($crashed) { exit 1 }
+if (-not (Select-String -Quiet -Path (Join-Path $data 'logs/fujicloud.log') -Pattern 'window opened')) {
+    Write-Host '::error::the window never asked for the library'
+    exit 1
+}

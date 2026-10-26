@@ -82,7 +82,10 @@ struct Bootstrap {
     pets: pets::Status,
 }
 
-#[tauri::command]
+// Off the window's own thread, like every command the window waits on as it
+// opens: the library may be busy with a scan or a search, and the window
+// must stay responsive meanwhile.
+#[tauri::command(async)]
 fn bootstrap(app: AppHandle, state: Shared) -> CmdResult<Bootstrap> {
     log::info!("window opened");
     let settings = state.settings.read().clone();
@@ -130,7 +133,7 @@ fn sources(state: &AppState) -> CmdResult<Vec<SourceInfo>> {
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_sources(state: Shared) -> CmdResult<Vec<SourceInfo>> {
     sources(&state)
 }
@@ -341,7 +344,7 @@ fn set_favorite(state: Shared, ids: Vec<i64>, favorite: bool) -> CmdResult<Vec<i
 
 // ---- albums ----------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_albums(state: Shared) -> CmdResult<Vec<AlbumRow>> {
     state.lib.albums().map_err(err)
 }
@@ -754,7 +757,7 @@ fn name_recipe(state: Shared, key: String, name: Option<String>) -> CmdResult<()
 
 // ---- smart search -----------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn smart_status(state: Shared) -> smart::Status {
     state.smart.status(&state)
 }
@@ -776,7 +779,7 @@ fn set_smart_search(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<s
 
 // ---- people ------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn faces_status(state: Shared) -> faces::Status {
     state.faces.status(&state)
 }
@@ -798,7 +801,7 @@ fn set_faces(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<faces::S
 
 // ---- pets --------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pets_status(state: Shared) -> pets::Status {
     state.pets.status(&state)
 }
@@ -949,7 +952,7 @@ fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdRe
     restart_sync(&app, state.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_status(state: Shared) -> backup::Status {
     state.backup.status(&state)
 }

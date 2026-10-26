@@ -192,36 +192,45 @@ fn overlap(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     inter / (a[2] * a[3] + b[2] * b[3] - inter).max(1e-12)
 }
 
+/// Kept as eight running sums so the compiler can use the CPU's vector
+/// unit (one running sum has to be added up in order): grouping a big
+/// library is mostly this.
 fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
+    let n = a.len().min(b.len());
+    let ((a8, a1), (b8, b1)) = (a[..n].as_chunks::<8>(), b[..n].as_chunks::<8>());
+    let mut sums = [0.0f32; 8];
+    for (x, y) in a8.iter().zip(b8) {
+        for i in 0..8 {
+            sums[i] += x[i] * y[i];
+        }
+    }
+    sums.iter().sum::<f32>() + a1.iter().zip(b1).map(|(x, y)| x * y).sum::<f32>()
 }
 
 /// A running average of faces' descriptions.
 #[derive(Clone)]
 struct Centroid {
     sum: Vec<f32>,
+    length: f32,
 }
 
 impl Centroid {
     fn new(v: &[f32]) -> Self {
-        Self { sum: v.to_vec() }
+        Self {
+            sum: v.to_vec(),
+            length: dot(v, v).sqrt().max(1e-12),
+        }
     }
 
     fn add(&mut self, v: &[f32]) {
         for (s, x) in self.sum.iter_mut().zip(v) {
             *s += x;
         }
+        self.length = dot(&self.sum, &self.sum).sqrt().max(1e-12);
     }
 
     fn similarity(&self, v: &[f32]) -> f32 {
-        let norm = self
-            .sum
-            .iter()
-            .map(|x| x * x)
-            .sum::<f32>()
-            .sqrt()
-            .max(1e-12);
-        dot(&self.sum, v) / norm
+        dot(&self.sum, v) / self.length
     }
 }
 
@@ -407,29 +416,34 @@ impl Library {
     /// looks like, or into a new unnamed group with the faces it looks like.
     /// Returns whether anything changed.
     pub fn group_faces(&self) -> Result<bool, Error> {
-        let people = self.group(Subject::Person)?;
-        let pets = self.group(Subject::Pet)?;
+        let people = self.group_of(Subject::Person)?;
+        let pets = self.group_of(Subject::Pet)?;
         Ok(people || pets)
     }
 
-    fn group(&self, subject: Subject) -> Result<bool, Error> {
+    /// Files new faces (or pets) under people. The comparing (seconds, on a
+    /// big library) happens with the library free for everything else; what
+    /// changed meanwhile wins over what was worked out.
+    pub fn group_of(&self, subject: Subject) -> Result<bool, Error> {
+        // One grouping at a time: the face and pet searches both ask.
+        static GROUPING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+        let _one = GROUPING.lock();
         let same = subject.same();
-        let mut conn = self.conn.lock();
-        let tx = conn.transaction()?;
         let mut people: HashMap<i64, Centroid> = HashMap::new();
         let mut loose = Vec::new();
-        // Only descriptions from the current model compare: the newest face
-        // says which that is. Faces from an earlier model wait to be searched
-        // again (keeping their person meanwhile).
-        let current: Option<i64> = tx
-            .query_row(
-                "SELECT length(embedding) FROM faces WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
-                [subject.as_str()],
-                |r| r.get(0),
-            )
-            .optional()?;
         {
-            let mut stmt = tx.prepare(
+            let conn = self.conn.lock();
+            // Only descriptions from the current model compare: the newest
+            // face says which that is. Faces from an earlier model wait to be
+            // searched again (keeping their person meanwhile).
+            let current: Option<i64> = conn
+                .query_row(
+                    "SELECT length(embedding) FROM faces WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
+                    [subject.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let mut stmt = conn.prepare(
                 "SELECT id, person_id, not_person, embedding FROM faces
                  WHERE kind = ?1 AND length(embedding) = ?2 ORDER BY id",
             )?;
@@ -452,6 +466,7 @@ impl Library {
                 };
             }
         }
+
         let mut filed: Vec<(i64, i64)> = Vec::new();
         // Faces of someone already known.
         let mut rest = Vec::new();
@@ -470,18 +485,39 @@ impl Library {
             }
         }
         // New groups among the rest.
-        for ids in cluster(rest, same) {
-            tx.execute(
-                "INSERT INTO people (name, kind) VALUES (NULL, ?1)",
-                [subject.as_str()],
-            )?;
-            let person = tx.last_insert_rowid();
-            filed.extend(ids.into_iter().map(|id| (id, person)));
-        }
+        let groups = cluster(rest, same);
+
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let mut changed = 0;
         {
-            let mut set = tx.prepare_cached("UPDATE faces SET person_id = ?2 WHERE id = ?1")?;
+            // Only faces still loose, into people still there, and never
+            // into someone they were said not to be.
+            let mut set = tx.prepare_cached(
+                "UPDATE faces SET person_id = ?2
+                 WHERE id = ?1 AND person_id IS NULL AND (not_person IS NULL OR not_person <> ?2)
+                   AND EXISTS (SELECT 1 FROM people WHERE id = ?2)",
+            )?;
             for (face, person) in &filed {
-                set.execute(params![face, person])?;
+                changed += set.execute(params![face, person])?;
+            }
+            for ids in groups {
+                tx.execute(
+                    "INSERT INTO people (name, kind) VALUES (NULL, ?1)",
+                    [subject.as_str()],
+                )?;
+                let person = tx.last_insert_rowid();
+                let mut got = 0;
+                for id in ids {
+                    got += set.execute(params![id, person])?;
+                }
+                // Its faces were filed elsewhere meanwhile: a group is two
+                // faces or more (deleting it frees a lone one).
+                if got < 2 {
+                    tx.execute("DELETE FROM people WHERE id = ?1", [person])?;
+                    got = 0;
+                }
+                changed += got;
             }
         }
         // Unnamed groups that lost all their faces.
@@ -491,7 +527,7 @@ impl Library {
             [],
         )?;
         tx.commit()?;
-        Ok(!filed.is_empty() || emptied > 0)
+        Ok(changed > 0 || emptied > 0)
     }
 
     /// Everyone, named people first (most photos first), then unnamed groups.
@@ -893,6 +929,56 @@ mod tests {
         let mut ids: Vec<i64> = lib.photos().unwrap().iter().map(|p| p.id).collect();
         ids.sort();
         ids
+    }
+
+    /// Grouping a big library takes seconds; the window's own questions to
+    /// the library must not wait on it (they once did, for half a minute
+    /// with 10,000 faces, which froze the window).
+    #[test]
+    fn grouping_leaves_the_library_free() {
+        let lib = library(1500);
+        let mut seed = 7u64;
+        let mut random = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        // Strangers: nobody alike, the slowest case.
+        for id in ids(&lib) {
+            let v: Vec<f32> = (0..512).map(|_| random()).collect();
+            let norm = dot(&v, &v).sqrt();
+            let embedding = v.iter().map(|x| x / norm).collect();
+            let face = NewFace {
+                bbox: [0.1, 0.1, 0.2, 0.2],
+                score: 0.9,
+                embedding,
+            };
+            lib.store_faces(id, "test", &[face]).unwrap();
+        }
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let (took, longest) = std::thread::scope(|s| {
+            let asking = s.spawn(|| {
+                let mut longest = std::time::Duration::ZERO;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    let start = std::time::Instant::now();
+                    lib.sources().unwrap();
+                    longest = longest.max(start.elapsed());
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                longest
+            });
+            let start = std::time::Instant::now();
+            lib.group_faces().unwrap();
+            let took = start.elapsed();
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            (took, asking.join().unwrap())
+        });
+        assert!(lib.people().unwrap().is_empty(), "strangers make no groups");
+        assert!(
+            longest < took / 4 && longest.as_millis() < 500,
+            "grouping took {took:?} and a question waited {longest:?}"
+        );
     }
 
     #[test]

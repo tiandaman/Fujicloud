@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use fuji_core::animals::{self, Detector, Identifier, MODEL_ID};
-use fuji_core::people::NewFace;
+use fuji_core::people::{NewFace, Subject};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -176,7 +176,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         (s.done, s.total, s.error) = (0, total, None);
     });
 
-    let mut last_group = Instant::now();
+    let mut regroup = crate::faces::Regroup::new(Subject::Pet);
     for (n, &id) in todo.iter().enumerate() {
         if !state.settings.read().pets {
             return Ok(());
@@ -217,15 +217,12 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
             }
         }
         // New pets appear as the library is worked through.
-        if last_group.elapsed() > Duration::from_secs(20) {
-            last_group = Instant::now();
-            crate::faces::group(app, state)?;
-        }
+        regroup.run(app, state, false)?;
         if n % 10 == 9 || n + 1 == todo.len() {
             pets.update(app, state, |s| s.done = n as u64 + 1);
         }
     }
-    crate::faces::group(app, state)?;
+    regroup.run(app, state, true)?;
     pets.update(app, state, |s| {
         s.phase = Phase::Ready;
         (s.done, s.total) = (total, total);
