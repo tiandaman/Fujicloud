@@ -650,6 +650,9 @@ pub(crate) fn environment() -> Result<ort::environment::Environment, Error> {
         *env = Some(
             ort::init()
                 .with_name("fujicloud")
+                // Microsoft's builds report usage (model names, run counts)
+                // through Windows diagnostics; nothing leaves this PC.
+                .with_telemetry(false)
                 .build()
                 .map_err(model_err)?,
         );
