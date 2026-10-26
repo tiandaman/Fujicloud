@@ -285,7 +285,8 @@ export function mockApi(): Api {
   };
   const recipeNames = new Map<string, string>([[recipeKey(RECIPES[0]), 'Kodachrome 64-ish']]);
   // People: a few named, a few groups waiting for a name.
-  const shown = photos.filter((p) => p.kind !== 'raf' && p.editOf == null);
+  // Searched as the app does: no movies, no RAW behind a JPEG.
+  const shown = photos.filter((p) => p.kind !== 'raf' && p.kind !== 'video' && p.editOf == null);
   let people: Person[] = empty
     ? []
     : [

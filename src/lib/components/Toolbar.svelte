@@ -85,6 +85,8 @@
 
   const filtered = $derived(store.minRating > 0 || store.kindsFiltered || !store.stack);
   const sortLabel = $derived(sorts.find(([k]) => k === store.sort)?.[1]);
+  /** The People and Pets pages, which show faces rather than a grid of photos. */
+  const overview = $derived(store.collection.type === 'people' || store.collection.type === 'pets');
 
   export function focusSearch() {
     search?.focus();
@@ -156,6 +158,10 @@
       placeholder={store.smartReady ? 'Describe a photo, e.g. “sunset over the sea”' : 'Search name, lens, film, place…'}
       spellcheck="false"
       bind:value={store.query}
+      oninput={() => {
+        // People and pets pages have no photos to narrow: search them all.
+        if (overview && store.query.trim()) store.setCollection({ type: 'all' });
+      }}
       onkeydown={(e) => {
         if (e.key === 'Escape') {
           store.query = '';
@@ -178,7 +184,7 @@
     {/if}
   </div>
 
-  {#if store.collection.type !== 'map'}
+  {#if store.collection.type !== 'map' && !overview}
   <div class="seg" role="radiogroup" aria-label="Layout">
     <button role="radio" aria-checked={store.mode === 'justified'} class:on={store.mode === 'justified'} title="Photo rows" onclick={() => (store.mode = 'justified')}>
       <Icon name="rows" size={15} />

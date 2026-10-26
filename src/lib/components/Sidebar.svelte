@@ -225,7 +225,7 @@
 
     <div class="heading static">
       People
-      {#if toName}<span class="to-name" title="Groups of faces waiting for a name">{toName} to name</span>{/if}
+      {#if toName && store.faces?.enabled}<span class="to-name" title="Groups of faces waiting for a name">{toName} to name</span>{/if}
     </div>
     {#snippet peopleLead()}<span class="ico"><Icon name="people" size={16} /></span>{/snippet}
     {@render item({ type: 'people' }, store.faces?.enabled ? 'Everyone' : 'Find people…', store.faces?.enabled ? named.length : null, peopleLead)}
@@ -238,7 +238,7 @@
 
     <div class="heading static">
       Pets
-      {#if petsToName}<span class="to-name" title="Pets waiting for a name">{petsToName} to name</span>{/if}
+      {#if petsToName && store.petStatus?.enabled}<span class="to-name" title="Pets waiting for a name">{petsToName} to name</span>{/if}
     </div>
     {#snippet petsLead()}<span class="ico"><Icon name="paw" size={16} /></span>{/snippet}
     {@render item({ type: 'pets' }, store.petStatus?.enabled ? 'All pets' : 'Find pets…', store.petStatus?.enabled ? namedPets.length : null, petsLead)}
