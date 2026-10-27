@@ -30,12 +30,13 @@ pub const SAME_PERSON: f32 = 0.40;
 /// `animals::distinctive`) at which two pictures are taken to be the same
 /// pet. Checked against the real models in `animals`' tests on Oxford-IIIT
 /// Pet with DINOv2-base: three cats of different types came out as three
-/// pets; across twelve breeds groups were 83% one breed (look-alike warm,
-/// spotted breeds 100%) with 78% of a breed's photos kept together; and one
-/// pet in two photos is closer still than two cats of a breed. Leans towards keeping pets apart: a pet
+/// pets; across twelve breeds groups were 78% one breed (look-alike warm,
+/// spotted breeds 82%) with 86% of a breed's photos kept together; and one
+/// pet in two photos is closer still than two cats of a breed. At 0.50
+/// groups were purer still, but black cats split in two. Leans towards keeping pets apart: a pet
 /// split in two is merged by giving both the same name, two pets as one
 /// take sorting out photo by photo.
-pub const SAME_PET: f32 = 0.50;
+pub const SAME_PET: f32 = 0.45;
 
 /// Who a group of faces belongs to: a person, or a pet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
