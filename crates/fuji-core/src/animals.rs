@@ -335,6 +335,58 @@ pub fn crop(image: &Rgb, animal: &Animal) -> Result<Vec<u8>, Error> {
     crate::thumbs::crop_square(image, animal.bbox, 1.1, 320)
 }
 
+/// Bins of [`coat`]: twelve hues, then black, grey and white.
+pub const COAT_BINS: usize = 15;
+
+/// A pet's coat colours, from the middle of its box (its edges are mostly
+/// background): how much of it is each of twelve hues, black, grey and
+/// white, as a unit vector of square roots (so cosine compares shares).
+/// Orange all over and orange-and-white differ here far more than to a
+/// model that mostly sees shape and fur.
+pub fn coat(image: &Rgb, bbox: [f32; 4]) -> Vec<f32> {
+    let (w, h) = (image.width as f32, image.height as f32);
+    let [x, y, bw, bh] = bbox;
+    let x0 = ((x + bw * 0.15) * w).clamp(0.0, w - 1.0) as u32;
+    let x1 = ((x + bw * 0.85) * w).clamp(x0 as f32 + 1.0, w) as u32;
+    let y0 = ((y + bh * 0.15) * h).clamp(0.0, h - 1.0) as u32;
+    let y1 = ((y + bh * 0.85) * h).clamp(y0 as f32 + 1.0, h) as u32;
+    // About 10,000 samples, however big the photo.
+    let step = (((x1 - x0) as f32 * (y1 - y0) as f32 / 10_000.0).sqrt() as u32).max(1);
+    let mut bins = [0f32; COAT_BINS];
+    for py in (y0..y1).step_by(step as usize) {
+        for px in (x0..x1).step_by(step as usize) {
+            let i = (py as usize * image.width as usize + px as usize) * 3;
+            let Some(p) = image.data.get(i..i + 3) else {
+                continue;
+            };
+            let [r, g, b] = [p[0], p[1], p[2]].map(|c| c as f32 / 255.0);
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            let sat = if max > 0.0 { (max - min) / max } else { 0.0 };
+            let bin = if max < 0.2 {
+                12
+            } else if sat < 0.2 {
+                if max > 0.7 { 14 } else { 13 }
+            } else {
+                let d = max - min;
+                let hue = if max == r {
+                    ((g - b) / d).rem_euclid(6.0)
+                } else if max == g {
+                    (b - r) / d + 2.0
+                } else {
+                    (r - g) / d + 4.0
+                } * 60.0;
+                ((hue / 30.0) as usize).min(11)
+            };
+            bins[bin] += 1.0;
+        }
+    }
+    let total: f32 = bins.iter().sum::<f32>().max(1.0);
+    let v: Vec<f32> = bins.iter().map(|c| (c / total).sqrt()).collect();
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+    v.iter().map(|x| x / n).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +419,64 @@ mod tests {
             .collect();
         download_files(&files, &|_, _| {}).expect("download photos");
         dir
+    }
+
+    /// A cat painted `main`, with `white` of it white (its chest and paws).
+    fn painted(main: [u8; 3], white: f32) -> Rgb {
+        let (width, height) = (200u32, 160u32);
+        let data = (0..width * height)
+            .flat_map(|i| {
+                let (x, y) = (i % width, i / width);
+                if (y as f32) > height as f32 * (1.0 - white) && x > 40 && x < 160 {
+                    [245, 243, 240]
+                } else {
+                    main
+                }
+            })
+            .collect();
+        Rgb {
+            data,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn orange_and_white_is_told_from_all_orange() {
+        let (whole, cosine) = ([0.0, 0.0, 1.0, 1.0], |a: &[f32], b: &[f32]| -> f32 {
+            a.iter().zip(b).map(|(x, y)| x * y).sum()
+        });
+        let orange = coat(&painted([214, 128, 52], 0.0), whole);
+        let darker = coat(&painted([190, 110, 45], 0.0), whole);
+        let patched = coat(&painted([214, 128, 52], 0.45), whole);
+        assert_eq!(orange.len(), COAT_BINS);
+        assert!(
+            cosine(&orange, &darker) > 0.95,
+            "one orange cat, two lights"
+        );
+        assert!(
+            cosine(&orange, &patched) < 0.85,
+            "{}",
+            cosine(&orange, &patched)
+        );
+    }
+
+    #[test]
+    fn a_box_is_cropped_alone() {
+        let image = painted([214, 128, 52], 0.0);
+        let jpeg = crate::thumbs::crop_box(&image, [0.5, 0.25, 0.5, 0.25], 64).unwrap();
+        let (pixels, w, h) = crate::thumbs::decode_scaled(&jpeg, 64).unwrap();
+        assert_eq!((w, h), (64, 64));
+        // Wider than tall: grey above and below, the cat in the middle.
+        let at = |x: usize, y: usize| &pixels[(y * 64 + x) * 3..(y * 64 + x) * 3 + 3];
+        assert!(
+            at(32, 2)
+                .iter()
+                .zip([124, 116, 104])
+                .all(|(a, b)| a.abs_diff(b) < 12)
+        );
+        assert!(at(32, 32)[0] > 180 && at(32, 32)[2] < 90);
+        assert!(crate::thumbs::crop_box(&image, [1.0, 1.0, 0.0, 0.0], 32).is_ok());
     }
 
     #[test]
@@ -670,19 +780,14 @@ mod tests {
     #[test]
     #[ignore]
     fn real_pets_are_told_apart() {
-        use crate::embed::{Device, Engine, SIGLIP_BASE};
         let models = PathBuf::from(
             std::env::var("FUJICLOUD_MODEL_DIR").unwrap_or_else(|_| ".models".into()),
         );
-        download(&models, &|_, _| {}).expect("download detector");
-        SIGLIP_BASE
-            .download(&models, Device::Cpu, &|_, _| {})
-            .expect("download smart search model");
+        download(&models, &|_, _| {}).expect("download the detector and DINOv2");
         let detector = Detector::load(&models, 4).unwrap();
-        let engine = Engine::load(&models, &SIGLIP_BASE, Device::Cpu, 4).unwrap();
-        // `download` above fetched DINOv2 too.
         let dino = Identifier::load(&models, 4).unwrap();
-        // DINOv2 descriptors: class token, mean of the patches, both.
+        // Per pet: DINOv2 on the square crop the app has used, DINOv2 on
+        // just what's in the box, and the coat's colours.
         type Descriptors = [Vec<f32>; 3];
         let mut prior_d: Vec<Descriptors> = Vec::new();
         let mut pets_d: Vec<(usize, Descriptors)> = Vec::new();
@@ -693,7 +798,6 @@ mod tests {
             .chain(DOGS.iter().map(|b| (*b, PER_DOG)))
             .collect();
         let photos = breed_photos(&photos().join("oxford"), &breeds);
-        let (mut prior, mut pets) = (Vec::new(), Vec::new());
         let mut missed = 0;
         for (breed, i, file) in &photos {
             let image = crate::thumbs::upright(&std::fs::read(file).unwrap(), 1280).unwrap();
@@ -701,103 +805,102 @@ mod tests {
                 missed += 1;
                 continue;
             };
-            let jpeg = crop(&image, &pet).unwrap();
-            let v = engine
-                .embed_images(std::slice::from_ref(&jpeg))
-                .unwrap()
-                .remove(0);
-            let (tokens, dim) = dino.tokens(&jpeg).unwrap();
-            let cls = unit(tokens[..dim].to_vec());
-            let patches = tokens.len() / dim - 1;
-            let mean = unit(
-                (0..dim)
-                    .map(|j| {
-                        (1..=patches).map(|p| tokens[p * dim + j]).sum::<f32>() / patches as f32
-                    })
-                    .collect(),
-            );
-            let both = unit([cls.clone(), mean.clone()].concat());
-            let d = [cls, mean, both];
+            let square = dino.describe(&crop(&image, &pet).unwrap()).unwrap();
+            let boxed = dino
+                .describe(&crate::thumbs::crop_box(&image, pet.bbox, 224).unwrap())
+                .unwrap();
+            let d = [square, boxed, coat(&image, pet.bbox)];
             if *breed >= CATS.len() || *i < LEARN {
-                prior.push(v);
                 prior_d.push(d);
             } else {
-                pets.push((*breed, v));
                 pets_d.push((*breed, d));
             }
         }
         println!(
             "{} pets found in {} photos: {} to learn from, {} cats to tell apart",
-            prior.len() + pets.len(),
+            prior_d.len() + pets_d.len(),
             photos.len(),
-            prior.len(),
-            pets.len()
+            prior_d.len(),
+            pets_d.len()
         );
         assert!(missed <= photos.len() / 10, "{missed} photos without a pet");
 
-        let three =
-            ["Siamese", "Bombay", "Bengal"].map(|b| CATS.iter().position(|x| *x == b).unwrap());
-        let only_three = |v: &[(usize, Vec<f32>)]| {
+        let set = |names: [&str; 3]| names.map(|b| CATS.iter().position(|x| *x == b).unwrap());
+        let three = set(["Siamese", "Bombay", "Bengal"]);
+        // Different cats that look alike: pale with dark points; warm and
+        // spotted or ticked.
+        let pointed = set(["Birman", "Ragdoll", "Siamese"]);
+        let warm = set(["Abyssinian", "Bengal", "Egyptian_Mau"]);
+        let only = |v: &[(usize, Vec<f32>)], which: [usize; 3]| {
             v.iter()
-                .filter(|p| three.contains(&p.0))
+                .filter(|p| which.contains(&p.0))
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        // Each candidate: as is, then with what pets share taken away.
-        let evaluate = |label: &str, prior: &[Vec<f32>], pets: &[(usize, Vec<f32>)]| {
-            println!("{label} as is: {}", stats(pets));
-            for same in [0.50, 0.60, 0.70, 0.80, 0.84, 0.88, 0.92] {
+        let only_three = |v: &[(usize, Vec<f32>)]| only(v, three);
+        let report = |label: &str, pets: &[(usize, Vec<f32>)]| {
+            println!("{label}: {}", stats(pets));
+            for same in [0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60] {
                 println!(
-                    "  {label} as is, same at {same:.2}: three [{}] all [{}]",
+                    "  {label} at {same:.2}: three [{}] pointed [{}] warm [{}] all [{}]",
                     score(&only_three(pets), same),
+                    score(&only(pets, pointed), same),
+                    score(&only(pets, warm), same),
                     score(pets, same)
                 );
             }
-            let (mean, axes) = learn(prior, 8);
-            for k in [0, 2, 4, 8] {
-                let t: Vec<(usize, Vec<f32>)> = pets
-                    .iter()
-                    .map(|(b, v)| (*b, apply(v, &mean, &axes[..k])))
-                    .collect();
-                println!("{label} {k} axes: {}", stats(&t));
-                for same in [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60] {
-                    println!(
-                        "  {label} {k} axes, same at {same:.2}: three [{}] all [{}]",
-                        score(&only_three(&t), same),
-                        score(&t, same)
-                    );
-                }
-            }
-            (mean, axes)
         };
-        evaluate("siglip", &prior, &pets);
-        for (n, label) in ["dino-cls", "dino-mean", "dino-both"].iter().enumerate() {
-            let p: Vec<Vec<f32>> = prior_d.iter().map(|d| d[n].clone()).collect();
-            let t: Vec<(usize, Vec<f32>)> =
-                pets_d.iter().map(|(b, d)| (*b, d[n].clone())).collect();
-            let (mean, _) = evaluate(label, &p, &t);
-            if n > 0 {
-                continue;
-            }
-            // The average pet the app ships must be the one learned here;
-            // if not (a new model, say), print the new one to ship.
-            let off = mean
+        // Each part with what pets share taken away, learned from other
+        // photos than those it's tested on.
+        let centred = |n: usize| {
+            let prior: Vec<Vec<f32>> = prior_d.iter().map(|d| d[n].clone()).collect();
+            let (mean, _) = learn(&prior, 0);
+            let pets: Vec<(usize, Vec<f32>)> = pets_d
                 .iter()
-                .zip(&basis().0)
-                .map(|(a, b)| (a - b).abs())
-                .fold(0.0f32, f32::max);
-            println!("shipped average pet differs by at most {off:.5}");
-            if off > 1e-3 {
-                let hex: String = mean
-                    .iter()
-                    .flat_map(|x| half::f16::from_f32(*x).to_le_bytes())
-                    .map(|b| format!("{b:02x}"))
-                    .collect();
-                for (i, line) in hex.as_bytes().chunks(256).enumerate() {
-                    println!("pet-mean {i:03} {}", std::str::from_utf8(line).unwrap());
-                }
-                panic!("pet_mean.bin is out of date: replace it with the pet-mean lines above");
+                .map(|(b, d)| (*b, apply(&d[n], &mean, &[])))
+                .collect();
+            (mean, pets)
+        };
+        let (square_mean, square) = centred(0);
+        let (_, boxed) = centred(1);
+        let (_, coats) = centred(2);
+        report("square", &square);
+        report("box", &boxed);
+        report("coat", &coats);
+        for share in [0.2f32, 0.35, 0.5] {
+            let mixed: Vec<(usize, Vec<f32>)> = boxed
+                .iter()
+                .zip(&coats)
+                .map(|((b, d), (_, c))| {
+                    let v = d
+                        .iter()
+                        .map(|x| x * (1.0 - share).sqrt())
+                        .chain(c.iter().map(|x| x * share.sqrt()))
+                        .collect();
+                    (*b, v)
+                })
+                .collect();
+            report(&format!("box+coat {share:.2}"), &mixed);
+        }
+
+        // The average pet the app ships must be the one learned here; if not
+        // (a new model, say), print the new one to ship.
+        let off = square_mean
+            .iter()
+            .zip(&basis().0)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        println!("shipped average pet differs by at most {off:.5}");
+        if off > 1e-3 {
+            let hex: String = square_mean
+                .iter()
+                .flat_map(|x| half::f16::from_f32(*x).to_le_bytes())
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            for (i, line) in hex.as_bytes().chunks(256).enumerate() {
+                println!("pet-mean {i:03} {}", std::str::from_utf8(line).unwrap());
             }
+            panic!("pet_mean.bin is out of date: replace it with the pet-mean lines above");
         }
 
         // Pets described and grouped exactly as the app does: three cats of

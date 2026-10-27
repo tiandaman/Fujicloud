@@ -364,6 +364,53 @@ fn square_around(width: u32, height: u32, bbox: [f32; 4], margin: f32) -> Option
     Some((left, top, side))
 }
 
+/// Just what's inside `bbox` (fractions of the picture), scaled to fit a
+/// square JPEG `out` pixels across, the rest neutral grey: a pet's picture
+/// without the cat lying next to it or the bed they share.
+pub fn crop_box(image: &decode::Rgb, bbox: [f32; 4], out: u32) -> Result<Vec<u8>, Error> {
+    if image.width == 0 || image.height == 0 || !bbox.iter().all(|v| v.is_finite()) {
+        return Err(Error::Decode("nothing to crop".into()));
+    }
+    let (w, h) = (image.width as f64, image.height as f64);
+    let [x, y, bw, bh] = bbox.map(f64::from);
+    let left = (x * w).round().clamp(0.0, w - 1.0);
+    let top = (y * h).round().clamp(0.0, h - 1.0);
+    let width = (bw * w).round().clamp(1.0, w - left);
+    let height = (bh * h).round().clamp(1.0, h - top);
+    let scale = out as f64 / width.max(height);
+    let (tw, th) = (
+        ((width * scale).round() as u32).clamp(1, out),
+        ((height * scale).round() as u32).clamp(1, out),
+    );
+    let src =
+        fr::images::ImageRef::new(image.width, image.height, &image.data, fr::PixelType::U8x3)
+            .map_err(|e| Error::Decode(e.to_string()))?;
+    let mut inside = Image::new(tw, th, fr::PixelType::U8x3);
+    let options = fr::ResizeOptions::new()
+        .crop(left, top, width, height)
+        .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3));
+    fr::Resizer::new()
+        .resize(&src, &mut inside, &options)
+        .map_err(|e| Error::Decode(e.to_string()))?;
+    // ImageNet's average colour: what the models see as "nothing".
+    let mut canvas = [124u8, 116, 104].repeat((out * out) as usize);
+    let (dx, dy) = ((out - tw) / 2, (out - th) / 2);
+    for (row, line) in inside.buffer().chunks_exact(tw as usize * 3).enumerate() {
+        let at = (((dy as usize + row) * out as usize) + dx as usize) * 3;
+        canvas[at..at + line.len()].copy_from_slice(line);
+    }
+    let mut jpeg = Vec::new();
+    jpeg_encoder::Encoder::new(&mut jpeg, 88)
+        .encode(
+            &canvas,
+            out as u16,
+            out as u16,
+            jpeg_encoder::ColorType::Rgb,
+        )
+        .map_err(|e| Error::Decode(e.to_string()))?;
+    Ok(jpeg)
+}
+
 /// A square JPEG, `out` pixels across, around `bbox` (fractions of the
 /// picture: x, y, width, height) with `margin` times its size around it.
 pub fn crop_square(
