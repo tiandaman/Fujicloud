@@ -342,6 +342,28 @@ pub fn decode_rendition(jpeg: &[u8], long_edge: u32) -> Result<decode::Rgb, Erro
     })
 }
 
+/// The square around `bbox` (fractions of the picture) `margin` times its
+/// longer side, as left, top and side in whole pixels, inside the picture.
+/// In whole pixels so it fits exactly: worked out in fractions, a square
+/// touching the edge could end a hair past it, and its crop would fail.
+fn square_around(width: u32, height: u32, bbox: [f32; 4], margin: f32) -> Option<(f64, f64, f64)> {
+    if width == 0 || height == 0 || !bbox.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let (w, h) = (width as f64, height as f64);
+    let [x, y, bw, bh] = bbox.map(f64::from);
+    let side = ((bw * w).max(bh * h) * margin as f64)
+        .round()
+        .clamp(1.0, w.min(h));
+    let left = ((x + bw / 2.0) * w - side / 2.0)
+        .round()
+        .clamp(0.0, w - side);
+    let top = ((y + bh / 2.0) * h - side / 2.0)
+        .round()
+        .clamp(0.0, h - side);
+    Some((left, top, side))
+}
+
 /// A square JPEG, `out` pixels across, around `bbox` (fractions of the
 /// picture: x, y, width, height) with `margin` times its size around it.
 pub fn crop_square(
@@ -350,22 +372,14 @@ pub fn crop_square(
     margin: f32,
     out: u32,
 ) -> Result<Vec<u8>, Error> {
-    let (w, h) = (image.width as f32, image.height as f32);
-    let [x, y, bw, bh] = bbox;
-    let side = ((bw * w).max(bh * h) * margin).clamp(1.0, w.min(h));
-    let centre = ((x + bw / 2.0) * w, (y + bh / 2.0) * h);
-    let left = (centre.0 - side / 2.0).clamp(0.0, w - side);
-    let top = (centre.1 - side / 2.0).clamp(0.0, h - side);
-    let src = Image::from_vec_u8(
-        image.width,
-        image.height,
-        image.data.clone(),
-        fr::PixelType::U8x3,
-    )
-    .map_err(|e| Error::Decode(e.to_string()))?;
+    let (left, top, side) = square_around(image.width, image.height, bbox, margin)
+        .ok_or_else(|| Error::Decode("nothing to crop".into()))?;
+    let src =
+        fr::images::ImageRef::new(image.width, image.height, &image.data, fr::PixelType::U8x3)
+            .map_err(|e| Error::Decode(e.to_string()))?;
     let mut dst = Image::new(out, out, fr::PixelType::U8x3);
     let options = fr::ResizeOptions::new()
-        .crop(left as f64, top as f64, side as f64, side as f64)
+        .crop(left, top, side, side)
         .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3));
     fr::Resizer::new()
         .resize(&src, &mut dst, &options)
@@ -585,6 +599,56 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pet or face filling the frame, or touching its edge, crops without
+    /// error: a square a hair past the edge once failed a whole photo.
+    #[test]
+    fn crops_near_the_edges_stay_inside_the_picture() {
+        let sizes = [
+            (4032u32, 3024u32),
+            (3024, 4032),
+            (999, 751),
+            (1179, 2556),
+            (403, 302),
+            (7, 5),
+        ];
+        for (w, h) in sizes {
+            for i in 0..400 {
+                let size = 0.02 + 0.98 * i as f32 / 399.0;
+                for bbox in [
+                    [1.0 - size, 1.0 - size * 0.7, size, size * 0.7],
+                    [0.0, 0.0, size, size],
+                    [1.0 - size * 0.3, 0.2, size * 0.3 + 0.01, size],
+                    [0.3333, 0.6667, size, size],
+                    [-0.1, 1.05, size, size],
+                ] {
+                    let (left, top, side) = square_around(w, h, bbox, 1.1).unwrap();
+                    let whole = |v: f64| v.fract() == 0.0;
+                    assert!(
+                        whole(left) && whole(top) && whole(side) && side >= 1.0,
+                        "{w}x{h} {bbox:?}"
+                    );
+                    assert!(left >= 0.0 && left + side <= w as f64, "{w}x{h} {bbox:?}");
+                    assert!(top >= 0.0 && top + side <= h as f64, "{w}x{h} {bbox:?}");
+                }
+            }
+        }
+        // And real crops, against each edge.
+        let image = decode::Rgb {
+            data: vec![128; 403 * 302 * 3],
+            width: 403,
+            height: 302,
+        };
+        for bbox in [
+            [0.98, 0.2, 0.03, 0.05],
+            [0.0, 0.9, 0.5, 0.1],
+            [0.5, 0.5, 0.5, 0.5],
+            [0.0, 0.0, 1.0, 1.0],
+        ] {
+            crop_square(&image, bbox, 1.1, 64).unwrap();
+        }
+        assert!(crop_square(&image, [f32::NAN, 0.0, 0.5, 0.5], 1.1, 8).is_err());
+    }
 
     /// A file whose own picture is damaged still gets a thumbnail, from the
     /// preview embedded in it.
