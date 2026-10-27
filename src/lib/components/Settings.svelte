@@ -2,7 +2,7 @@
   import { api } from '../api';
   import { formatAgo, formatBytes, formatCount, plural } from '../format';
   import { store } from '../store.svelte';
-  import type { CacheInfo, Settings } from '../types';
+  import type { CacheInfo, Settings, Subject } from '../types';
   import Icon from './Icon.svelte';
 
   let draft = $state<Settings>(structuredClone($state.snapshot(store.settings!)));
@@ -69,6 +69,25 @@
     store.settingsOpen = false;
   }
 </script>
+
+{#snippet again(kind: Subject)}
+  {@const pets = kind === 'pet'}
+  <div class="row">
+    <div class="grow">
+      <span>Look again</span>
+      <small class="faint">
+        Sends every photo through {pets ? 'pet' : 'face'} recognition again, including what came from another PC.
+        Search again keeps your names; Start over forgets every {pets ? 'pet' : 'person'} and name.
+      </small>
+    </div>
+    <button class="btn" onclick={() => store.reidentify(kind, false)} title={`Find the ${pets ? 'pets' : 'faces'} in every photo again; names stay`}>
+      <Icon name="sync" size={14} /> Search again
+    </button>
+    <button class="btn danger" onclick={() => store.reidentify(kind, true)} title={`Forget every ${pets ? 'pet' : 'person'}, name and correction, and search from scratch`}>
+      Start over…
+    </button>
+  </div>
+{/snippet}
 
 <svelte:window
   onkeydown={(e) => {
@@ -320,6 +339,7 @@
         </div>
         <input type="checkbox" class="switch" checked={!!store.faces?.enabled} onchange={(e) => store.setFaces(e.currentTarget.checked)} />
       </label>
+      {@render again('person')}
     </section>
 
     <section>
@@ -344,6 +364,7 @@
         </div>
         <input type="checkbox" class="switch" checked={!!store.petStatus?.enabled} onchange={(e) => store.setPets(e.currentTarget.checked)} />
       </label>
+      {@render again('pet')}
     </section>
 
     <section>

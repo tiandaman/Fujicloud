@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use fuji_core::db::{AlbumRow, PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
-use fuji_core::people::{FaceRow, PersonRow};
+use fuji_core::people::{FaceRow, PersonRow, Subject};
 use fuji_core::thumbs::{self, Size};
 use fuji_core::{Kind, Library, discard, dupes, export, ingest, meta, scan, xmp};
 use parking_lot::{Mutex, RwLock};
@@ -931,6 +931,60 @@ async fn delete_person(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<
     faces::group(&app, &state)
 }
 
+/// Groups the unnamed faces (or pets) again around the people named so far,
+/// and takes out of each named person what doesn't look like the ones you
+/// confirmed. Returns how many were taken out.
+#[tauri::command]
+async fn regroup_people(app: AppHandle, state: Shared<'_>, kind: Subject) -> CmdResult<usize> {
+    let before = state.lib.people().map_err(err)?;
+    let loosened = state.lib.regroup(kind).map_err(err)?;
+    let _ = app.emit("people-changed", ());
+    // Photos whose names changed tell other PCs.
+    let after = state.lib.people().map_err(err)?;
+    let mut photos: Vec<i64> = before
+        .iter()
+        .chain(after.iter())
+        .filter(|p| p.kind == kind && p.name.is_some())
+        .flat_map(|p| p.photo_ids.iter().copied())
+        .collect();
+    photos.sort_unstable();
+    photos.dedup();
+    sidecars::save(&photos);
+    Ok(loosened)
+}
+
+/// Sends every photo through face (or pet) recognition again. With
+/// `forget_names`, every group and name of that kind goes too.
+#[tauri::command]
+async fn reidentify(
+    app: AppHandle,
+    state: Shared<'_>,
+    kind: Subject,
+    forget_names: bool,
+) -> CmdResult<()> {
+    if forget_names {
+        state.lib.start_over(kind).map_err(err)?;
+    } else {
+        state.lib.search_again(kind).map_err(err)?;
+    }
+    log::info!(
+        "{} searched again, forgetting names: {forget_names}",
+        kind.as_str()
+    );
+    let _ = app.emit("people-changed", ());
+    match kind {
+        Subject::Person => {
+            state.faces.forget_failures();
+            faces::spawn(app, state.inner().clone());
+        }
+        Subject::Pet => {
+            state.pets.forget_failures();
+            pets::spawn(app, state.inner().clone());
+        }
+    }
+    Ok(())
+}
+
 /// Switches photo analysis between the graphics card and the CPU.
 #[tauri::command]
 fn set_smart_gpu(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<smart::Status> {
@@ -1231,6 +1285,8 @@ pub fn run() {
             remove_from_person,
             move_to_person,
             delete_person,
+            regroup_people,
+            reidentify,
             merge_people,
             hide_people,
             hide_face,

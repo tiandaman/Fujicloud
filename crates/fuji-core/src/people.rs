@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Error;
 use crate::db::Library;
@@ -39,7 +39,7 @@ pub const SAME_PERSON: f32 = 0.40;
 pub const SAME_PET: f32 = 0.45;
 
 /// Who a group of faces belongs to: a person, or a pet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Subject {
     Person,
@@ -1113,6 +1113,104 @@ impl Library {
         conn.execute("DELETE FROM people WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    /// Groups everyone again around who's been named: unnamed groups start
+    /// over, every face is first compared with the faces someone confirmed
+    /// for each named person (or pet), and faces filed under a name that
+    /// don't look like those confirmed ones are taken out to be grouped
+    /// again. Names, confirmed faces and hidden strangers stay as they are.
+    /// Returns how many faces were taken out of a named person.
+    pub fn regroup(&self, subject: Subject) -> Result<usize, Error> {
+        let same = subject.same();
+        let kind = subject.as_str();
+        let doubtful = {
+            let mut conn = self.conn.lock();
+            let tx = conn.transaction()?;
+            tx.execute(
+                "UPDATE faces SET person_id = NULL
+                 WHERE kind = ?1 AND confirmed = 0 AND person_id IN
+                   (SELECT id FROM people WHERE name IS NULL AND hidden = 0 AND kind = ?1)",
+                [kind],
+            )?;
+            let current: Option<i64> = tx
+                .query_row(
+                    "SELECT length(embedding) FROM faces WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
+                    [kind],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            // Per named person: what the confirmed faces look like, and the rest.
+            let mut confirmed: HashMap<i64, Centroid> = HashMap::new();
+            let mut filed: Vec<(i64, i64, Vec<f32>)> = Vec::new();
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT f.id, f.person_id, f.confirmed, f.embedding FROM faces f
+                     JOIN people p ON p.id = f.person_id
+                     WHERE f.kind = ?1 AND p.name IS NOT NULL AND length(f.embedding) = ?2",
+                )?;
+                let mut rows = stmt.query(params![kind, current.unwrap_or(0)])?;
+                while let Some(r) = rows.next()? {
+                    let v = subject.comparable(unpack(&r.get::<_, Vec<u8>>(3)?));
+                    let person: i64 = r.get(1)?;
+                    if r.get::<_, i64>(2)? != 0 {
+                        confirmed
+                            .entry(person)
+                            .and_modify(|c| c.add(&v))
+                            .or_insert_with(|| Centroid::new(&v));
+                    } else {
+                        filed.push((r.get(0)?, person, v));
+                    }
+                }
+            }
+            let doubtful: Vec<i64> = filed
+                .iter()
+                .filter(|(_, person, v)| {
+                    confirmed
+                        .get(person)
+                        .is_some_and(|c| c.similarity(v) < same)
+                })
+                .map(|f| f.0)
+                .collect();
+            {
+                let mut loosen =
+                    tx.prepare_cached("UPDATE faces SET person_id = NULL WHERE id = ?1")?;
+                for id in &doubtful {
+                    loosen.execute([id])?;
+                }
+            }
+            tx.execute(
+                "DELETE FROM people WHERE name IS NULL AND hidden = 0 AND kind = ?1
+                   AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)",
+                [kind],
+            )?;
+            tx.commit()?;
+            doubtful.len()
+        };
+        self.group_of(subject)?;
+        Ok(doubtful)
+    }
+
+    /// Every photo searched for faces (or pets) again by this PC's models,
+    /// whatever another PC or an earlier search found. Names stay: a face
+    /// found where a named one was keeps its name.
+    pub fn search_again(&self, subject: Subject) -> Result<(), Error> {
+        self.conn
+            .lock()
+            .execute(&format!("DELETE FROM {}", subject.scans()), [])?;
+        Ok(())
+    }
+
+    /// Forgets every face (or pet), group and name, and that any photo was
+    /// searched: everything is found and grouped afresh.
+    pub fn start_over(&self, subject: Subject) -> Result<(), Error> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM faces WHERE kind = ?1", [subject.as_str()])?;
+        tx.execute("DELETE FROM people WHERE kind = ?1", [subject.as_str()])?;
+        tx.execute(&format!("DELETE FROM {}", subject.scans()), [])?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1246,6 +1344,112 @@ mod tests {
         // Grouping again leaves it be.
         lib.group_faces().unwrap();
         assert!(lib.people().unwrap().iter().any(|x| x.photo_ids == [p[3]]));
+    }
+
+    /// Regrouping starts unnamed groups over around the people named, and
+    /// takes out of a named person a face that doesn't look like the ones
+    /// confirmed for them.
+    #[test]
+    fn regrouping_builds_on_who_is_named() {
+        let lib = library(8);
+        let p = ids(&lib);
+        // Ana, confirmed in two photos.
+        for &id in &p[..2] {
+            lib.store_faces(id, "m", &[face(0, 0.0)]).unwrap();
+        }
+        lib.group_faces().unwrap();
+        let ana = lib.people().unwrap()[0].id;
+        lib.name_person(ana, "Ana").unwrap();
+        for f in lib
+            .faces_in(p[0])
+            .unwrap()
+            .into_iter()
+            .chain(lib.faces_in(p[1]).unwrap())
+        {
+            lib.name_face(f.id, "Ana").unwrap();
+        }
+        // Later photos: Ana again, but stuck in an unnamed group with a
+        // look-alike, and someone else filed under Ana by mistake.
+        for &id in &p[2..5] {
+            lib.store_faces(id, "m", &[face(1, 0.0)]).unwrap();
+        }
+        lib.group_faces().unwrap();
+        let stuck = lib
+            .people()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.name.is_none())
+            .unwrap()
+            .id;
+        // Wrongly grouped with someone else: in truth these are Ana.
+        {
+            let conn = lib.conn.lock();
+            conn.execute(
+                "UPDATE faces SET embedding = ?2 WHERE photo_id IN (?1, ?3)",
+                params![p[2], pack(&look(0, 0.2)), p[3]],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE faces SET person_id = ?2 WHERE photo_id = ?1",
+                params![p[5], ana],
+            )
+            .unwrap();
+        }
+        lib.store_faces(p[5], "m", &[face(4, 0.0)]).unwrap();
+        lib.conn
+            .lock()
+            .execute(
+                "UPDATE faces SET person_id = ?2 WHERE photo_id = ?1",
+                params![p[5], ana],
+            )
+            .unwrap();
+
+        let taken = lib.regroup(Subject::Person).unwrap();
+        assert_eq!(taken, 1, "the stranger filed under Ana");
+        let people = lib.people().unwrap();
+        let ana_now = people.iter().find(|x| x.id == ana).unwrap();
+        assert!(
+            ana_now.photo_ids.contains(&p[2]) && ana_now.photo_ids.contains(&p[3]),
+            "{people:?}"
+        );
+        assert!(!ana_now.photo_ids.contains(&p[5]));
+        assert!(
+            !people
+                .iter()
+                .any(|x| x.id == stuck && x.photo_ids.contains(&p[2]))
+        );
+    }
+
+    /// Searching again keeps names; starting over forgets everything.
+    #[test]
+    fn searching_again_keeps_names_and_starting_over_forgets() {
+        let lib = library(3);
+        let p = ids(&lib);
+        for &id in &p {
+            lib.store_pets(id, "m", &[face(0, 0.0)]).unwrap();
+        }
+        lib.group_faces().unwrap();
+        let mochi = lib.people().unwrap()[0].id;
+        let face0 = lib.faces_in(p[0]).unwrap()[0].id;
+        lib.name_face(face0, "Mochi").unwrap();
+        lib.search_again(Subject::Pet).unwrap();
+        assert_eq!(
+            lib.pets_todo("m").unwrap().len(),
+            3,
+            "every photo searched again"
+        );
+        // The search finds the pet in the same place: the name stays.
+        lib.store_pets(p[0], "m", &[face(0, 0.01)]).unwrap();
+        assert!(
+            lib.people()
+                .unwrap()
+                .iter()
+                .any(|x| x.name.as_deref() == Some("Mochi") && x.photo_ids.contains(&p[0]))
+        );
+        let _ = mochi;
+        lib.start_over(Subject::Pet).unwrap();
+        assert!(lib.people().unwrap().is_empty());
+        assert_eq!(lib.pets_todo("m").unwrap().len(), 3);
     }
 
     /// Photos taken out of the wrong pet go to the right one, or a new name,

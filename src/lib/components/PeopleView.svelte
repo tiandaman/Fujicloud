@@ -10,6 +10,13 @@
 
   let { kind = 'person' }: { kind?: Subject } = $props();
   const pets = $derived(kind === 'pet');
+  let regrouping = $state(false);
+
+  async function regroup() {
+    regrouping = true;
+    await store.regroupPeople(kind);
+    regrouping = false;
+  }
   const everyone = $derived(pets ? store.pets : store.people);
   const named = $derived(everyone.filter((p) => p.name));
   // A group needs a couple of photos before it's worth asking about.
@@ -260,7 +267,20 @@
 
     {#if unnamed.length}
       <section>
-        <h2>{pets ? 'Which pet is this?' : "Who's this?"}</h2>
+        <div class="section-head">
+          <h2>{pets ? 'Which pet is this?' : "Who's this?"}</h2>
+          {#if named.length}
+            <button
+              class="btn subtle regroup"
+              disabled={regrouping}
+              title={`Group these again around the ${pets ? 'pets' : 'people'} you've named, and take out of each named one the photos that don't look like the ones you confirmed`}
+              onclick={regroup}
+            >
+              <Icon name="sync" size={13} />
+              {regrouping ? 'Grouping…' : `Regroup around named ${pets ? 'pets' : 'people'}`}
+            </button>
+          {/if}
+        </div>
         <p class="hint">
           {#if pets}
             Name a pet and Fujicloud finds them in new photos too. Using a name that's already taken adds the photos to that pet. Not yours?
@@ -356,6 +376,18 @@
   }
   section + section {
     margin-top: 26px;
+  }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .regroup {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
   }
   h2 {
     margin: 0 0 14px;

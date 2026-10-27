@@ -90,6 +90,11 @@ impl Pets {
         Ok(models)
     }
 
+    /// Lets photos that couldn't be read be tried again.
+    pub fn forget_failures(&self) {
+        self.failed.lock().clear();
+    }
+
     pub fn disable(&self, app: &AppHandle, state: &AppState) {
         *self.models.lock() = None;
         self.update(app, state, |s| *s = Status::default());

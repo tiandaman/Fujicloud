@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, DuplicateGroup, FaceInPhoto, FacesStatus, Person, PetsStatus, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, DuplicateGroup, FaceInPhoto, FacesStatus, Person, PetsStatus, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source, Subject } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -41,6 +41,10 @@ export interface Api {
   mergePeople(from: number[], into: number): Promise<number>;
   /** Forgets a person's name; their faces are grouped again. */
   deletePerson(id: number): Promise<void>;
+  /** Groups the unnamed again around who's named, and takes out of each named one what doesn't look like the photos you confirmed. Returns how many were taken out. */
+  regroupPeople(kind: Subject): Promise<number>;
+  /** Sends every photo through face (or pet) recognition again; `forgetNames` also forgets every group and name. */
+  reidentify(kind: Subject, forgetNames: boolean): Promise<void>;
   /** Hides strangers, or brings them back. */
   hidePeople(ids: number[], hidden: boolean): Promise<void>;
   /** "I don't know them", from one face in a photo. Returns who's hidden. */
@@ -126,6 +130,8 @@ function tauriApi(): Api {
       invoke('move_to_person', { from, photoIds, to: 'id' in to ? to.id : null, name: 'name' in to ? to.name : null }),
     deletePerson: (id) => invoke('delete_person', { id }),
     mergePeople: (from, into) => invoke('merge_people', { from, into }),
+    regroupPeople: (kind) => invoke('regroup_people', { kind }),
+    reidentify: (kind, forgetNames) => invoke('reidentify', { kind, forgetNames }),
     hidePeople: (ids, hidden) => invoke('hide_people', { ids, hidden }),
     hideFace: (id) => invoke('hide_face', { id }),
     faceUrl: (id) => `${base}/f/${id}?v=${cacheVersion.n}`,

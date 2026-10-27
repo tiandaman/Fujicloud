@@ -543,6 +543,14 @@ export function mockApi(): Api {
     async deletePerson(id) {
       people = people.map((p) => (p.id === id ? { ...p, name: null } : p));
     },
+    async regroupPeople(kind) {
+      await delay(500);
+      return people.filter((p) => p.kind === kind && !p.name).length ? 1 : 0;
+    },
+    async reidentify(kind, forgetNames) {
+      await delay(200);
+      if (forgetNames) people = people.map((p) => (p.kind === kind ? { ...p, name: null } : p));
+    },
     async hidePeople(ids, hidden) {
       people = people.map((p) => (ids.includes(p.id) ? { ...p, hidden } : p));
     },

@@ -24,6 +24,7 @@ import type {
   SmartStatus,
   SortKey,
   Source,
+  Subject,
   SyncStatus,
 } from './types';
 
@@ -999,6 +1000,47 @@ class Store {
       await api.deletePerson(id);
       await this.loadPeople();
       if (this.collection.type === 'person' && this.collection.id === id) this.setCollection(back);
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Groups the unnamed faces (or pets) again around the ones you've named. */
+  async regroupPeople(kind: Subject) {
+    try {
+      const loosened = await api.regroupPeople(kind);
+      await this.loadPeople();
+      const who = kind === 'pet' ? 'pets' : 'people';
+      this.toast(
+        loosened
+          ? `Grouped again. ${plural(loosened, 'photo')} that didn't look like your named ${who} went back to be asked about.`
+          : `Grouped again around your named ${who}.`,
+      );
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Sends every photo through face (or pet) recognition again, keeping names or forgetting them. */
+  async reidentify(kind: Subject, forgetNames: boolean) {
+    const pets = kind === 'pet';
+    if (forgetNames) {
+      const ok = await this.ask(
+        pets ? 'Forget every pet and start over?' : 'Forget everyone and start over?',
+        `Every ${pets ? 'pet' : 'person'}, name and correction is forgotten, and all photos are searched for ${pets ? 'pets' : 'faces'} again from scratch. Photos and their files are not touched.`,
+        'Start over',
+      );
+      if (!ok) return;
+    }
+    try {
+      await api.reidentify(kind, forgetNames);
+      await this.loadPeople();
+      const status = pets ? this.petStatus : this.faces;
+      this.toast(
+        status?.enabled
+          ? `Searching every photo for ${pets ? 'pets' : 'faces'} again${forgetNames ? '' : '. Names stay'}.`
+          : `Done. Turn on ${pets ? 'pets' : 'face recognition'} to search the photos again.`,
+      );
     } catch (e) {
       this.toast(String(e), 'error');
     }
