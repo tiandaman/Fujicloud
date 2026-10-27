@@ -274,15 +274,19 @@ pub struct Identifier {
 
 impl Identifier {
     pub fn load(dir: &Path, threads: usize) -> Result<Self, Error> {
+        Self::load_file(&dir.join("pets").join(IDENTIFIER), threads)
+    }
+
+    /// A DINOv2 export of any size (the tests compare them).
+    pub fn load_file(file: &Path, threads: usize) -> Result<Self, Error> {
         let env = environment()?;
-        let file = dir.join("pets").join(IDENTIFIER);
         let fail = |e: &dyn std::fmt::Display| Error::Model(format!("{}: {e}", file.display()));
         let builder = Session::builder(&env).map_err(|e| fail(&e))?;
         let mut builder = builder
             .with_intra_threads(threads.max(1))
             .map_err(|e| fail(&e))?;
         Ok(Self {
-            session: Mutex::new(builder.commit_from_file(&file).map_err(|e| fail(&e))?),
+            session: Mutex::new(builder.commit_from_file(file).map_err(|e| fail(&e))?),
         })
     }
 
@@ -800,9 +804,27 @@ mod tests {
         download(&models, &|_, _| {}).expect("download the detector and DINOv2");
         let detector = Detector::load(&models, 4).unwrap();
         let dino = Identifier::load(&models, 4).unwrap();
+        // Bigger DINOv2s, to see whether they tell pets apart better.
+        let trials: Vec<(&str, Identifier)> = [
+            ("base", "model.onnx"),
+            ("base-int8", "model_quantized.onnx"),
+        ]
+        .into_iter()
+        .map(|(label, file)| {
+            let path = models
+                .join("pets-trial")
+                .join(format!("dinov2-base-{file}"));
+            let url = format!("https://huggingface.co/Xenova/dinov2-base/resolve/main/onnx/{file}");
+            download_files(&[(url.as_str(), path.clone())], &|_, _| {})
+                .expect("download DINOv2 base");
+            (label, Identifier::load_file(&path, 4).unwrap())
+        })
+        .collect();
+        let mut took = vec![std::time::Duration::ZERO; 1 + trials.len()];
         // Per pet: DINOv2 on the square crop the app has used, DINOv2 on
-        // just what's in the box, and the coat's colours.
-        type Descriptors = [Vec<f32>; 3];
+        // just what's in the box, the coat's colours, then each bigger
+        // DINOv2 on just what's in the box.
+        type Descriptors = Vec<Vec<f32>>;
         let mut prior_d: Vec<Descriptors> = Vec::new();
         let mut pets_d: Vec<(usize, Descriptors)> = Vec::new();
 
@@ -819,11 +841,19 @@ mod tests {
                 missed += 1;
                 continue;
             };
-            let square = dino.describe(&crop(&image, &pet).unwrap()).unwrap();
-            let boxed = dino
-                .describe(&crate::thumbs::crop_box(&image, pet.bbox, 224).unwrap())
+            let square = dino
+                .describe(&crate::thumbs::crop_square(&image, pet.bbox, 1.1, 320).unwrap())
                 .unwrap();
-            let d = [square, boxed, coat(&image, pet.bbox)];
+            let jpeg = crate::thumbs::crop_box(&image, pet.bbox, 224).unwrap();
+            let start = std::time::Instant::now();
+            let boxed = dino.describe(&jpeg).unwrap();
+            took[0] += start.elapsed();
+            let mut d = vec![square, boxed, coat(&image, pet.bbox)];
+            for (n, (_, model)) in trials.iter().enumerate() {
+                let start = std::time::Instant::now();
+                d.push(model.describe(&jpeg).unwrap());
+                took[n + 1] += start.elapsed();
+            }
             if *breed >= CATS.len() || *i < LEARN {
                 prior_d.push(d);
             } else {
@@ -881,7 +911,27 @@ mod tests {
         report("square", &square);
         report("box", &boxed);
         report("coat", &coats);
-        for share in [0.2f32, 0.35, 0.5] {
+        let count = (prior_d.len() + pets_d.len()) as u32;
+        println!("small: {:?} a pet", took[0] / count);
+        for (n, (label, _)) in trials.iter().enumerate() {
+            println!("{label}: {:?} a pet", took[n + 1] / count);
+            let (_, bigger) = centred(3 + n);
+            report(&format!("{label} box"), &bigger);
+            let mixed: Vec<(usize, Vec<f32>)> = bigger
+                .iter()
+                .zip(&coats)
+                .map(|((b, d), (_, c))| {
+                    let v = d
+                        .iter()
+                        .map(|x| x * 0.8f32.sqrt())
+                        .chain(c.iter().map(|x| x * 0.2f32.sqrt()))
+                        .collect();
+                    (*b, v)
+                })
+                .collect();
+            report(&format!("{label} box+coat 0.20"), &mixed);
+        }
+        for share in [0.2f32, 0.35] {
             let mixed: Vec<(usize, Vec<f32>)> = boxed
                 .iter()
                 .zip(&coats)
