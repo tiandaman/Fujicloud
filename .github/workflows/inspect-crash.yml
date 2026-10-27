@@ -1,0 +1,46 @@
+name: Inspect a crash
+# The code at a crash address from someone's log ("crashed: exception ... in
+# ...\fujicloud.exe at +0x..."), looked up in the exact installer they ran.
+# Run it from the Actions tab with the build's run id and the offset; a push
+# that changes it looks up the defaults below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: Run id of the build they installed (from its Actions URL)
+        required: true
+      offset:
+        description: Offset from the log, e.g. 0x1d059f8
+        required: true
+  push:
+    paths:
+      - .github/workflows/inspect-crash.yml
+      - scripts/inspect-crash.py
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      # v0.2.50 (Build #50), smart search crashing on start.
+      RUN: ${{ inputs.run || '40423454832' }}
+      OFFSET: ${{ inputs.offset || '0x1d059f8' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: Fujicloud-Windows-installer
+          run-id: ${{ env.RUN }}
+          github-token: ${{ github.token }}
+          path: installer
+      - name: Unpack fujicloud.exe
+        run: |
+          7z x -oapp installer/nsis/*.exe > /dev/null
+          find app -iname 'fujicloud.exe'
+      - run: pip install pefile capstone
+      - name: The code at the crash
+        run: python3 scripts/inspect-crash.py "$(find app -iname 'fujicloud.exe' | head -1)" "$OFFSET"
