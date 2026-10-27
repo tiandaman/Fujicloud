@@ -150,6 +150,7 @@
     background: var(--bg);
   }
   .content {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: flex;

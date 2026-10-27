@@ -110,6 +110,8 @@ class Store {
   sidebar = $state(true);
 
   selection = $state.raw<Set<number>>(new Set());
+  /** Selection toolbelts showing, so toasts make room. */
+  toolbelts = $state(0);
   focusId = $state<number | null>(null);
   anchorId: number | null = null;
   viewerId = $state<number | null>(null);
@@ -128,7 +130,8 @@ class Store {
   /** The export sheet, for these photos. */
   exportDialog = $state.raw<{ ids: number[] } | null>(null);
   /** "Merge with…": who to merge `id` into. */
-  mergePicker = $state.raw<{ x: number; y: number; id: number } | null>(null);
+  /** Merging a person into another, or with `photos`, moving those photos to someone. */
+  mergePicker = $state.raw<{ x: number; y: number; id: number; photos?: number[] } | null>(null);
   /** Export progress while one runs. */
   exporting = $state.raw<{ done: number; total: number } | null>(null);
   /** A question waiting for an answer (see `ask`). */
@@ -907,6 +910,19 @@ class Store {
       await this.loadPeople();
       const name = this.personById.get(id)?.name ?? 'this person';
       this.toast(`Removed ${plural(photoIds.length, 'photo')} from ${name}`);
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** "Not this person, it's that one" (or a new name) for these photos. */
+  async moveToPerson(from: number, photoIds: number[], to: { id: number } | { name: string }) {
+    try {
+      const id = await api.moveToPerson(from, photoIds, to);
+      await this.loadPeople();
+      this.selection = new Set();
+      const p = this.personById.get(id);
+      this.toast(`Moved ${plural(photoIds.length, 'photo')} to ${p?.name ?? (p?.kind === 'pet' ? 'another pet' : 'someone else')}`);
     } catch (e) {
       this.toast(String(e), 'error');
     }

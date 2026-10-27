@@ -3,6 +3,8 @@
   import { formatBytes, formatCount, plural } from '../format';
   import { store } from '../store.svelte';
   import type { Person, Subject } from '../types';
+  import { marquee, touches, type Box } from '../marquee';
+  import ActionBar, { type BarAction } from './ActionBar.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import Icon from './Icon.svelte';
 
@@ -11,7 +13,7 @@
   const everyone = $derived(pets ? store.pets : store.people);
   const named = $derived(everyone.filter((p) => p.name));
   // A group needs a couple of photos before it's worth asking about.
-  const unnamed = $derived(everyone.filter((p) => !p.name && p.photoIds.length > 1));
+  const unnamed = $derived(everyone.filter((p) => !p.name && (p.photoIds.length > 1 || p.takenOut)));
   const status = $derived(pets ? store.petStatus : store.faces);
   const hidden = $derived((pets ? store.hiddenPets : store.hiddenPeople).filter((p) => p.photoIds.length > 0));
   const hideLabel = $derived(pets ? 'Hide: not my pet' : "Hide: I don't know them");
@@ -88,6 +90,61 @@
     };
   }
 
+  // Drag a box over faces to select them.
+  let canvas = $state<HTMLDivElement>();
+  const boxSelect = {
+    canvas: () => canvas,
+    selected: () => picked,
+    select: (ids: Set<number>) => (picked = [...ids]),
+    hits: (b: Box) => {
+      const c = canvas?.getBoundingClientRect();
+      if (!canvas || !c) return [];
+      return [...canvas.querySelectorAll<HTMLElement>('[data-person]')]
+        .filter((el) => {
+          const r = el.getBoundingClientRect();
+          return touches(b, r.left - c.left, r.top - c.top, r.width, r.height);
+        })
+        .map((el) => Number(el.dataset.person));
+    },
+  };
+
+  /** The toolbelt for faces picked: merge them, or hide them. */
+  const one = $derived(picked.length === 1 ? store.personById.get(picked[0]) : undefined);
+  const actions: BarAction[] = $derived([
+    {
+      icon: pets ? 'paw' : 'people',
+      label: 'Merge',
+      tone: 'primary',
+      title: picked.length < 2 ? `Pick another to merge with, or use Merge with…` : `The same ${pets ? 'pet' : 'person'}: make them one`,
+      disabled: picked.length < 2,
+      run: merge,
+    },
+    {
+      icon: 'similar',
+      label: 'Merge with…',
+      title: `Choose who ${one?.name ?? (pets ? 'this pet' : 'this person')} is the same as`,
+      hidden: picked.length !== 1,
+      run: (e: MouseEvent) => {
+        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        const id = picked[0];
+        picked = [];
+        store.mergePicker = { x: r.left, y: Math.max(10, r.top - 348), id };
+      },
+    },
+    {
+      icon: 'edit',
+      label: one?.name ? 'Rename' : 'Name',
+      hidden: picked.length !== 1,
+      run: () => {
+        if (!one) return;
+        drafts[one.id] = one.name ?? '';
+        renaming = one.id;
+        picked = [];
+      },
+    },
+    { icon: 'eye-off', label: 'Hide', title: hideLabel, run: () => hide(picked) },
+  ]);
+
   /** Renaming starts in the box; the "Add a name" boxes wait to be clicked. */
   function focus(el: HTMLInputElement, on: boolean) {
     if (!on) return;
@@ -97,7 +154,7 @@
 </script>
 
 {#snippet face(p: Person, size: number)}
-  <div class="face-wrap" class:picked={picked.includes(p.id)} class:hidden={p.hidden}>
+  <div class="face-wrap" class:picked={picked.includes(p.id)} class:hidden={p.hidden} data-person={p.hidden ? undefined : p.id}>
     <button
       class="face"
       style:width="{size}px"
@@ -112,11 +169,11 @@
         <Icon name="eye" size={12} stroke={2} />
       </button>
     {:else}
-      <button class="tick" aria-label={picked.includes(p.id) ? 'Unselect' : 'Select to merge'} onclick={() => toggle(p)}>
+      <button class="tick" data-no-marquee aria-label={picked.includes(p.id) ? 'Unselect' : 'Select to merge'} onclick={() => toggle(p)}>
         <Icon name="check" size={12} stroke={3} />
       </button>
       {#if !p.name}
-        <button class="corner dismiss" title={hideLabel} aria-label="Hide" onclick={() => hide([p.id])}>
+        <button class="corner dismiss" data-no-marquee title={hideLabel} aria-label="Hide" onclick={() => hide([p.id])}>
           <Icon name="x" size={11} stroke={2.6} />
         </button>
       {/if}
@@ -144,7 +201,8 @@
   {#each pets ? store.petNames : store.names as n (n)}<option value={n}></option>{/each}
 </datalist>
 
-<div class="people">
+<div class="people" use:marquee={boxSelect}>
+<div class="canvas" bind:this={canvas}>
   {#if !status?.enabled && pets}
     <div class="intro">
       <Icon name="paw" size={44} stroke={1.2} />
@@ -269,20 +327,10 @@
     {/if}
   {/if}
 </div>
+</div>
 
 {#if picked.length}
-  <div class="merge-bar">
-    <span>
-      {#if picked.length === 1}1 selected: pick another to merge{:else}{picked.length} selected: the same {pets ? 'pet' : 'person'}?{/if}
-    </span>
-    <button class="btn primary" disabled={picked.length < 2} onclick={merge}>
-      <Icon name="people" size={14} /> Merge
-    </button>
-    <button class="btn" title={hideLabel} onclick={() => hide(picked)}>
-      <Icon name="eye-off" size={14} /> Hide
-    </button>
-    <button class="btn subtle" onclick={() => (picked = [])}>Cancel</button>
-  </div>
+  <ActionBar count={picked.length} noun={picked.length === 1 ? (pets ? 'pet' : 'person') : pets ? 'pets' : 'people'} {actions} oncancel={() => (picked = [])} />
 {/if}
 
 <svelte:window
@@ -296,6 +344,10 @@
 {/if}
 
 <style>
+  .canvas {
+    position: relative;
+    min-height: 100%;
+  }
   .people {
     flex: 1;
     min-width: 0;
@@ -435,29 +487,6 @@
   .show-again:hover {
     background: var(--accent);
     color: #fff;
-  }
-  .merge-bar {
-    position: fixed;
-    left: 50%;
-    bottom: 26px;
-    z-index: 60;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 8px 8px 16px;
-    transform: translateX(-50%);
-    border-radius: 14px;
-    background: rgba(44, 44, 48, 0.94);
-    backdrop-filter: blur(20px) saturate(1.5);
-    box-shadow: var(--shadow-md), inset 0 0 0 0.5px var(--border);
-    font-size: 13px;
-    animation: rise 200ms var(--ease-out);
-  }
-  @keyframes rise {
-    from {
-      opacity: 0;
-      transform: translate(-50%, 8px);
-    }
   }
   .face {
     padding: 0;

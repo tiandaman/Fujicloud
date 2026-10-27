@@ -6,13 +6,17 @@
   import { computeLayout, firstRowAfter, headerAt, verticalNeighbor, type Row } from '../layout';
   import { store } from '../store.svelte';
   import type { Photo } from '../types';
+  import { marquee, touches } from '../marquee';
+  import ActionBar, { type BarAction } from './ActionBar.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import Icon from './Icon.svelte';
+  import Stars from './Stars.svelte';
 
   // Render this far beyond the viewport so fast flicks rarely show gaps.
   const OVERSCAN = 900;
 
   let scroller: HTMLDivElement;
+  let canvas = $state<HTMLDivElement>();
   let width = $state(0);
   let height = $state(0);
   let scrollTop = $state(0);
@@ -149,11 +153,73 @@
   let press: { x: number; y: number; id: number } | null = null;
   let dragged = false;
 
+  /** Dragging a selected photo (or any, with Alt) takes the selection out to
+   * Explorer or Photoshop; dragging anywhere else draws a box to select. */
+  const dragsOut = (e: PointerEvent, id: number) => api.native && (store.selection.has(id) || e.altKey);
+
   function onTilePointerDown(e: PointerEvent, p: Photo) {
     dragged = false;
     // Touch drags scroll the grid; only a mouse or pen drags photos out.
-    if (e.button === 0 && e.pointerType !== 'touch' && api.native) press = { x: e.clientX, y: e.clientY, id: p.id };
+    if (e.button === 0 && e.pointerType !== 'touch' && dragsOut(e, p.id)) press = { x: e.clientX, y: e.clientY, id: p.id };
   }
+
+  const boxSelect = {
+    canvas: () => canvas,
+    selected: () => store.selection,
+    select: (ids: Set<number>) => (store.selection = ids),
+    from: (e: PointerEvent) => {
+      const tile = (e.target as HTMLElement).closest<HTMLElement>('.tile');
+      return !tile || !dragsOut(e, Number(tile.dataset.id));
+    },
+    hits: (b: import('../marquee').Box) => {
+      const out: number[] = [];
+      const { boxes, flat } = layout;
+      for (let i = 0; i < flat.length; i++) {
+        if (touches(b, boxes[i * 4], boxes[i * 4 + 1], boxes[i * 4 + 2], boxes[i * 4 + 3])) out.push(flat[i].id);
+      }
+      return out;
+    },
+  };
+
+  // ---- the toolbelt: what to do with the selection -----------------------------------
+
+  const picked = $derived([...store.selection]);
+  /** Opens a picker just above the toolbelt button that asked for it. */
+  const above = (e: MouseEvent, height: number) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return { x: r.left, y: Math.max(10, r.top - height - 8) };
+  };
+  const person = $derived(store.collection.type === 'person' ? store.personById.get(store.collection.id) : undefined);
+  const album = $derived(store.collection.type === 'album' ? store.albumById.get(store.collection.id) : undefined);
+  const actions: BarAction[] = $derived.by(() => {
+    const ids = picked;
+    const all = (test: (p: Photo) => boolean) => ids.every((id) => {
+      const p = store.byId.get(id);
+      return !!p && test(p);
+    });
+    const pair = store.comparisonOf(ids);
+    const who = person?.name ?? (person?.kind === 'pet' ? 'this pet' : 'this person');
+    return [
+      { icon: 'flag', label: all((p) => p.flag === 1) ? 'Unpick' : 'Pick', title: 'Pick (P)', run: () => store.flag(all((p) => p.flag === 1) ? 0 : 1, ids) },
+      { icon: 'x', label: all((p) => p.flag === -1) ? 'Unreject' : 'Reject', title: 'Reject (X)', run: () => store.flag(all((p) => p.flag === -1) ? 0 : -1, ids) },
+      { icon: 'heart', label: all((p) => p.favorite) ? 'Unfavourite' : 'Favourite', title: 'Favourite (.)', run: () => store.favorite(ids) },
+      { icon: 'album', label: 'Album…', title: 'Add to album', run: (e: MouseEvent) => (store.albumPicker = { ...above(e, 300), ids }) },
+      { icon: 'compare', label: 'Compare', title: 'Compare (C)', run: () => pair && store.openCompare(pair), hidden: !pair },
+      {
+        icon: person?.kind === 'pet' ? 'paw' : 'people',
+        label: 'Move to…',
+        title: `Not ${who}: say who it is`,
+        run: (e: MouseEvent) => person && (store.mergePicker = { ...above(e, 340), id: person.id, photos: ids }),
+        hidden: !person,
+      },
+      { icon: 'eye-off', label: `Not ${who}`, title: `Not ${who}: they'll wait to be named`, run: () => person && store.removeFromPerson(person.id, ids), hidden: !person },
+      { icon: 'x', label: 'Remove', title: `Remove from “${album?.name}”`, run: () => album && store.removeFromAlbum(album.id, ids), hidden: !album },
+      { icon: 'edit', label: 'Edit', title: 'Edit in Photoshop (Ctrl+E)', run: () => store.edit(ids) },
+      { icon: 'export', label: 'Export…', title: 'Export (Ctrl+Shift+E)', run: () => (store.exportDialog = { ids }) },
+      { icon: 'trash', label: 'Delete', title: 'Delete (Del)', tone: 'danger', run: () => store.deletePhotos(ids) },
+    ];
+  });
+  const rating = $derived(picked.length && picked.every((id) => store.byId.get(id)?.rating === store.byId.get(picked[0])?.rating) ? (store.byId.get(picked[0])?.rating ?? 0) : 0);
 
   function onWindowPointerMove(e: PointerEvent) {
     if (!press) return;
@@ -302,8 +368,9 @@
     bind:clientHeight={height}
     onscroll={onScroll}
     onwheel={onWheel}
+    use:marquee={boxSelect}
   >
-    <div class="canvas" style:height="{layout.height}px">
+    <div class="canvas" bind:this={canvas} style:height="{layout.height + (store.selection.size ? 96 : 0)}px">
       {#each visible.headers as row (row.section!.key)}
         <header class="section" style:transform="translateY({row.y}px)">
           <h2>{row.section!.title}</h2>
@@ -319,6 +386,7 @@
         {@const selected = store.selection.has(p.id)}
         <div
           class="tile"
+          data-id={p.id}
           class:grid={store.mode === 'grid'}
           class:selected
           class:selecting={store.selection.size > 0}
@@ -394,6 +462,12 @@
       {/each}
     </div>
   </div>
+
+  {#if store.selection.size && store.viewerId == null}
+    <ActionBar count={store.selection.size} noun={store.selection.size === 1 ? 'photo' : 'photos'} {actions} oncancel={() => (store.selection = new Set())}>
+      {#snippet extra()}<Stars value={rating} size={16} onrate={(r) => store.rate(r, picked)} />{/snippet}
+    </ActionBar>
+  {/if}
 
   {#if sticky}
     <div class="sticky">

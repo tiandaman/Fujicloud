@@ -387,6 +387,8 @@
       <dl>
         <dt><span class="kbd">Space</span></dt><dd>Open / close photo</dd>
         <dt><span class="kbd">Ctrl</span> + click</dt><dd>Select several</dd>
+        <dt>Drag a box</dt><dd>Select what it touches (<span class="kbd">Ctrl</span> adds)</dd>
+        <dt>Drag selected</dt><dd>Out to Explorer or Photoshop (<span class="kbd">Alt</span>: any photo)</dd>
         <dt><span class="kbd">←</span> <span class="kbd">→</span></dt><dd>Previous / next</dd>
         <dt><span class="kbd">1</span>–<span class="kbd">5</span></dt><dd>Rate (<span class="kbd">0</span> clears)</dd>
         <dt><span class="kbd">P</span> <span class="kbd">X</span> <span class="kbd">U</span></dt><dd>Pick / reject / unflag</dd>

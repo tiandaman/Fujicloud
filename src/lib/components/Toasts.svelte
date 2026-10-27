@@ -2,7 +2,7 @@
   import { store } from '../store.svelte';
 </script>
 
-<div class="toasts" aria-live="polite">
+<div class="toasts" class:raised={store.toolbelts > 0} aria-live="polite">
   {#each store.toasts as t (t.id)}
     <div class="toast" class:error={t.tone === 'error'}>
       {t.text}
@@ -24,6 +24,7 @@
     position: fixed;
     left: 50%;
     bottom: 28px;
+    transition: bottom 260ms var(--ease-out);
     z-index: 100;
     display: flex;
     flex-direction: column;
@@ -65,5 +66,9 @@
       opacity: 0;
       transform: translateY(10px) scale(0.96);
     }
+  }
+  /* Above the selection toolbelt, not over it. */
+  .toasts.raised {
+    bottom: 92px;
   }
 </style>
