@@ -293,8 +293,7 @@ pub fn save_sidecars(lib: &Library, ids: &[i64]) -> Result<usize, Error> {
     }
     let mut failed = 0;
     for (sidecar, (file, kind, ids)) in groups {
-        let saved = lib
-            .tags(ids[0])
+        let saved = pair_tags(lib, &ids)
             .map_err(std::io::Error::other)
             .and_then(|tags| {
                 xmp::write(&file, kind, &tags)?;
@@ -315,6 +314,23 @@ pub fn save_sidecars(lib: &Library, ids: &[i64]) -> Result<usize, Error> {
         }
     }
     Ok(failed)
+}
+
+/// What a shared sidecar records: the pair's ratings and albums (the same
+/// on both halves), and what the models found in whichever half they looked
+/// at (the JPEG, not the RAW behind it).
+fn pair_tags(lib: &Library, ids: &[i64]) -> Result<Tags, Error> {
+    let mut tags = lib.tags(ids[0])?;
+    for &id in &ids[1..] {
+        if tags.faces.is_some() && tags.pets.is_some() && tags.smart.is_some() {
+            break;
+        }
+        let other = lib.tags(id)?;
+        tags.faces = tags.faces.or(other.faces);
+        tags.pets = tags.pets.or(other.pets);
+        tags.smart = tags.smart.or(other.smart);
+    }
+    Ok(tags)
 }
 
 /// Indexes specific files (e.g. fresh imports) without walking the source.
@@ -584,6 +600,10 @@ mod tests {
             .find(|p| p.photo_ids.len() == 2)
             .unwrap();
         a.name_person(ana.id, "Ana").unwrap();
+        // The pair's sidecar has what was found in the JPEG, whichever half
+        // the library lists first.
+        let raf = photo(&a, "DSCF0001.RAF").id;
+        assert!(pair_tags(&a, &[raf, jpg]).unwrap().faces.is_some());
         assert_eq!(save_sidecars(&a, &[jpg, img]).unwrap(), 0);
         tick();
 
