@@ -303,7 +303,7 @@ export function mockApi(): Api {
         cover: (i + 1) * 1000,
         faces: 0,
         photoIds: shown.filter((p) => p.id % (every as number) === 0).slice(0, 60 - i * 6).map((p) => p.id),
-        hidden: false,
+        hidden: false, takenOut: false,
         kind: 'person' as const,
       }));
   // Three cats: one named, two waiting for a name.
@@ -321,7 +321,7 @@ export function mockApi(): Api {
         cover: (21 + i) * 1000,
         faces: 0,
         photoIds: shown.filter((p) => p.id % every === 1).slice(0, 40 - i * 8).map((p) => p.id),
-        hidden: false,
+        hidden: false, takenOut: false,
         kind: 'pet' as const,
       })),
     );
@@ -496,14 +496,39 @@ export function mockApi(): Api {
       const kind = people.find((p) => faceId > p.cover && faceId - p.cover < 1000)?.kind ?? 'person';
       let person = people.find((p) => p.kind === kind && p.name?.toLowerCase() === name.trim().toLowerCase());
       if (!person) {
-        person = { id: people.length + 100, name: name.trim(), cover: faceId, faces: 0, photoIds: [], hidden: false, kind };
+        person = { id: people.length + 100, name: name.trim(), cover: faceId, faces: 0, photoIds: [], hidden: false, kind, takenOut: false };
         people = [...people, person];
       }
       people = people.map((p) => (p.id === person!.id ? { ...p, photoIds: [...p.photoIds, photoId], faces: p.faces + 1 } : p));
       return person.id;
     },
     async removeFromPerson(id, photoIds) {
+      const from = people.find((p) => p.id === id)!;
       people = people.map((p) => (p.id === id ? { ...p, photoIds: p.photoIds.filter((x) => !photoIds.includes(x)) } : p));
+      // As the app does: each taken out is asked about on its own.
+      let next = Math.max(...people.map((p) => p.id)) + 1;
+      for (const photo of photoIds) {
+        people = [...people, { id: next++, name: null, cover: from.cover, faces: 1, photoIds: [photo], hidden: false, kind: from.kind, takenOut: true }];
+      }
+    },
+    async moveToPerson(from, photoIds, to) {
+      const source = people.find((p) => p.id === from)!;
+      let target = 'id' in to ? people.find((p) => p.id === to.id) : people.find((p) => p.name === to.name && p.kind === source.kind);
+      if (!target) {
+        target = { id: Math.max(...people.map((p) => p.id)) + 1, name: 'name' in to ? to.name : null, cover: source.cover, faces: 0, photoIds: [], hidden: false, kind: source.kind, takenOut: false };
+        people = [...people, target];
+      }
+      const id = target.id;
+      people = people
+        .map((p) =>
+          p.id === from
+            ? { ...p, photoIds: p.photoIds.filter((x) => !photoIds.includes(x)) }
+            : p.id === id
+              ? { ...p, photoIds: [...new Set([...p.photoIds, ...photoIds])], hidden: false }
+              : p,
+        )
+        .filter((p) => p.name || p.photoIds.length);
+      return id;
     },
     async mergePeople(from, into) {
       const target = people.find((p) => p.id === into)!;
@@ -529,7 +554,7 @@ export function mockApi(): Api {
       }
       hiddenFaces.add(faceId);
       const id = 500 + hiddenFaces.size;
-      people = [...people, { id, name: null, cover: faceId, faces: 1, photoIds: [faceId - 90000], hidden: true, kind: 'person' }];
+      people = [...people, { id, name: null, cover: faceId, faces: 1, photoIds: [faceId - 90000], hidden: true, kind: 'person', takenOut: false }];
       return id;
     },
     faceUrl: (id) => avatar(Math.floor(id / 1000) || id),

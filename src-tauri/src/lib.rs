@@ -875,6 +875,26 @@ async fn remove_from_person(
     faces::group(&app, &state)
 }
 
+/// "Not this person, it's that one": moves `from`'s faces in these photos to
+/// `to`, or to `name` (found or made). Returns who they went to.
+#[tauri::command]
+async fn move_to_person(
+    app: AppHandle,
+    state: Shared<'_>,
+    from: i64,
+    photo_ids: Vec<i64>,
+    to: Option<i64>,
+    name: Option<String>,
+) -> CmdResult<i64> {
+    let person = state
+        .lib
+        .move_to_person(from, &photo_ids, to, name.as_deref())
+        .map_err(err)?;
+    sidecars::save(&photo_ids);
+    faces::group(&app, &state)?;
+    Ok(person)
+}
+
 /// One person found as several: moves `from` into `into`.
 #[tauri::command]
 async fn merge_people(state: Shared<'_>, from: Vec<i64>, into: i64) -> CmdResult<i64> {
@@ -1209,6 +1229,7 @@ pub fn run() {
             name_person,
             name_face,
             remove_from_person,
+            move_to_person,
             delete_person,
             merge_people,
             hide_people,

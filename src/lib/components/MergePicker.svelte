@@ -4,7 +4,7 @@
   import { store } from '../store.svelte';
   import Icon from './Icon.svelte';
 
-  let { x, y, id }: { x: number; y: number; id: number } = $props();
+  let { x, y, id, photos }: { x: number; y: number; id: number; photos?: number[] } = $props();
 
   let el: HTMLDivElement;
   let query = $state('');
@@ -27,11 +27,25 @@
     store.mergePicker = null;
   }
 
+  /** With photos: they're someone else's (a typed name, if no one has it). */
+  const fresh = $derived.by(() => {
+    const name = query.trim();
+    if (!photos || !name) return null;
+    return (pet ? store.pets : store.people).some((p) => p.name?.toLowerCase() === name.toLowerCase()) ? null : name;
+  });
+
   function pick(into: number) {
     // Closing unmounts this picker and its props with it: read them first.
-    const from = id;
+    const [from, moved] = [id, photos];
     close();
-    store.mergePeople([from, into], into);
+    if (moved) store.moveToPerson(from, moved, { id: into });
+    else store.mergePeople([from, into], into);
+  }
+
+  function pickName(name: string) {
+    const [from, moved] = [id, photos];
+    close();
+    if (moved) store.moveToPerson(from, moved, { name });
   }
 
   function focus(el: HTMLInputElement) {
@@ -49,22 +63,34 @@
 />
 
 <div class="scrim" role="presentation" onclick={close}></div>
-<div class="picker" bind:this={el} style:left="{pos.left}px" style:top="{pos.top}px" role="dialog" aria-label="Merge with">
+<div class="picker" bind:this={el} style:left="{pos.left}px" style:top="{pos.top}px" role="dialog" aria-label={photos ? 'Move to' : 'Merge with'}>
   <header>
-    <strong>Merge {me?.name ?? (pet ? 'this pet' : 'this person')} with…</strong>
-    <span class="faint">Same {pet ? 'pet' : 'person'} found twice? Pick the other one.</span>
+    {#if photos}
+      <strong>{pet ? 'Which pet' : 'Who'} is in {photos.length === 1 ? 'this photo' : `these ${photos.length} photos`}?</strong>
+      <span class="faint">Not {me?.name ?? (pet ? 'this pet' : 'this person')}: pick who, or type a new name.</span>
+    {:else}
+      <strong>Merge {me?.name ?? (pet ? 'this pet' : 'this person')} with…</strong>
+      <span class="faint">Same {pet ? 'pet' : 'person'} found twice? Pick the other one.</span>
+    {/if}
   </header>
   <input
-    placeholder="Search names"
+    placeholder={photos ? 'Search or type a new name' : 'Search names'}
     bind:value={query}
     use:focus
     onkeydown={(e) => {
       if (e.key === 'Enter' && others.length === 1) pick(others[0].id);
+      else if (e.key === 'Enter' && fresh) pickName(fresh);
       if (e.key === 'Escape') close();
       e.stopPropagation();
     }}
   />
   <div class="list">
+    {#if fresh}
+      <button class="row new" onclick={() => pickName(fresh)}>
+        <span class="plus"><Icon name="plus" size={14} stroke={2.2} /></span>
+        <span class="grow truncate">New {pet ? 'pet' : 'person'}: <strong>{fresh}</strong></span>
+      </button>
+    {/if}
     {#each others as p (p.id)}
       <button class="row" onclick={() => pick(p.id)}>
         <img src={api.faceUrl(p.cover)} alt="" draggable="false" />
@@ -72,13 +98,26 @@
         <span class="faint tabular">{plural(p.photoIds.length, 'photo')}</span>
       </button>
     {:else}
-      <p class="faint empty">{pet ? 'No pet' : 'No one'} {query.trim() ? `called “${query.trim()}”` : 'else yet'}.</p>
+      {#if !fresh}<p class="faint empty">{pet ? 'No pet' : 'No one'} {query.trim() ? `called “${query.trim()}”` : 'else yet'}.</p>{/if}
     {/each}
   </div>
-  <footer class="faint"><Icon name={pet ? 'paw' : 'people'} size={12} /> Their photos join up; a name is kept.</footer>
+  <footer class="faint">
+    <Icon name={pet ? 'paw' : 'people'} size={12} />
+    {photos ? 'Only these photos move; they stay where you put them.' : 'Their photos join up; a name is kept.'}
+  </footer>
 </div>
 
 <style>
+  .row.new .plus {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+    flex: none;
+  }
   .scrim {
     position: fixed;
     inset: 0;

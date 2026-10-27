@@ -35,6 +35,8 @@ export interface Api {
   nameFace(faceId: number, name: string): Promise<number>;
   /** "Not this person" for these photos. */
   removeFromPerson(id: number, photoIds: number[]): Promise<void>;
+  /** Moves these photos from one person (or pet) to another, or to a new name. */
+  moveToPerson(from: number, photoIds: number[], to: { id: number } | { name: string }): Promise<number>;
   /** One person found as several: moves `from` into `into`, which keeps or takes a name. */
   mergePeople(from: number[], into: number): Promise<number>;
   /** Forgets a person's name; their faces are grouped again. */
@@ -120,6 +122,8 @@ function tauriApi(): Api {
     namePerson: (id, name) => invoke('name_person', { id, name }),
     nameFace: (id, name) => invoke('name_face', { id, name }),
     removeFromPerson: (id, photoIds) => invoke('remove_from_person', { id, photoIds }),
+    moveToPerson: (from, photoIds, to) =>
+      invoke('move_to_person', { from, photoIds, to: 'id' in to ? to.id : null, name: 'name' in to ? to.name : null }),
     deletePerson: (id) => invoke('delete_person', { id }),
     mergePeople: (from, into) => invoke('merge_people', { from, into }),
     hidePeople: (ids, hidden) => invoke('hide_people', { ids, hidden }),

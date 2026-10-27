@@ -164,6 +164,8 @@ export interface Person {
   /** A stranger, kept out of the way. */
   hidden: boolean;
   kind: Subject;
+  /** Holds a photo someone took out of another person: asked about even alone. */
+  takenOut: boolean;
 }
 
 /** Who a group of faces belongs to. */

@@ -93,9 +93,9 @@
   }
 
   const named = $derived(store.people.filter((p) => p.name));
-  const toName = $derived(store.people.filter((p) => !p.name && p.photoIds.length > 1).length);
+  const toName = $derived(store.people.filter((p) => !p.name && (p.photoIds.length > 1 || p.takenOut)).length);
   const namedPets = $derived(store.pets.filter((p) => p.name));
-  const petsToName = $derived(store.pets.filter((p) => !p.name && p.photoIds.length > 1).length);
+  const petsToName = $derived(store.pets.filter((p) => !p.name && (p.photoIds.length > 1 || p.takenOut)).length);
 
   function personMenu(e: MouseEvent, id: number) {
     e.preventDefault();

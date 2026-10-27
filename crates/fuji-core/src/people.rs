@@ -160,6 +160,9 @@ pub struct PersonRow {
     /// A stranger, kept out of the way.
     pub hidden: bool,
     pub kind: Subject,
+    /// Holds a face someone took out of another person: shown to be named
+    /// even when it's the only photo.
+    pub taken_out: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -627,8 +630,20 @@ impl Library {
                 _ => rest.push(face),
             }
         }
-        // New groups among the rest.
-        let groups = cluster(rest, same);
+        // New groups among the rest. A face someone took out of a person
+        // is never left loose, out of sight: it's a group of its own until
+        // it's named or more like it turn up.
+        let taken_out: Vec<i64> = rest
+            .iter()
+            .filter(|f| f.not_person.is_some())
+            .map(|f| f.id)
+            .collect();
+        let mut groups = cluster(rest, same);
+        for id in taken_out {
+            if !groups.iter().any(|g| g.contains(&id)) {
+                groups.push(vec![id]);
+            }
+        }
 
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
@@ -651,12 +666,14 @@ impl Library {
                 )?;
                 let person = tx.last_insert_rowid();
                 let mut got = 0;
+                let ids_len = ids.len();
                 for id in ids {
                     got += set.execute(params![id, person])?;
                 }
                 // Its faces were filed elsewhere meanwhile: a group is two
-                // faces or more (deleting it frees a lone one).
-                if got < 2 {
+                // faces or more (deleting it frees a lone one), or one taken
+                // out of someone.
+                if got < ids_len.min(2) {
                     tx.execute("DELETE FROM people WHERE id = ?1", [person])?;
                     got = 0;
                 }
@@ -677,10 +694,11 @@ impl Library {
     pub fn people(&self) -> Result<Vec<PersonRow>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT f.person_id, p.name, p.hidden, f.id, f.photo_id, f.confirmed, f.score, p.kind
+            "SELECT f.person_id, p.name, p.hidden, f.id, f.photo_id, f.confirmed, f.score, p.kind,
+                    f.not_person IS NOT NULL
              FROM faces f JOIN people p ON p.id = f.person_id",
         )?;
-        type Entry = (Option<String>, bool, Subject, Vec<Filed>);
+        type Entry = (Option<String>, bool, Subject, Vec<Filed>, bool);
         let mut by_person: HashMap<i64, Entry> = HashMap::new();
         let mut rows = stmt.query([])?;
         while let Some(r) = rows.next()? {
@@ -690,8 +708,10 @@ impl Library {
                     r.get::<_, i64>(2).is_ok_and(|h| h != 0),
                     Subject::parse(&r.get::<_, String>(7).unwrap_or_default()),
                     Vec::new(),
+                    false,
                 )
             });
+            entry.4 |= r.get::<_, bool>(8)?;
             entry.3.push(Filed {
                 id: r.get(3)?,
                 photo: r.get(4)?,
@@ -710,12 +730,13 @@ impl Library {
                     r.get::<_, i64>(2).is_ok_and(|h| h != 0),
                     Subject::parse(&r.get::<_, String>(3).unwrap_or_default()),
                     Vec::new(),
+                    false,
                 )
             });
         }
         let mut out: Vec<PersonRow> = by_person
             .into_iter()
-            .map(|(id, (name, hidden, kind, faces))| {
+            .map(|(id, (name, hidden, kind, faces, taken_out))| {
                 // The clearest face someone confirmed, else the clearest.
                 let cover = faces
                     .iter()
@@ -736,6 +757,7 @@ impl Library {
                     photo_ids,
                     hidden,
                     kind,
+                    taken_out,
                 }
             })
             .collect();
@@ -881,6 +903,70 @@ impl Library {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// "Not this person, it's that one": files `from`'s faces in these
+    /// photos under `to`, or under `name` (found or made, of the same kind),
+    /// as said by someone, so grouping never moves them back. Returns who
+    /// they're filed under.
+    pub fn move_to_person(
+        &self,
+        from: i64,
+        photo_ids: &[i64],
+        to: Option<i64>,
+        name: Option<&str>,
+    ) -> Result<i64, Error> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let kind: String = tx.query_row("SELECT kind FROM people WHERE id = ?1", [from], |r| {
+            r.get(0)
+        })?;
+        let to = match (to, name.map(str::trim).filter(|n| !n.is_empty())) {
+            (Some(id), _) => {
+                let same: Option<String> = tx
+                    .query_row("SELECT kind FROM people WHERE id = ?1", [id], |r| r.get(0))
+                    .optional()?;
+                if same.as_deref() != Some(kind.as_str()) {
+                    return Err(Error::NotFound(id));
+                }
+                id
+            }
+            (None, Some(name)) => match tx
+                .query_row(
+                    "SELECT id FROM people WHERE name = ?1 AND kind = ?2",
+                    params![name, kind],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()?
+            {
+                Some(id) => id,
+                None => {
+                    tx.execute(
+                        "INSERT INTO people (name, kind) VALUES (?1, ?2)",
+                        params![name, kind],
+                    )?;
+                    tx.last_insert_rowid()
+                }
+            },
+            (None, None) => return Err(Error::NotFound(from)),
+        };
+        if to != from {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE faces SET person_id = ?3, confirmed = 1, not_person = ?1
+                 WHERE person_id = ?1 AND photo_id = ?2",
+            )?;
+            for photo in photo_ids {
+                stmt.execute(params![from, photo, to])?;
+            }
+        }
+        tx.execute("UPDATE people SET hidden = 0 WHERE id = ?1", [to])?;
+        tx.execute(
+            "DELETE FROM people WHERE name IS NULL
+               AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(to)
     }
 
     /// The same person found twice: moves everyone in `from` into `into`.
@@ -1121,6 +1207,102 @@ mod tests {
         assert!(
             longest < took / 4 && longest.as_millis() < 500,
             "grouping took {took:?} and a question waited {longest:?}"
+        );
+    }
+
+    /// "Not this pet" never makes a photo disappear: a pet unlike any other
+    /// becomes a group of its own, shown to be named.
+    #[test]
+    fn a_pet_taken_out_stays_in_sight() {
+        let lib = library(4);
+        let p = ids(&lib);
+        for &id in &p[..3] {
+            lib.store_pets(id, "m", &[face(0, 0.0)]).unwrap();
+        }
+        // Grouped with the others, though it's another cat.
+        lib.store_pets(p[3], "m", &[face(0, 0.02)]).unwrap();
+        lib.group_faces().unwrap();
+        let mochi = lib.people().unwrap()[0].id;
+        lib.name_person(mochi, "Mochi").unwrap();
+        lib.remove_from_person(mochi, &p[3..]).unwrap();
+        lib.group_faces().unwrap();
+        let people = lib.people().unwrap();
+        let alone = people
+            .iter()
+            .find(|x| x.photo_ids == [p[3]])
+            .expect("still in sight");
+        assert!(alone.taken_out && alone.name.is_none() && alone.kind == Subject::Pet);
+        assert_eq!(
+            people
+                .iter()
+                .find(|x| x.id == mochi)
+                .unwrap()
+                .photo_ids
+                .len(),
+            3
+        );
+        // Grouping again leaves it be.
+        lib.group_faces().unwrap();
+        assert!(lib.people().unwrap().iter().any(|x| x.photo_ids == [p[3]]));
+    }
+
+    /// Photos taken out of the wrong pet go to the right one, or a new name,
+    /// and stay there when pets are grouped again.
+    #[test]
+    fn photos_move_to_the_right_pet() {
+        let lib = library(6);
+        let p = ids(&lib);
+        for (i, &id) in p.iter().enumerate() {
+            // Two cats the model took for one.
+            lib.store_pets(id, "m", &[face(0, if i < 4 { 0.0 } else { 0.05 })])
+                .unwrap();
+        }
+        lib.store_pets(p[5], "m", &[face(5, 0.0)]).unwrap();
+        lib.group_faces().unwrap();
+        let both = lib
+            .people()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.photo_ids.len() == 5)
+            .unwrap();
+        let mochi = lib.name_person(both.id, "Mochi").unwrap();
+        let pixel = lib
+            .move_to_person(mochi, &p[3..5], None, Some("Pixel"))
+            .unwrap();
+        lib.group_faces().unwrap();
+        let people = lib.people().unwrap();
+        let get = |id: i64| people.iter().find(|x| x.id == id).unwrap();
+        assert_eq!(get(mochi).photo_ids.len(), 3);
+        assert_eq!(
+            (get(pixel).name.as_deref(), get(pixel).photo_ids.len()),
+            (Some("Pixel"), 2)
+        );
+        assert_eq!(get(pixel).kind, Subject::Pet);
+        // To someone already there, too; never to a person.
+        lib.move_to_person(pixel, &p[4..5], Some(mochi), None)
+            .unwrap();
+        assert_eq!(
+            lib.people()
+                .unwrap()
+                .iter()
+                .find(|x| x.id == mochi)
+                .unwrap()
+                .photo_ids
+                .len(),
+            4
+        );
+        lib.store_faces(p[0], "f", &[face(1, 0.0)]).unwrap();
+        lib.store_faces(p[1], "f", &[face(1, 0.0)]).unwrap();
+        lib.group_faces().unwrap();
+        let person = lib
+            .people()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.kind == Subject::Person)
+            .unwrap();
+        assert!(
+            lib.move_to_person(mochi, &p[..1], Some(person.id), None)
+                .is_err()
         );
     }
 
