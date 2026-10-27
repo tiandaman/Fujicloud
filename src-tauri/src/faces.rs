@@ -200,6 +200,8 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                             .lib
                             .store_faces(id, MODEL_ID, &found)
                             .map_err(|e| e.to_string())?;
+                        // So other PCs needn't look again.
+                        crate::sidecars::save(&[id]);
                     }
                     Err(e) => {
                         log::warn!("faces in photo {id}: {e}");

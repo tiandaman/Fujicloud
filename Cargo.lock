@@ -1357,6 +1357,7 @@ dependencies = [
 name = "fuji-core"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "fast_image_resize",
  "flate2",

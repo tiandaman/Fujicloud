@@ -837,7 +837,18 @@ async fn name_person(state: Shared<'_>, id: i64, name: String) -> CmdResult<i64>
     if name.trim().is_empty() {
         return Err("A name can't be empty".into());
     }
-    state.lib.name_person(id, &name).map_err(err)
+    let person = state.lib.name_person(id, &name).map_err(err)?;
+    save_person_sidecars(&state, person);
+    Ok(person)
+}
+
+/// Re-saves the sidecars of a person's photos, so other PCs learn the name.
+fn save_person_sidecars(state: &AppState, person: i64) {
+    if let Ok(people) = state.lib.people()
+        && let Some(p) = people.iter().find(|p| p.id == person)
+    {
+        sidecars::save(&p.photo_ids);
+    }
 }
 
 /// Says who one face is.
@@ -846,7 +857,9 @@ async fn name_face(state: Shared<'_>, id: i64, name: String) -> CmdResult<i64> {
     if name.trim().is_empty() {
         return Err("A name can't be empty".into());
     }
-    state.lib.name_face(id, &name).map_err(err)
+    let person = state.lib.name_face(id, &name).map_err(err)?;
+    save_person_sidecars(&state, person);
+    Ok(person)
 }
 
 /// "Not this person" for these photos.
@@ -858,13 +871,16 @@ async fn remove_from_person(
     photo_ids: Vec<i64>,
 ) -> CmdResult<()> {
     state.lib.remove_from_person(id, &photo_ids).map_err(err)?;
+    sidecars::save(&photo_ids);
     faces::group(&app, &state)
 }
 
 /// One person found as several: moves `from` into `into`.
 #[tauri::command]
 async fn merge_people(state: Shared<'_>, from: Vec<i64>, into: i64) -> CmdResult<i64> {
-    state.lib.merge_people(&from, into).map_err(err)
+    let person = state.lib.merge_people(&from, into).map_err(err)?;
+    save_person_sidecars(&state, person);
+    Ok(person)
 }
 
 /// Hides strangers, or brings them back.
@@ -882,7 +898,16 @@ async fn hide_face(state: Shared<'_>, id: i64) -> CmdResult<i64> {
 /// Forgets a person's name; their faces are grouped again, unnamed.
 #[tauri::command]
 async fn delete_person(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<()> {
+    let photos = state
+        .lib
+        .people()
+        .map_err(err)?
+        .into_iter()
+        .find(|p| p.id == id);
     state.lib.delete_person(id).map_err(err)?;
+    if let Some(p) = photos {
+        sidecars::save(&p.photo_ids);
+    }
     faces::group(&app, &state)
 }
 

@@ -354,6 +354,8 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
             .lib
             .store_embeddings(MODEL.id, &rows)
             .map_err(|e| e.to_string())?;
+        // So other PCs needn't describe them again.
+        crate::sidecars::save(&rows.iter().map(|r| r.0).collect::<Vec<_>>());
 
         // New results become searchable every few hundred photos.
         if (n + 1) * batch % 320 < batch {

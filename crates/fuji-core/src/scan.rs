@@ -216,6 +216,26 @@ pub fn sync_sidecars(
         apply.push((r.id, merged, mtime.unwrap_or(0)));
     }
     let applied = lib.apply_sidecars(&apply)?;
+    // What another PC's models found, and the names given there.
+    for (id, tags, _) in &apply {
+        let imported = (|| -> Result<(), Error> {
+            for (subject, found) in [
+                (crate::people::Subject::Person, &tags.faces),
+                (crate::people::Subject::Pet, &tags.pets),
+            ] {
+                if let Some(found) = found {
+                    lib.import_found(*id, subject, found)?;
+                }
+            }
+            if let Some((model, vector)) = &tags.smart {
+                lib.import_embedding(*id, model, vector)?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = imported {
+            log::warn!("analysis from the sidecar of photo {id}: {e}");
+        }
+    }
     lib.sidecar_saved(&write_back, None)?;
     Ok(applied)
 }
@@ -245,6 +265,9 @@ fn merge(mine: &Tags, theirs: Option<&Tags>) -> Tags {
         },
         favorite: mine.favorite || theirs.favorite,
         albums,
+        faces: mine.faces.clone().or_else(|| theirs.faces.clone()),
+        pets: mine.pets.clone().or_else(|| theirs.pets.clone()),
+        smart: mine.smart.clone().or_else(|| theirs.smart.clone()),
     }
 }
 
@@ -531,6 +554,75 @@ mod tests {
         assert_eq!(photo(&a, "IMG_0002.JPG").rating, 2);
         // Nothing changed since, so nothing is read again.
         assert_eq!(rescan(&a).synced, 0);
+    }
+
+    /// What one PC's models found, and the names given there, reach another
+    /// through the sidecars: it needn't search those photos, and knows who
+    /// is in them. The RAW behind its JPEG gets nothing (as when searched).
+    #[test]
+    fn laptops_share_faces_names_and_smart_search() {
+        use crate::people::{NewFace, Subject};
+        let dir = shared_folder();
+        let (a, b) = (laptop(dir.path()), laptop(dir.path()));
+        let face = |axis: usize, x: f32| NewFace {
+            bbox: [x, 0.2, 0.2, 0.3],
+            score: 0.9,
+            embedding: (0..8).map(|i| if i == axis { 1.0 } else { 0.0 }).collect(),
+        };
+        let (jpg, img) = (photo(&a, "DSCF0001.JPG").id, photo(&a, "IMG_0002.JPG").id);
+        a.store_faces(jpg, "faces-1", &[face(0, 0.1), face(3, 0.6)])
+            .unwrap();
+        a.store_faces(img, "faces-1", &[face(0, 0.4)]).unwrap();
+        a.store_pets(img, "pets-1", &[]).unwrap();
+        a.store_embeddings("smart-1", &[(img, vec![9, 8, 7])])
+            .unwrap();
+        a.group_faces().unwrap();
+        let ana = a
+            .people()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.photo_ids.len() == 2)
+            .unwrap();
+        a.name_person(ana.id, "Ana").unwrap();
+        assert_eq!(save_sidecars(&a, &[jpg, img]).unwrap(), 0);
+        tick();
+
+        rescan(&b);
+        assert!(
+            b.faces_todo("faces-1").unwrap().is_empty(),
+            "nothing to search again"
+        );
+        assert_eq!(
+            b.pets_todo("pets-1").unwrap(),
+            [photo(&b, "DSCF0001.JPG").id],
+            "A looked for pets in the other photo only"
+        );
+        assert_eq!(
+            b.missing_embeddings("smart-1").unwrap().len(),
+            1,
+            "only the other photo"
+        );
+        let people = b.people().unwrap();
+        let ana_b = people
+            .iter()
+            .find(|p| p.name.as_deref() == Some("Ana"))
+            .unwrap();
+        let named: Vec<String> = ana_b
+            .photo_ids
+            .iter()
+            .map(|&id| {
+                b.photos()
+                    .unwrap()
+                    .into_iter()
+                    .find(|p| p.id == id)
+                    .unwrap()
+                    .name
+            })
+            .collect();
+        assert_eq!(named.len(), 2, "{named:?}");
+        assert!(!named.iter().any(|n| n.ends_with(".RAF")), "{named:?}");
+        let raf = photo(&b, "DSCF0001.RAF").id;
+        assert_eq!(b.found(raf, Subject::Person).unwrap(), None);
     }
 
     /// Libraries from before sidecars carried picks: the first sync merges,

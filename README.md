@@ -63,6 +63,9 @@ thousands of images.
 - **Laptops stay in sync:** ratings, picks, labels, favourites and albums travel in the
   sidecars next to the photos, so every laptop that opens the Shield library sees the
   same choices. Changes made while the Shield is unreachable are saved once it's back.
+  So does what the models found (faces, pets, smart search) and the names given: a
+  laptop opening photos another has looked at takes its results instead of working
+  them out again, and knows who's who.
 - **Camera and phone sync over your network:** new shots that land in an inbox folder
   (the camera's PC AutoSave folder, iCloud for Windows' *iCloud Photos* folder, or any
   other) are copied to the Shield's SSD, filed as `YYYY/YYYY-MM-DD/`, several files at

@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["smart-search"]
 # On-device image/text embeddings (ONNX Runtime) for "search by what's in the photo".
-smart-search = ["dep:ort", "dep:tokenizers", "dep:ureq", "dep:half"]
+smart-search = ["dep:ort", "dep:tokenizers", "dep:ureq"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
@@ -31,7 +31,9 @@ png = "0.18"
 # JPEG XL previews in DNG 1.7 files (newer ProRAW, Adobe DNG Converter).
 jxl-oxide = { version = "0.12", default-features = false }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-half = { version = "2", optional = true }
+half = "2"
+# Faces, pets and smart search results travel in sidecars as text.
+base64 = "0.22"
 ort = { version = "=2.0.0-rc.15", optional = true, features = ["half"] }
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
 ureq = { version = "3", optional = true }

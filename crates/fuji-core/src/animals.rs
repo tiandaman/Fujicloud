@@ -27,7 +27,7 @@ const URL: &str = "https://media.githubusercontent.com/media/opencv/opencv_zoo/m
 pub const DOWNLOAD_MB: u32 = 97;
 /// Stored with each photo searched: the detector, and the model that tells
 /// pets apart.
-pub const MODEL_ID: &str = "yolox-2022nov-int8+dinov2-small";
+pub const MODEL_ID: &str = "yolox-2022nov-int8+dinov2-small-box+coat";
 
 const SIDE: usize = 640;
 /// Detections less sure than this are dropped.
@@ -220,41 +220,47 @@ fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
 /// floats), learned from held-out Oxford-IIIT Pet photos by
 /// `real_pets_are_told_apart`, which checks it.
 const BASIS: &[u8] = include_bytes!("pet_mean.bin");
-/// Main ways pets vary also taken away: none, which measured best for DINOv2.
-const BASIS_AXES: usize = 0;
 
-fn basis() -> &'static (Vec<f32>, Vec<Vec<f32>>) {
-    static BASIS_F32: OnceLock<(Vec<f32>, Vec<Vec<f32>>)> = OnceLock::new();
+/// The average pet: DINOv2's description, then its coat's colours.
+fn basis() -> &'static Vec<f32> {
+    static BASIS_F32: OnceLock<Vec<f32>> = OnceLock::new();
     BASIS_F32.get_or_init(|| {
-        let values: Vec<f32> = BASIS
+        BASIS
             .as_chunks::<2>()
             .0
             .iter()
             .map(|b| half::f16::from_le_bytes(*b).to_f32())
-            .collect();
-        let d = values.len() / (BASIS_AXES + 1);
-        let mut parts = values.chunks_exact(d).map(<[f32]>::to_vec);
-        let mean = parts.next().unwrap_or_default();
-        (mean, parts.collect())
+            .collect()
     })
 }
 
-/// A pet's description with what all pets share taken away, for comparing
-/// one pet with another. Measured on Oxford-IIIT Pet: cats of one breed
-/// score about 0.48 on these, cats of different breeds about 0.02.
+/// How much the coat's colours count against DINOv2's view of the pet.
+/// Measured on Oxford-IIIT Pet: a fifth tells look-alike cats apart better
+/// (warm, spotted breeds: groups 83% pure rather than 67%; all breeds 75%
+/// rather than 67%), more makes it worse.
+const COAT_SHARE: f32 = 0.2;
+
+/// A pet's description (from [`Identifier::pet`]) for comparing one pet
+/// with another: each part with the average pet taken away, the coat
+/// counting for [`COAT_SHARE`].
 pub fn distinctive(v: &[f32]) -> Vec<f32> {
-    let (mean, axes) = basis();
-    if v.len() != mean.len() {
+    let mean = basis();
+    if v.len() != mean.len() || v.len() <= COAT_BINS {
         return v.to_vec();
     }
-    let mut d: Vec<f32> = v.iter().zip(mean).map(|(x, m)| x - m).collect();
-    for u in axes {
-        let c: f32 = d.iter().zip(u).map(|(x, y)| x * y).sum();
-        d.iter_mut().zip(u).for_each(|(x, y)| *x -= c * y);
-    }
-    let n = d.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
-    d.iter_mut().for_each(|x| *x /= n);
-    d
+    let split = v.len() - COAT_BINS;
+    let part = |range: std::ops::Range<usize>, weight: f32| {
+        let d: Vec<f32> = v[range.clone()]
+            .iter()
+            .zip(&mean[range])
+            .map(|(x, m)| x - m)
+            .collect();
+        let n = d.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+        d.into_iter().map(move |x| x / n * weight)
+    };
+    part(0..split, (1.0 - COAT_SHARE).sqrt())
+        .chain(part(split..v.len(), COAT_SHARE.sqrt()))
+        .collect()
 }
 
 /// DINOv2 (small), which tells one pet from another.
@@ -278,6 +284,14 @@ impl Identifier {
         Ok(Self {
             session: Mutex::new(builder.commit_from_file(&file).map_err(|e| fail(&e))?),
         })
+    }
+
+    /// A pet described, as stored: DINOv2's view of just the pet (its class
+    /// token, L2-normalised), then its coat's colours ([`coat`]).
+    pub fn pet(&self, image: &Rgb, animal: &Animal) -> Result<Vec<f32>, Error> {
+        let mut v = self.describe(&crop(image, animal)?)?;
+        v.extend(coat(image, animal.bbox));
+        Ok(v)
     }
 
     /// A pet's picture (as [`crop`] makes it) described: DINOv2's class
@@ -330,9 +344,11 @@ impl Identifier {
     }
 }
 
-/// The square picture of a pet that's compared with other pets'.
+/// The picture of a pet DINOv2 describes: just what's in its box, the rest
+/// neutral grey, so a cat lying against another, or the bed they share,
+/// doesn't count towards who it is.
 pub fn crop(image: &Rgb, animal: &Animal) -> Result<Vec<u8>, Error> {
-    crate::thumbs::crop_square(image, animal.bbox, 1.1, 320)
+    crate::thumbs::crop_box(image, animal.bbox, 224)
 }
 
 /// Bins of [`coat`]: twelve hues, then black, grey and white.
@@ -481,18 +497,16 @@ mod tests {
 
     #[test]
     fn what_pets_share_is_taken_away() {
-        let (mean, axes) = basis();
-        assert_eq!((mean.len(), axes.len()), (384, BASIS_AXES));
-        let v: Vec<f32> = (0..384)
+        assert_eq!(basis().len(), 384 + COAT_BINS);
+        let v: Vec<f32> = (0..384 + COAT_BINS)
             .map(|i| ((i * 37) % 101) as f32 / 100.0 - 0.5)
             .collect();
         let d = distinctive(&v);
-        let norm: f32 = d.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-3);
-        for u in axes {
-            let along: f32 = d.iter().zip(u).map(|(a, b)| a * b).sum();
-            assert!(along.abs() < 1e-2, "{along}");
-        }
+        let length = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((length(&d) - 1.0).abs() < 1e-3);
+        // DINOv2's part and the coat's, weighed as set.
+        assert!((length(&d[..384]).powi(2) - (1.0 - COAT_SHARE)).abs() < 1e-3);
+        assert!((length(&d[384..]).powi(2) - COAT_SHARE).abs() < 1e-3);
         // Descriptions of another size (another model) are left as they are.
         assert_eq!(distinctive(&[1.0, 0.0]), [1.0, 0.0]);
     }
@@ -861,9 +875,9 @@ mod tests {
                 .collect();
             (mean, pets)
         };
-        let (square_mean, square) = centred(0);
-        let (_, boxed) = centred(1);
-        let (_, coats) = centred(2);
+        let (_, square) = centred(0);
+        let (box_mean, boxed) = centred(1);
+        let (coat_mean, coats) = centred(2);
         report("square", &square);
         report("box", &boxed);
         report("coat", &coats);
@@ -885,14 +899,16 @@ mod tests {
 
         // The average pet the app ships must be the one learned here; if not
         // (a new model, say), print the new one to ship.
-        let off = square_mean
+        let learned = [box_mean, coat_mean].concat();
+        assert_eq!(learned.len(), basis().len());
+        let off = learned
             .iter()
-            .zip(&basis().0)
+            .zip(basis())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         println!("shipped average pet differs by at most {off:.5}");
-        if off > 1e-3 {
-            let hex: String = square_mean
+        if off > 2e-3 {
+            let hex: String = learned
                 .iter()
                 .flat_map(|x| half::f16::from_f32(*x).to_le_bytes())
                 .map(|b| format!("{b:02x}"))
@@ -905,8 +921,11 @@ mod tests {
 
         // Pets described and grouped exactly as the app does: three cats of
         // different types must come out as three pets.
-        let described: Vec<(usize, Vec<f32>)> =
-            pets_d.iter().map(|(b, d)| (*b, d[0].clone())).collect();
+        // Described as `Identifier::pet` does: just the pet, then its coat.
+        let described: Vec<(usize, Vec<f32>)> = pets_d
+            .iter()
+            .map(|(b, d)| (*b, [d[1].clone(), d[2].clone()].concat()))
+            .collect();
         let shipped: Vec<(usize, Vec<f32>)> = described
             .iter()
             .map(|(b, v)| (*b, distinctive(v)))

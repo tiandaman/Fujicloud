@@ -241,7 +241,7 @@
       <label class="row toggle">
         <div>
           <span>Write ratings to XMP sidecars</span>
-          <small class="faint">So stars and colour labels show up in Lightroom, Bridge and Camera Raw. Existing develop settings are kept.</small>
+          <small class="faint">So stars and colour labels show up in Lightroom, Bridge and Camera Raw, and other PCs get your ratings, albums, names and what the models found (no need to look again). Existing develop settings are kept.</small>
         </div>
         <input type="checkbox" class="switch" bind:checked={draft.writeXmp} />
       </label>

@@ -17,6 +17,7 @@ use serde::Serialize;
 
 use crate::Error;
 use crate::db::Library;
+use crate::xmp::{Found, Seen};
 
 /// Face similarity at which two faces are taken to be the same person.
 /// Checked against the real model in `faces`' tests: on twelve people from
@@ -24,14 +25,16 @@ use crate::db::Library;
 /// over 0.27, and they were grouped perfectly anywhere from 0.25 to 0.55.
 pub const SAME_PERSON: f32 = 0.40;
 
-/// Similarity (of DINOv2 descriptions of pets' pictures, with the average
-/// pet taken away: see `animals::distinctive`) at which two pictures are
-/// taken to be the same pet. Checked against the real models in `animals`'
-/// tests: three cats of different types came out as three pets anywhere from
-/// 0.20 to 0.40, and one pet in two photos is closer still than two cats of
-/// a breed. Leans towards keeping pets apart: a pet split in two is merged
-/// in a click, two pets as one take sorting out photo by photo.
-pub const SAME_PET: f32 = 0.35;
+/// Similarity (of pets' descriptions: DINOv2's view of just the pet and its
+/// coat's colours, with the average pet taken away: see
+/// `animals::distinctive`) at which two pictures are taken to be the same
+/// pet. Checked against the real models in `animals`' tests on Oxford-IIIT
+/// Pet: three cats of different types came out as three pets, look-alike
+/// breeds were kept apart best here, and one pet in two photos is closer
+/// still than two cats of a breed. Leans towards keeping pets apart: a pet
+/// split in two is merged by giving both the same name, two pets as one
+/// take sorting out photo by photo.
+pub const SAME_PET: f32 = 0.40;
 
 /// Who a group of faces belongs to: a person, or a pet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -314,6 +317,146 @@ impl Library {
     /// Records the faces found in a photo (possibly none).
     pub fn store_faces(&self, photo_id: i64, model: &str, faces: &[NewFace]) -> Result<(), Error> {
         self.store(Subject::Person, photo_id, model, faces)
+    }
+
+    /// What was found in a photo, for its sidecar: `None` if it hasn't been
+    /// searched. Names go with the faces filed under a named person.
+    pub fn found(&self, photo_id: i64, subject: Subject) -> Result<Option<Found>, Error> {
+        let conn = self.conn.lock();
+        let model: Option<String> = conn
+            .query_row(
+                &format!("SELECT model FROM {} WHERE photo_id = ?1", subject.scans()),
+                [photo_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(model) = model else {
+            return Ok(None);
+        };
+        let mut stmt = conn.prepare_cached(
+            "SELECT f.x, f.y, f.w, f.h, f.score, f.embedding, f.confirmed, p.name
+             FROM faces f LEFT JOIN people p ON p.id = f.person_id
+             WHERE f.photo_id = ?1 AND f.kind = ?2 ORDER BY f.id",
+        )?;
+        let items = stmt
+            .query_map(params![photo_id, subject.as_str()], |r| {
+                Ok(Seen {
+                    bbox: [r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?],
+                    score: r.get(4)?,
+                    embedding: unpack(&r.get::<_, Vec<u8>>(5)?),
+                    confirmed: r.get::<_, i64>(6)? != 0,
+                    name: r.get(7)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(Some(Found { model, items }))
+    }
+
+    /// Takes in what another PC found in a photo: its faces (or pets), when
+    /// this PC hasn't searched it, so it needn't; and the names given
+    /// there, for faces not named here. Returns whether anything changed.
+    pub fn import_found(
+        &self,
+        photo_id: i64,
+        subject: Subject,
+        found: &Found,
+    ) -> Result<bool, Error> {
+        // As searched here: not a RAW behind its JPEG (they share a
+        // sidecar), not a movie.
+        let (searched, searchable): (bool, bool) = self.conn.lock().query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM {} s WHERE s.photo_id = p.id),
+                        p.kind <> 'video' AND NOT (p.kind IN ('raf', 'dng') AND EXISTS
+                          (SELECT 1 FROM photos j WHERE j.pair_key = p.pair_key
+                             AND j.kind IN ('jpeg', 'heif', 'png')))
+                 FROM photos p WHERE p.id = ?1",
+                subject.scans()
+            ),
+            [photo_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if !searchable {
+            return Ok(false);
+        }
+        let mut changed = false;
+        if !searched {
+            let faces: Vec<NewFace> = found
+                .items
+                .iter()
+                .map(|s| NewFace {
+                    bbox: s.bbox,
+                    score: s.score,
+                    embedding: s.embedding.clone(),
+                })
+                .collect();
+            self.store(subject, photo_id, &found.model, &faces)?;
+            changed = true;
+        }
+        let named: Vec<&Seen> = found.items.iter().filter(|s| s.name.is_some()).collect();
+        if named.is_empty() {
+            return Ok(changed);
+        }
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            // Faces here, and whether someone here already said who they are.
+            let mut stmt = tx.prepare_cached(
+                "SELECT f.id, f.x, f.y, f.w, f.h, f.confirmed OR p.name IS NOT NULL
+                 FROM faces f LEFT JOIN people p ON p.id = f.person_id
+                 WHERE f.photo_id = ?1 AND f.kind = ?2",
+            )?;
+            let here: Vec<(i64, [f32; 4], bool)> = stmt
+                .query_map(params![photo_id, subject.as_str()], |r| {
+                    Ok((
+                        r.get(0)?,
+                        [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?],
+                        r.get(5)?,
+                    ))
+                })?
+                .collect::<Result<_, _>>()?;
+            for seen in named {
+                let Some((face, _, known)) = here
+                    .iter()
+                    .filter(|(_, b, _)| overlap(b, &seen.bbox) > 0.4)
+                    .max_by(|a, b| overlap(&a.1, &seen.bbox).total_cmp(&overlap(&b.1, &seen.bbox)))
+                else {
+                    continue;
+                };
+                if *known {
+                    continue;
+                }
+                let name = seen.name.as_deref().unwrap_or_default().trim();
+                let person: Option<i64> = tx
+                    .query_row(
+                        "SELECT id FROM people WHERE name = ?1 AND kind = ?2",
+                        params![name, subject.as_str()],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let person = match person {
+                    Some(p) => p,
+                    None => {
+                        tx.execute(
+                            "INSERT INTO people (name, kind) VALUES (?1, ?2)",
+                            params![name, subject.as_str()],
+                        )?;
+                        tx.last_insert_rowid()
+                    }
+                };
+                tx.execute(
+                    "UPDATE faces SET person_id = ?2, confirmed = ?3 WHERE id = ?1",
+                    params![face, person, seen.confirmed],
+                )?;
+                changed = true;
+            }
+        }
+        tx.execute(
+            "DELETE FROM people WHERE name IS NULL
+               AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// Records the pets found in a photo (possibly none).
@@ -979,6 +1122,70 @@ mod tests {
             longest < took / 4 && longest.as_millis() < 500,
             "grouping took {took:?} and a question waited {longest:?}"
         );
+    }
+
+    /// One PC finds and names faces; another takes them from the sidecar
+    /// without searching, and knows the names.
+    #[test]
+    fn found_faces_and_names_travel_to_another_pc() {
+        let (a, b) = (library(3), library(3));
+        let (pa, pb) = (ids(&a), ids(&b));
+        for (i, &id) in pa.iter().enumerate() {
+            a.store_faces(id, "m", &[face(0, 0.01 * i as f32), face(3, 0.0)])
+                .unwrap();
+        }
+        a.group_faces().unwrap();
+        let ana = a
+            .people()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.photo_ids.len() == 3)
+            .unwrap();
+        a.name_person(ana.id, "Ana").unwrap();
+
+        // B has looked at its first photo itself already.
+        b.store_faces(pb[0], "m", &[face(0, 0.0), face(3, 0.0)])
+            .unwrap();
+        for (&ida, &idb) in pa.iter().zip(&pb) {
+            let found = a.found(ida, Subject::Person).unwrap().unwrap();
+            assert_eq!(found.model, "m");
+            assert_eq!(
+                found
+                    .items
+                    .iter()
+                    .filter(|s| s.name.as_deref() == Some("Ana"))
+                    .count(),
+                1
+            );
+            b.import_found(idb, Subject::Person, &found).unwrap();
+        }
+        assert!(
+            b.faces_todo("m").unwrap().is_empty(),
+            "nothing left to search"
+        );
+        b.group_faces().unwrap();
+        let people = b.people().unwrap();
+        let ana_b = people
+            .iter()
+            .find(|p| p.name.as_deref() == Some("Ana"))
+            .unwrap();
+        assert_eq!(ana_b.photo_ids.len(), 3, "{people:?}");
+        // A name given here isn't overwritten by another PC's.
+        let found = a.found(pa[0], Subject::Person).unwrap().unwrap();
+        let mut renamed = found.clone();
+        renamed
+            .items
+            .iter_mut()
+            .for_each(|s| s.name = s.name.as_ref().map(|_| "Someone".into()));
+        b.import_found(pb[0], Subject::Person, &renamed).unwrap();
+        assert!(
+            b.people()
+                .unwrap()
+                .iter()
+                .all(|p| p.name.as_deref() != Some("Someone"))
+        );
+        // Not searched: nothing to say.
+        assert_eq!(library(1).found(1, Subject::Person).unwrap(), None);
     }
 
     #[test]

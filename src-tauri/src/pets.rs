@@ -187,7 +187,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                     let animals = detector.animals(&image)?;
                     let vectors = animals
                         .iter()
-                        .map(|a| identifier.describe(&animals::crop(&image, a)?))
+                        .map(|a| identifier.pet(&image, a))
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(animals
                         .into_iter()
@@ -200,10 +200,14 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                         .collect::<Vec<_>>())
                 });
                 match found {
-                    Ok(found) => state
-                        .lib
-                        .store_pets(id, MODEL_ID, &found)
-                        .map_err(|e| e.to_string())?,
+                    Ok(found) => {
+                        state
+                            .lib
+                            .store_pets(id, MODEL_ID, &found)
+                            .map_err(|e| e.to_string())?;
+                        // So other PCs needn't look again.
+                        crate::sidecars::save(&[id]);
+                    }
                     Err(e) => {
                         log::warn!("pets in photo {id}: {e}");
                         pets.failed.lock().insert(id);

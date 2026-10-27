@@ -773,7 +773,7 @@ impl Library {
                         label: r.get(1)?,
                         flag: r.get(2)?,
                         favorite: r.get::<_, i64>(3)? != 0,
-                        albums: Vec::new(),
+                        ..Tags::default()
                     })
                 },
             )
@@ -786,6 +786,18 @@ impl Library {
         tags.albums = stmt
             .query_map([id], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
+        tags.smart = conn
+            .query_row(
+                "SELECT model, vec FROM embeddings WHERE photo_id = ?1 ORDER BY rowid DESC LIMIT 1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        drop(stmt);
+        drop(conn);
+        // What the models found, so other PCs needn't look again.
+        tags.faces = self.found(id, crate::people::Subject::Person)?;
+        tags.pets = self.found(id, crate::people::Subject::Pet)?;
         Ok(tags)
     }
 
@@ -1182,6 +1194,21 @@ impl Library {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Another PC's smart search description of a photo, unless this one
+    /// has its own for that model, or the photo is the hidden half of a pair.
+    pub fn import_embedding(&self, id: i64, model: &str, vector: &[u8]) -> Result<bool, Error> {
+        let conn = self.conn.lock();
+        let n = conn.execute(
+            "INSERT OR IGNORE INTO embeddings (photo_id, model, vec)
+             SELECT p.id, ?2, ?3 FROM photos p WHERE p.id = ?1
+               AND NOT (p.kind IN ('raf', 'dng', 'video') AND EXISTS
+                    (SELECT 1 FROM photos j WHERE j.pair_key = p.pair_key
+                       AND j.kind IN ('jpeg', 'heif', 'png')))",
+            params![id, model, vector],
+        )?;
+        Ok(n > 0)
     }
 
     /// `(photo id, packed embedding)` for every indexed photo.
