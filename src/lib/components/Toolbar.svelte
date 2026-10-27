@@ -59,7 +59,7 @@
   }
 
   function groupMenu(e: MouseEvent) {
-    openAt(e, groups.map(([k, label]) => ({ label, checked: store.group === k, action: () => (store.group = k) })));
+    openAt(e, groups.map(([k, label]) => ({ label, checked: store.group === k, action: () => store.chooseGroup(k) })));
   }
 
   function filterMenu(e: MouseEvent) {

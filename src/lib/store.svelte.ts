@@ -95,7 +95,9 @@ class Store {
   query = $state('');
   sort = $state<SortKey>('taken');
   desc = $state(true);
-  group = $state<GroupKey>('day');
+  group = $state<GroupKey>('month');
+  /** Picked from the menu, rather than the default (which was once Day). */
+  #groupChosen = false;
   mode = $state<LayoutMode>('justified');
   size = $state(220);
   kinds = $state.raw<Kind[]>(ALL_KINDS);
@@ -173,12 +175,16 @@ class Store {
 
   constructor() {
     const prefs = loadPrefs();
-    for (const key of ['sort', 'desc', 'group', 'mode', 'size', 'stack', 'showInfo', 'sidebar'] as const) {
+    for (const key of ['sort', 'desc', 'mode', 'size', 'stack', 'showInfo', 'sidebar'] as const) {
       if (key in prefs) (this as Record<string, unknown>)[key] = prefs[key];
+    }
+    if (prefs.groupChosen === true && typeof prefs.group === 'string') {
+      this.group = prefs.group as GroupKey;
+      this.#groupChosen = true;
     }
     $effect.root(() => {
       $effect(() => {
-        const prefs = { sort: this.sort, desc: this.desc, group: this.group, mode: this.mode, size: this.size, stack: this.stack, showInfo: this.showInfo, sidebar: this.sidebar };
+        const prefs = { sort: this.sort, desc: this.desc, group: this.group, groupChosen: this.#groupChosen, mode: this.mode, size: this.size, stack: this.stack, showInfo: this.showInfo, sidebar: this.sidebar };
         try {
           localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
         } catch {
@@ -1048,6 +1054,11 @@ class Store {
     this.viewerId = null;
     this.mapFocus = { lat: p.lat, lon: p.lon, zoom: 13 };
     this.setCollection({ type: 'map' });
+  }
+
+  chooseGroup(group: GroupKey) {
+    this.#groupChosen = true;
+    this.group = group;
   }
 
   setCollection(c: Collection) {

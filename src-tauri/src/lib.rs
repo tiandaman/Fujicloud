@@ -936,11 +936,17 @@ async fn similar_photos(state: Shared<'_>, id: i64) -> CmdResult<Vec<Hit>> {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdResult<()> {
-    // Smart search is switched by its own commands (they download and index).
-    settings.smart_search = state.settings.read().smart_search;
-    settings.smart_gpu = state.settings.read().smart_gpu;
-    settings.faces = state.settings.read().faces;
-    settings.cache_version = state.settings.read().cache_version;
+    // Smart search, faces and pets are switched by their own commands (they
+    // download and look through the library); a form open since must not
+    // switch them back.
+    {
+        let now = state.settings.read();
+        settings.smart_search = now.smart_search;
+        settings.smart_gpu = now.smart_gpu;
+        settings.faces = now.faces;
+        settings.pets = now.pets;
+        settings.cache_version = now.cache_version;
+    }
     settings.migrate();
     settings.save(&state.settings_path).map_err(err)?;
     let new_backup = settings.backup_to != state.settings.read().backup_to;

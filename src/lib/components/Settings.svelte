@@ -25,9 +25,11 @@
     draft.inboxes.push({ path: p, cleanup: false });
   }
 
-  // Smart search has its own switch that applies immediately; ignore it here.
+  // Smart search, the graphics card, faces and pets have switches that apply
+  // (and download, and start looking) right away: not part of what's saved.
+  const live = (s: Settings | null) => ({ smartSearch: s?.smartSearch, smartGpu: s?.smartGpu, faces: s?.faces, pets: s?.pets, cacheVersion: s?.cacheVersion });
   const comparable = (s: Settings | null) =>
-    JSON.stringify({ ...s, smartSearch: undefined, smartGpu: undefined, faces: undefined, cacheVersion: undefined });
+    JSON.stringify({ ...s, smartSearch: undefined, smartGpu: undefined, faces: undefined, pets: undefined, cacheVersion: undefined });
   const dirty = $derived(comparable(draft) !== comparable(store.settings));
 
   async function pick(key: 'importTo' | 'backupTo' | 'editorPath', title: string) {
@@ -44,8 +46,9 @@
       importTo: clean(draft.importTo),
       backupTo: clean(draft.backupTo),
       editorPath: clean(draft.editorPath),
-      smartSearch: store.settings?.smartSearch ?? false,
-    };
+      // As they are now, not as they were when this opened.
+      ...live(store.settings),
+    } as Settings;
     await store.saveSettings(next);
     draft = structuredClone(next);
     saving = false;
