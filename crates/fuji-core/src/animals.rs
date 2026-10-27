@@ -1,11 +1,12 @@
 //! Finding cats and dogs in photos, entirely on this PC.
 //!
 //! YOLOX-S (8-bit, from OpenCV's model zoo) finds animals and boxes them.
-//! DINOv2 (small, Meta's), a model that sees fine detail, describes each
+//! DINOv2 (base, Meta's), a model that sees fine detail, describes each
 //! pet's picture: coat colour, pattern, markings and shape. Measured on
-//! Oxford-IIIT Pet it tells cats apart with a much wider margin than the
-//! smart search model, and it needs nothing else switched on. Pictures are
-//! compared with the average pet taken away ([`distinctive`]); see
+//! Oxford-IIIT Pet it tells cats apart with a wider margin than DINOv2's
+//! small model (and far wider than the smart search model's), keeping each
+//! cat's photos together more; it needs nothing else switched on. Pictures
+//! are compared with the average pet taken away ([`distinctive`]); see
 //! [`crate::people`], which groups and names pets the way it does people.
 
 use std::path::{Path, PathBuf};
@@ -24,10 +25,10 @@ use crate::embed::{download_files, environment, model_err};
 const DETECTOR: &str = "object_detection_yolox_2022nov_int8.onnx";
 const URL: &str = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/object_detection_yolox/object_detection_yolox_2022nov_int8.onnx";
 /// The detector (9 MB) and DINOv2 (88 MB) together, for the UI.
-pub const DOWNLOAD_MB: u32 = 97;
+pub const DOWNLOAD_MB: u32 = 355;
 /// Stored with each photo searched: the detector, and the model that tells
 /// pets apart.
-pub const MODEL_ID: &str = "yolox-2022nov-int8+dinov2-small-box+coat";
+pub const MODEL_ID: &str = "yolox-2022nov-int8+dinov2-base-box+coat";
 
 const SIDE: usize = 640;
 /// Detections less sure than this are dropped.
@@ -71,7 +72,7 @@ pub fn is_downloaded(dir: &Path) -> bool {
     path(dir).is_file() && dir.join("pets").join(IDENTIFIER).is_file()
 }
 
-/// Fetches the detector and DINOv2 (~97 MB). `progress(done, total)` in bytes.
+/// Fetches the detector and DINOv2 (~355 MB). `progress(done, total)` in bytes.
 pub fn download(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
     download_files(
         &[
@@ -79,7 +80,10 @@ pub fn download(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
             (IDENTIFIER_URL, dir.join("pets").join(IDENTIFIER)),
         ],
         progress,
-    )
+    )?;
+    // The smaller DINOv2 earlier versions used.
+    let _ = std::fs::remove_file(dir.join("pets").join("dinov2_small.onnx"));
+    Ok(())
 }
 
 pub struct Detector {
@@ -235,7 +239,8 @@ fn basis() -> &'static Vec<f32> {
 }
 
 /// How much the coat's colours count against DINOv2's view of the pet.
-/// Measured on Oxford-IIIT Pet: a fifth tells look-alike cats apart better
+/// Measured on Oxford-IIIT Pet (with DINOv2-small, the model then): a fifth
+/// tells look-alike cats apart better
 /// (warm, spotted breeds: groups 83% pure rather than 67%; all breeds 75%
 /// rather than 67%), more makes it worse.
 const COAT_SHARE: f32 = 0.2;
@@ -263,10 +268,11 @@ pub fn distinctive(v: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-/// DINOv2 (small), which tells one pet from another.
-const IDENTIFIER: &str = "dinov2_small.onnx";
+/// DINOv2 (base, full precision: its 8-bit export can't tell pets apart),
+/// which tells one pet from another.
+const IDENTIFIER: &str = "dinov2_base.onnx";
 const IDENTIFIER_URL: &str =
-    "https://huggingface.co/Xenova/dinov2-small/resolve/main/onnx/model.onnx";
+    "https://huggingface.co/Xenova/dinov2-base/resolve/main/onnx/model.onnx";
 
 pub struct Identifier {
     session: Mutex<Session>,
@@ -501,16 +507,16 @@ mod tests {
 
     #[test]
     fn what_pets_share_is_taken_away() {
-        assert_eq!(basis().len(), 384 + COAT_BINS);
-        let v: Vec<f32> = (0..384 + COAT_BINS)
+        assert_eq!(basis().len(), 768 + COAT_BINS);
+        let v: Vec<f32> = (0..768 + COAT_BINS)
             .map(|i| ((i * 37) % 101) as f32 / 100.0 - 0.5)
             .collect();
         let d = distinctive(&v);
         let length = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((length(&d) - 1.0).abs() < 1e-3);
         // DINOv2's part and the coat's, weighed as set.
-        assert!((length(&d[..384]).powi(2) - (1.0 - COAT_SHARE)).abs() < 1e-3);
-        assert!((length(&d[384..]).powi(2) - COAT_SHARE).abs() < 1e-3);
+        assert!((length(&d[..768]).powi(2) - (1.0 - COAT_SHARE)).abs() < 1e-3);
+        assert!((length(&d[768..]).powi(2) - COAT_SHARE).abs() < 1e-3);
         // Descriptions of another size (another model) are left as they are.
         assert_eq!(distinctive(&[1.0, 0.0]), [1.0, 0.0]);
     }
@@ -805,21 +811,18 @@ mod tests {
         let detector = Detector::load(&models, 4).unwrap();
         let dino = Identifier::load(&models, 4).unwrap();
         // Bigger DINOv2s, to see whether they tell pets apart better.
-        let trials: Vec<(&str, Identifier)> = [
-            ("base", "model.onnx"),
-            ("base-int8", "model_quantized.onnx"),
-        ]
-        .into_iter()
-        .map(|(label, file)| {
-            let path = models
-                .join("pets-trial")
-                .join(format!("dinov2-base-{file}"));
-            let url = format!("https://huggingface.co/Xenova/dinov2-base/resolve/main/onnx/{file}");
-            download_files(&[(url.as_str(), path.clone())], &|_, _| {})
-                .expect("download DINOv2 base");
-            (label, Identifier::load_file(&path, 4).unwrap())
-        })
-        .collect();
+        // The smaller DINOv2 used before, for comparison.
+        let trials: Vec<(&str, Identifier)> = [("small", "dinov2-small")]
+            .into_iter()
+            .map(|(label, repo)| {
+                let path = models.join("pets-trial").join(format!("{repo}.onnx"));
+                let url =
+                    format!("https://huggingface.co/Xenova/{repo}/resolve/main/onnx/model.onnx");
+                download_files(&[(url.as_str(), path.clone())], &|_, _| {})
+                    .expect("download DINOv2 small");
+                (label, Identifier::load_file(&path, 4).unwrap())
+            })
+            .collect();
         let mut took = vec![std::time::Duration::ZERO; 1 + trials.len()];
         // Per pet: DINOv2 on the square crop the app has used, DINOv2 on
         // just what's in the box, the coat's colours, then each bigger
@@ -912,7 +915,7 @@ mod tests {
         report("box", &boxed);
         report("coat", &coats);
         let count = (prior_d.len() + pets_d.len()) as u32;
-        println!("small: {:?} a pet", took[0] / count);
+        println!("base (the app's): {:?} a pet", took[0] / count);
         for (n, (label, _)) in trials.iter().enumerate() {
             println!("{label}: {:?} a pet", took[n + 1] / count);
             let (_, bigger) = centred(3 + n);

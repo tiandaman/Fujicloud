@@ -257,7 +257,7 @@ and [LFW](https://vis-www.cs.umass.edu/lfw/), downloaded at test time.
 Pets are found with [YOLOX](https://github.com/opencv/opencv_zoo/tree/main/models/object_detection_yolox)
 (Apache 2.0), also from OpenCV's model zoo, and told apart with Meta's
 [DINOv2](https://github.com/facebookresearch/dinov2) (Apache 2.0, via the
-[Xenova ONNX export](https://huggingface.co/Xenova/dinov2-small)); the pet tests use
+[Xenova ONNX export](https://huggingface.co/Xenova/dinov2-base)); the pet tests use
 [ImageNet sample images](https://github.com/EliSchwartz/imagenet-sample-images) and
 [Oxford-IIIT Pet](https://www.robots.ox.ac.uk/~vgg/data/pets/) (CC BY-SA 4.0) photos,
 downloaded at test time.

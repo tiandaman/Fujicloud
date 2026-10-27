@@ -326,7 +326,7 @@ export function mockApi(): Api {
       })),
     );
   people = people.map((p) => ({ ...p, faces: p.photoIds.length }));
-  let pets: PetsStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 97, scanned: photos.length, error: null };
+  let pets: PetsStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 355, scanned: photos.length, error: null };
   const hiddenFaces = new Set<number>();
   let faces: FacesStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 183, scanned: photos.length, error: null };
   const avatar = (seed: number) => {

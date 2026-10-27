@@ -326,7 +326,7 @@
       <h3><Icon name="paw" size={16} /> Pets</h3>
       <p class="hint">
         Finds the cats and dogs in your photos and tells your pets apart, so you can name each one. It runs entirely on this PC, using
-        OpenCV's YOLOX to find pets and Meta's DINOv2 to tell them apart (downloaded once, {store.petStatus?.downloadMb ?? 97} MB). Pets that
+        OpenCV's YOLOX to find pets and Meta's DINOv2 to tell them apart (downloaded once, {store.petStatus?.downloadMb ?? 355} MB). Pets that
         look much alike (two black cats) may be grouped together; "Not this pet" on their photos sorts them out.
       </p>
       <label class="row toggle">
