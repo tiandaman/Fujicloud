@@ -544,6 +544,11 @@ impl Engine {
     /// Embeds a batch of JPEGs (thumbnails are plenty). Each result is
     /// L2-normalised, so cosine similarity is a dot product.
     pub fn embed_images(&self, jpegs: &[Vec<u8>]) -> Result<Vec<Vec<f32>>, Error> {
+        // Never a batch of none: DirectML divides by its size working out
+        // the model's shapes, which crashes the program outright.
+        if jpegs.is_empty() {
+            return Ok(Vec::new());
+        }
         let size = self.spec.image_size as usize;
         let mut pixels = Vec::with_capacity(jpegs.len() * 3 * size * size);
         for jpeg in jpegs {
@@ -842,6 +847,8 @@ mod tests {
 
     /// Colours and meanings a working image/text model must get right.
     fn check_real(engine: &Engine) {
+        // No photos, no run: DirectML crashed the program on a batch of none.
+        assert!(engine.embed_images(&[]).unwrap().is_empty());
         let images = engine
             .embed_images(&[
                 solid([220, 30, 30]),
