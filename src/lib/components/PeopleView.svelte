@@ -217,7 +217,7 @@
       <h2>Find your pets</h2>
       <p>
         Fujicloud can find the cats and dogs in your photos and tell your pets apart, so you can name each one once and see every photo
-        they're in. It all happens on this PC: no photo ever leaves it. Two models are downloaded once ({status?.downloadMb ?? 355} MB).
+        they're in. It all happens on this PC: no photo ever leaves it. Two models are downloaded once ({status?.downloadMb ?? 352} MB).
       </p>
       <button class="btn primary" onclick={() => store.setPets(true)}>Turn on pets</button>
     </div>

@@ -1,4 +1,4 @@
-//! Pets orchestration: download the small animal detector and DINOv2 on
+//! Pets orchestration: download the small animal detector and DINOv3 on
 //! request, look for cats and dogs in every photo in the background, and
 //! tell them apart.
 

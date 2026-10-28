@@ -61,10 +61,16 @@ jobs:
         env:
           FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
           FUJICLOUD_FACE_TEST: ${{ github.workspace }}/.models/face-test
-      # Pets: the detector finds cats and dogs, and the smart search model
-      # tells cats of different types apart.
+      - uses: actions/cache@v5
+        with:
+          path: |
+            .models/pets
+            .models/pet-test
+          key: pets-yolox-dinov3-b16-v1
+      # Pets: the detector finds cats and dogs, DINOv3 tells cats of
+      # different types apart, and orange cats from orange-and-white ones.
       - name: Pets (real models)
-        run: cargo test -p fuji-core -- --ignored --nocapture real_cats real_pets
+        run: cargo test -p fuji-core -- --ignored --nocapture real_cats real_pets real_orange
         env:
           FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.models
           FUJICLOUD_PET_TEST: ${{ github.workspace }}/.models/pet-test

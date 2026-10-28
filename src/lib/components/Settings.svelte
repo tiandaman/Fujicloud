@@ -346,8 +346,8 @@
       <h3><Icon name="paw" size={16} /> Pets</h3>
       <p class="hint">
         Finds the cats and dogs in your photos and tells your pets apart, so you can name each one. It runs entirely on this PC, using
-        OpenCV's YOLOX to find pets and Meta's DINOv2 to tell them apart (downloaded once, {store.petStatus?.downloadMb ?? 355} MB). Pets that
-        look much alike (two black cats) may be grouped together; "Not this pet" on their photos sorts them out.
+        OpenCV's YOLOX to find pets and Meta's DINOv3 to tell them apart (downloaded once, {store.petStatus?.downloadMb ?? 352} MB). It keeps
+        look-alike pets apart, so one pet may show up as two at first: give both the same name to make them one.
       </p>
       <label class="row toggle">
         <div>
@@ -399,7 +399,7 @@
     <section class="credits">
       <p class="faint">
         Place names © <a href="https://www.geonames.org" target="_blank" rel="noreferrer">GeoNames</a> (CC BY 4.0). Map © OpenStreetMap
-        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses InsightFace's SCRFD and ArcFace models (for non-commercial use); Pets uses OpenCV's YOLOX and Meta's DINOv2 models. Movies Windows can't play are converted with FFmpeg (gyan.dev's build, downloaded when first needed).
+        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses InsightFace's SCRFD and ArcFace models (for non-commercial use); Pets uses OpenCV's YOLOX and Meta's DINOv3 models. Movies Windows can't play are converted with FFmpeg (gyan.dev's build, downloaded when first needed).
       </p>
     </section>
 

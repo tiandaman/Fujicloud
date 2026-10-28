@@ -25,18 +25,18 @@ use crate::xmp::{Found, Seen};
 /// over 0.27, and they were grouped perfectly anywhere from 0.25 to 0.55.
 pub const SAME_PERSON: f32 = 0.40;
 
-/// Similarity (of pets' descriptions: DINOv2's view of just the pet and its
+/// Similarity (of pets' descriptions: DINOv3's view of just the pet and its
 /// coat's colours, with the average pet taken away: see
 /// `animals::distinctive`) at which two pictures are taken to be the same
-/// pet. Checked against the real models in `animals`' tests on Oxford-IIIT
-/// Pet with DINOv2-base: three cats of different types came out as three
-/// pets; across twelve breeds groups were 78% one breed (look-alike warm,
-/// spotted breeds 82%) with 86% of a breed's photos kept together; and one
-/// pet in two photos is closer still than two cats of a breed. At 0.50
-/// groups were purer still, but black cats split in two. Leans towards keeping pets apart: a pet
+/// pet. Measured on frames of 220 cats from video clips, with 124 different
+/// orange cats (solid, or with white) among them, grouped as the app groups:
+/// at 0.70, 89% of pictures put together were of one cat, 80% of a cat's
+/// pictures stayed together, and 8% of the orange cats shared a pet with an
+/// orange-and-white one. At 0.45, as with DINOv2 before, nearly every cat
+/// in a big library ran together. Leans towards keeping pets apart: a pet
 /// split in two is merged by giving both the same name, two pets as one
 /// take sorting out photo by photo.
-pub const SAME_PET: f32 = 0.45;
+pub const SAME_PET: f32 = 0.70;
 
 /// Who a group of faces belongs to: a person, or a pet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +256,30 @@ pub(crate) struct Loose {
     /// Someone said it isn't this person.
     pub not_person: Option<i64>,
     pub embedding: Vec<f32>,
+}
+
+/// The model whose descriptions compare now: the one the newest face (or
+/// pet) was found with, and how long its descriptions are. Two models can
+/// describe at the same length (DINOv2 and DINOv3 pets do), so the length
+/// alone doesn't tell them apart; the model is `None` when the newest face's
+/// photo is waiting to be searched again.
+fn current_model(
+    conn: &rusqlite::Connection,
+    subject: Subject,
+) -> Result<(Option<String>, i64), Error> {
+    let found: Option<(i64, Option<String>)> = conn
+        .query_row(
+            &format!(
+                "SELECT length(f.embedding), s.model FROM faces f
+                 LEFT JOIN {} s ON s.photo_id = f.photo_id
+                 WHERE f.kind = ?1 ORDER BY f.id DESC LIMIT 1",
+                subject.scans()
+            ),
+            [subject.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(found.map_or((None, 0), |(length, model)| (model, length)))
 }
 
 /// Groups faces that look alike (similarity to the group's average at least
@@ -584,18 +608,15 @@ impl Library {
             // Only descriptions from the current model compare: the newest
             // face says which that is. Faces from an earlier model wait to be
             // searched again (keeping their person meanwhile).
-            let current: Option<i64> = conn
-                .query_row(
-                    "SELECT length(embedding) FROM faces WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
-                    [subject.as_str()],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let mut stmt = conn.prepare(
-                "SELECT id, person_id, not_person, embedding FROM faces
-                 WHERE kind = ?1 AND length(embedding) = ?2 ORDER BY id",
-            )?;
-            let mut rows = stmt.query(params![subject.as_str(), current.unwrap_or(0)])?;
+            let (model, length) = current_model(&conn, subject)?;
+            let mut stmt = conn.prepare(&format!(
+                "SELECT f.id, f.person_id, f.not_person, f.embedding FROM faces f
+                 LEFT JOIN {} s ON s.photo_id = f.photo_id
+                 WHERE f.kind = ?1 AND length(f.embedding) = ?2 AND (?3 IS NULL OR s.model = ?3)
+                 ORDER BY f.id",
+                subject.scans()
+            ))?;
+            let mut rows = stmt.query(params![subject.as_str(), length, model])?;
             while let Some(r) = rows.next()? {
                 let embedding = subject.comparable(unpack(&r.get::<_, Vec<u8>>(3)?));
                 match r.get::<_, Option<i64>>(1)? {
@@ -1132,23 +1153,20 @@ impl Library {
                    (SELECT id FROM people WHERE name IS NULL AND hidden = 0 AND kind = ?1)",
                 [kind],
             )?;
-            let current: Option<i64> = tx
-                .query_row(
-                    "SELECT length(embedding) FROM faces WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
-                    [kind],
-                    |r| r.get(0),
-                )
-                .optional()?;
+            let (model, length) = current_model(&tx, subject)?;
             // Per named person: what the confirmed faces look like, and the rest.
             let mut confirmed: HashMap<i64, Centroid> = HashMap::new();
             let mut filed: Vec<(i64, i64, Vec<f32>)> = Vec::new();
             {
-                let mut stmt = tx.prepare(
+                let mut stmt = tx.prepare(&format!(
                     "SELECT f.id, f.person_id, f.confirmed, f.embedding FROM faces f
                      JOIN people p ON p.id = f.person_id
-                     WHERE f.kind = ?1 AND p.name IS NOT NULL AND length(f.embedding) = ?2",
-                )?;
-                let mut rows = stmt.query(params![kind, current.unwrap_or(0)])?;
+                     LEFT JOIN {} s ON s.photo_id = f.photo_id
+                     WHERE f.kind = ?1 AND p.name IS NOT NULL AND length(f.embedding) = ?2
+                       AND (?3 IS NULL OR s.model = ?3)",
+                    subject.scans()
+                ))?;
+                let mut rows = stmt.query(params![kind, length, model])?;
                 while let Some(r) = rows.next()? {
                     let v = subject.comparable(unpack(&r.get::<_, Vec<u8>>(3)?));
                     let person: i64 = r.get(1)?;
@@ -1854,6 +1872,37 @@ mod tests {
         lib.group_faces().unwrap();
         assert_eq!(lib.people().unwrap()[0].faces, 3);
         assert!(lib.faces_todo("new").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_new_pet_model_is_not_compared_with_the_old_one() {
+        let lib = library(4);
+        let p = ids(&lib);
+        // DINOv2 then DINOv3 describe pets at the same length: only the
+        // model tells which descriptions compare.
+        lib.store_pets(p[0], "old", &[face(0, 0.0)]).unwrap();
+        lib.store_pets(p[1], "old", &[face(0, 0.1)]).unwrap();
+        lib.group_faces().unwrap();
+        let old = lib.people().unwrap();
+        assert_eq!(old.len(), 1);
+        lib.store_pets(p[2], "new", &[face(0, 0.05)]).unwrap();
+        lib.store_pets(p[3], "new", &[face(0, 0.15)]).unwrap();
+        lib.group_faces().unwrap();
+        let pets = lib.people().unwrap();
+        assert_eq!(pets.len(), 2, "{pets:?}");
+        let of = |photo: i64| {
+            pets.iter()
+                .find(|g| g.photo_ids.contains(&photo))
+                .unwrap()
+                .id
+        };
+        assert_eq!(
+            of(p[0]),
+            old[0].id,
+            "the old photos keep their pet meanwhile"
+        );
+        assert_eq!(of(p[2]), of(p[3]));
+        assert_ne!(of(p[2]), old[0].id);
     }
 
     #[test]
