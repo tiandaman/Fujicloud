@@ -1,13 +1,15 @@
 //! Finding cats and dogs in photos, entirely on this PC.
 //!
 //! YOLOX-S (8-bit, from OpenCV's model zoo) finds animals and boxes them.
-//! DINOv2 (base, Meta's), a model that sees fine detail, describes each
+//! DINOv3 (ViT-B/16, Meta's), a model that sees fine detail, describes each
 //! pet's picture: coat colour, pattern, markings and shape. Measured on
-//! Oxford-IIIT Pet it tells cats apart with a wider margin than DINOv2's
-//! small model (and far wider than the smart search model's), keeping each
-//! cat's photos together more; it needs nothing else switched on. Pictures
-//! are compared with the average pet taken away ([`distinctive`]); see
-//! [`crate::people`], which groups and names pets the way it does people.
+//! frames of 220 cats from video clips (one cat per clip) and on 124 orange
+//! cats, solid or with white, it keeps different cats apart far better than
+//! DINOv2, which the app used before: grouped as the app does, an orange
+//! cat shared a pet with an orange-and-white one a tenth as often. It needs
+//! nothing else switched on. Pictures are compared with the average pet
+//! taken away ([`distinctive`]); see [`crate::people`], which groups and
+//! names pets the way it does people.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -24,11 +26,11 @@ use crate::embed::{download_files, environment, model_err};
 
 const DETECTOR: &str = "object_detection_yolox_2022nov_int8.onnx";
 const URL: &str = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/object_detection_yolox/object_detection_yolox_2022nov_int8.onnx";
-/// The detector (9 MB) and DINOv2 (88 MB) together, for the UI.
-pub const DOWNLOAD_MB: u32 = 355;
+/// The detector (9 MB) and DINOv3 (343 MB) together, for the UI.
+pub const DOWNLOAD_MB: u32 = 352;
 /// Stored with each photo searched: the detector, and the model that tells
 /// pets apart.
-pub const MODEL_ID: &str = "yolox-2022nov-int8+dinov2-base-box+coat";
+pub const MODEL_ID: &str = "yolox-2022nov-int8+dinov3-base-box+coat";
 
 const SIDE: usize = 640;
 /// Detections less sure than this are dropped.
@@ -69,20 +71,27 @@ fn path(dir: &Path) -> PathBuf {
 }
 
 pub fn is_downloaded(dir: &Path) -> bool {
-    path(dir).is_file() && dir.join("pets").join(IDENTIFIER).is_file()
+    path(dir).is_file()
+        && IDENTIFIER_FILES
+            .iter()
+            .all(|f| identifier_dir(dir).join(f).is_file())
 }
 
-/// Fetches the detector and DINOv2 (~355 MB). `progress(done, total)` in bytes.
+/// Fetches the detector and DINOv3 (~352 MB). `progress(done, total)` in bytes.
 pub fn download(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
-    download_files(
-        &[
-            (URL, path(dir)),
-            (IDENTIFIER_URL, dir.join("pets").join(IDENTIFIER)),
-        ],
-        progress,
-    )?;
-    // The smaller DINOv2 earlier versions used.
-    let _ = std::fs::remove_file(dir.join("pets").join("dinov2_small.onnx"));
+    let urls: Vec<String> = IDENTIFIER_FILES
+        .iter()
+        .map(|f| format!("{IDENTIFIER_URL}/{f}"))
+        .collect();
+    let mut files = vec![(URL, path(dir))];
+    for (url, f) in urls.iter().zip(IDENTIFIER_FILES) {
+        files.push((url.as_str(), identifier_dir(dir).join(f)));
+    }
+    download_files(&files, progress)?;
+    // The DINOv2s earlier versions used.
+    for old in ["dinov2_small.onnx", "dinov2_base.onnx"] {
+        let _ = std::fs::remove_file(dir.join("pets").join(old));
+    }
     Ok(())
 }
 
@@ -268,11 +277,15 @@ pub fn distinctive(v: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-/// DINOv2 (base, full precision: its 8-bit export can't tell pets apart),
-/// which tells one pet from another.
-const IDENTIFIER: &str = "dinov2_base.onnx";
+/// DINOv3 ViT-B/16 (full precision), which tells one pet from another: its
+/// graph, and its weights beside it under the name the graph gives them.
 const IDENTIFIER_URL: &str =
-    "https://huggingface.co/Xenova/dinov2-base/resolve/main/onnx/model.onnx";
+    "https://huggingface.co/onnx-community/dinov3-vitb16-pretrain-lvd1689m-ONNX/resolve/main/onnx";
+const IDENTIFIER_FILES: [&str; 2] = ["model.onnx", "model.onnx_data"];
+
+fn identifier_dir(dir: &Path) -> PathBuf {
+    dir.join("pets").join("dinov3-vitb16")
+}
 
 pub struct Identifier {
     session: Mutex<Session>,
@@ -280,10 +293,10 @@ pub struct Identifier {
 
 impl Identifier {
     pub fn load(dir: &Path, threads: usize) -> Result<Self, Error> {
-        Self::load_file(&dir.join("pets").join(IDENTIFIER), threads)
+        Self::load_file(&identifier_dir(dir).join(IDENTIFIER_FILES[0]), threads)
     }
 
-    /// A DINOv2 export of any size (the tests compare them).
+    /// A DINO export of any size (the tests compare them).
     pub fn load_file(file: &Path, threads: usize) -> Result<Self, Error> {
         let env = environment()?;
         let fail = |e: &dyn std::fmt::Display| Error::Model(format!("{}: {e}", file.display()));
@@ -1034,6 +1047,158 @@ mod tests {
                 .unwrap_or(0);
             assert!(best * 2 > total, "{}: {best} of {total} together", CATS[b]);
         }
+    }
+
+    /// Rows of Microsoft's Cats vs Dogs (from Petfinder.com, on Hugging
+    /// Face) showing one orange cat, looked at one by one: solid orange or
+    /// cream, and orange (or cream) with clear white on the chest, face,
+    /// legs or belly. Every photo is a different cat.
+    const ORANGE: [u32; 86] = [
+        15, 26, 44, 74, 86, 95, 105, 122, 126, 150, 158, 168, 188, 197, 204, 206, 213, 232, 238,
+        266, 275, 301, 313, 323, 411, 420, 467, 604, 612, 649, 689, 710, 815, 890, 933, 937, 938,
+        942, 958, 964, 991, 1009, 1049, 1053, 1089, 1112, 1113, 1114, 1128, 1135, 1188, 1201, 1207,
+        1240, 1242, 1301, 1326, 1372, 1377, 1406, 1410, 1428, 1460, 1529, 1530, 1563, 1597, 1609,
+        1611, 1627, 1694, 1709, 1718, 1726, 1729, 1733, 1824, 1829, 1852, 1858, 1892, 1926, 1949,
+        1958, 1965, 1992,
+    ];
+    const ORANGE_AND_WHITE: [u32; 38] = [
+        14, 40, 156, 164, 201, 352, 412, 423, 483, 565, 576, 676, 799, 814, 876, 897, 899, 1022,
+        1067, 1190, 1233, 1272, 1396, 1413, 1633, 1637, 1722, 1758, 1765, 1768, 1820, 1867, 1922,
+        1940, 1946, 1961, 1985, 1998,
+    ];
+
+    /// The photos in these rows of Cats vs Dogs, kept in `dir` for the next run.
+    fn cats_vs_dogs(dir: &Path, rows: &[u32]) -> Vec<PathBuf> {
+        std::fs::create_dir_all(dir).unwrap();
+        let get = |url: &str| -> Vec<u8> {
+            for attempt in 1..=4 {
+                match ureq::get(url).call() {
+                    Ok(mut r) => {
+                        return r
+                            .body_mut()
+                            .with_config()
+                            .limit(20 << 20)
+                            .read_to_vec()
+                            .unwrap();
+                    }
+                    Err(e) if attempt < 4 => {
+                        println!("{url}: {e}, again");
+                        std::thread::sleep(std::time::Duration::from_secs(3 * attempt));
+                    }
+                    Err(e) => panic!("{url}: {e}"),
+                }
+            }
+            unreachable!()
+        };
+        let api = "https://datasets-server.huggingface.co/rows?dataset=microsoft%2Fcats_vs_dogs&config=default&split=train";
+        rows.iter()
+            .map(|row| {
+                let file = dir.join(format!("{row:05}.jpg"));
+                if !file.is_file() {
+                    let page: serde_json::Value =
+                        serde_json::from_slice(&get(&format!("{api}&offset={row}&length=1")))
+                            .unwrap();
+                    let src = page["rows"][0]["row"]["image"]["src"]
+                        .as_str()
+                        .expect("image");
+                    std::fs::write(&file, get(src)).unwrap();
+                }
+                file
+            })
+            .collect()
+    }
+
+    /// The pets the user had trouble with: orange cats and orange-and-white
+    /// ones, described and grouped as the app does. All are different cats,
+    /// so the fewer groups the better; above all, an orange cat must hardly
+    /// ever share a pet with an orange-and-white one. Run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn real_orange_cats_are_told_apart() {
+        let models = PathBuf::from(
+            std::env::var("FUJICLOUD_MODEL_DIR").unwrap_or_else(|_| ".models".into()),
+        );
+        download(&models, &|_, _| {}).expect("download the detector and DINOv3");
+        let detector = Detector::load(&models, 4).unwrap();
+        let dino = Identifier::load(&models, 4).unwrap();
+        let mut rows: Vec<(u32, bool)> = ORANGE
+            .iter()
+            .map(|r| (*r, false))
+            .chain(ORANGE_AND_WHITE.iter().map(|r| (*r, true)))
+            .collect();
+        // In the order of the dataset, the two kinds mixed.
+        rows.sort();
+        let files = cats_vs_dogs(
+            &photos().join("cats-vs-dogs"),
+            &rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+        );
+        let mut pets: Vec<(bool, Vec<f32>)> = Vec::new();
+        for ((row, white), file) in rows.iter().zip(&files) {
+            let image = crate::thumbs::upright(&std::fs::read(file).unwrap(), 1280).unwrap();
+            let Some(cat) = detector
+                .animals(&image)
+                .unwrap()
+                .into_iter()
+                .find(|a| a.species == Species::Cat)
+            else {
+                println!("row {row}: no cat found");
+                continue;
+            };
+            pets.push((*white, distinctive(&dino.pet(&image, &cat).unwrap())));
+        }
+        assert!(
+            pets.len() >= rows.len() * 9 / 10,
+            "{} cats found",
+            pets.len()
+        );
+        let cross: Vec<f32> = pets
+            .iter()
+            .enumerate()
+            .flat_map(|(i, a)| {
+                pets[i + 1..]
+                    .iter()
+                    .filter(move |b| b.0 != a.0)
+                    .map(move |b| dot(&a.1, &b.1))
+            })
+            .collect();
+        let above = cross
+            .iter()
+            .filter(|&&s| s >= crate::people::SAME_PET)
+            .count();
+        let loose = pets
+            .iter()
+            .enumerate()
+            .map(|(i, p)| crate::people::Loose {
+                id: i as i64,
+                not_person: None,
+                embedding: p.1.clone(),
+            })
+            .collect();
+        let groups = crate::people::cluster(loose, crate::people::SAME_PET);
+        let mixed: usize = groups
+            .iter()
+            .filter(|g| {
+                g.iter().any(|&i| pets[i as usize].0) && g.iter().any(|&i| !pets[i as usize].0)
+            })
+            .map(Vec::len)
+            .sum();
+        println!(
+            "{} cats: {} groups of {} cats; {mixed} cats share a pet with the other kind; {above} of {} orange/orange-and-white pairs look like one pet",
+            pets.len(),
+            groups.len(),
+            groups.iter().map(Vec::len).sum::<usize>(),
+            cross.len()
+        );
+        assert!(
+            mixed * 100 <= pets.len() * 15,
+            "{mixed} of {} cats mixed",
+            pets.len()
+        );
+        assert!(
+            above * 100 <= cross.len(),
+            "{above} of {} pairs",
+            cross.len()
+        );
     }
 
     fn image_of_no_pet() -> Rgb {
