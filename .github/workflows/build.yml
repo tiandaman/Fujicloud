@@ -97,7 +97,7 @@ jobs:
           fs.writeFileSync(f, JSON.stringify(c, null, 2) + '\\n'); console.log('version', c.version)"
       - name: Build installer
         run: npx tauri build --config src-tauri/tauri.directml.conf.json
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: Fujicloud-Windows-installer
           path: |
@@ -109,7 +109,7 @@ jobs:
       - name: App starts and keeps running
         shell: pwsh
         run: pwsh scripts/smoke-test.ps1 -Seconds 180 -Screens smoke-screens
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: smoke-test-screens
