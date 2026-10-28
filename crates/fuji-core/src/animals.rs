@@ -1018,11 +1018,13 @@ mod tests {
         1940, 1946, 1961, 1985, 1998,
     ];
 
-    /// The photos in these rows of Cats vs Dogs, kept in `dir` for the next run.
+    /// The photos in these rows of Cats vs Dogs, kept in `dir` for the next
+    /// run. Rows are asked for a hundred at a time: the dataset server
+    /// turns away many quick requests.
     fn cats_vs_dogs(dir: &Path, rows: &[u32]) -> Vec<PathBuf> {
         std::fs::create_dir_all(dir).unwrap();
         let get = |url: &str| -> Vec<u8> {
-            for attempt in 1..=4 {
+            for attempt in 1..=6 {
                 match ureq::get(url).call() {
                     Ok(mut r) => {
                         return r
@@ -1032,29 +1034,38 @@ mod tests {
                             .read_to_vec()
                             .unwrap();
                     }
-                    Err(e) if attempt < 4 => {
+                    Err(e) if attempt < 6 => {
                         println!("{url}: {e}, again");
-                        std::thread::sleep(std::time::Duration::from_secs(3 * attempt));
+                        std::thread::sleep(std::time::Duration::from_secs(5 << attempt));
                     }
                     Err(e) => panic!("{url}: {e}"),
                 }
             }
             unreachable!()
         };
+        let file = |row: u32| dir.join(format!("{row:05}.jpg"));
         let api = "https://datasets-server.huggingface.co/rows?dataset=microsoft%2Fcats_vs_dogs&config=default&split=train";
-        rows.iter()
-            .map(|row| {
-                let file = dir.join(format!("{row:05}.jpg"));
-                if !file.is_file() {
-                    let page: serde_json::Value =
-                        serde_json::from_slice(&get(&format!("{api}&offset={row}&length=1")))
-                            .unwrap();
-                    let src = page["rows"][0]["row"]["image"]["src"]
-                        .as_str()
-                        .expect("image");
-                    std::fs::write(&file, get(src)).unwrap();
+        let mut pages: Vec<u32> = rows
+            .iter()
+            .filter(|&&r| !file(r).is_file())
+            .map(|r| r / 100 * 100)
+            .collect();
+        pages.dedup();
+        for start in pages {
+            let page: serde_json::Value =
+                serde_json::from_slice(&get(&format!("{api}&offset={start}&length=100"))).unwrap();
+            for row in page["rows"].as_array().unwrap() {
+                let n = row["row_idx"].as_u64().unwrap() as u32;
+                if rows.contains(&n) && !file(n).is_file() {
+                    let src = row["row"]["image"]["src"].as_str().expect("image");
+                    std::fs::write(file(n), get(src)).unwrap();
                 }
-                file
+            }
+        }
+        rows.iter()
+            .map(|&r| {
+                assert!(file(r).is_file(), "row {r} not fetched");
+                file(r)
             })
             .collect()
     }
