@@ -268,13 +268,19 @@ pub fn read(path: &Path) -> Result<PhotoMeta, Error> {
 /// A frame of the movie as upright RGB, at least `long_edge` on its long
 /// side where Windows can manage it. Uses the same thumbnail handlers as
 /// File Explorer, so any format with a codec installed works (iPhone HEVC
-/// needs Microsoft's free HEVC Video Extensions). When Explorer won't make
+/// needs Microsoft's HEVC Video Extensions). When Explorer won't make
 /// one (thumbnails switched off, or a share it won't preview), a frame is
-/// decoded directly instead.
+/// decoded directly instead, by Windows or else by FFmpeg if downloaded.
 #[cfg(windows)]
 pub fn poster(path: &Path, long_edge: u32) -> Result<crate::decode::Rgb, Error> {
     shell_poster(path, long_edge)
         .or_else(|shell| decoded_frame(path).map_err(|frame| bad(&format!("{shell}; {frame}"))))
+        .or_else(|windows| match crate::ffmpeg::find() {
+            // HEVC without Microsoft's extensions: FFmpeg, once downloaded.
+            Some(ffmpeg) => crate::ffmpeg::frame(&ffmpeg, path, long_edge)
+                .map_err(|e| bad(&format!("{windows}; {e}"))),
+            None => Err(windows),
+        })
 }
 
 /// A frame decoded with Media Foundation, about a second in (first frames

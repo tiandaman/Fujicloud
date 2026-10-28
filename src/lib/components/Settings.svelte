@@ -399,7 +399,7 @@
     <section class="credits">
       <p class="faint">
         Place names © <a href="https://www.geonames.org" target="_blank" rel="noreferrer">GeoNames</a> (CC BY 4.0). Map © OpenStreetMap
-        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses InsightFace's SCRFD and ArcFace models (for non-commercial use); Pets uses OpenCV's YOLOX and Meta's DINOv2 models.
+        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses InsightFace's SCRFD and ArcFace models (for non-commercial use); Pets uses OpenCV's YOLOX and Meta's DINOv2 models. Movies Windows can't play are converted with FFmpeg (gyan.dev's build, downloaded when first needed).
       </p>
     </section>
 

@@ -2,7 +2,8 @@
  * Drag a box to select: press on the page (not on a control), move a few
  * pixels, and everything the box touches is selected; Ctrl or Shift adds to
  * what was selected already. Near the top or bottom edge the page scrolls.
- * A press that doesn't move stays an ordinary click.
+ * A press that doesn't move stays an ordinary click, and one on the page
+ * itself (not on an item or a control) clears the selection.
  *
  *   <div class="scroller" use:marquee={{ canvas, hits, select, from }}>
  */
@@ -19,6 +20,8 @@ export type MarqueeOptions = {
   select: (ids: Set<number>) => void;
   /** Whether a press here may start a box (e.g. not on a selected photo, which drags it out). */
   from?: (e: PointerEvent) => boolean;
+  /** What a selectable item is, e.g. '.tile'; clicking between them clears the selection. */
+  item: string;
 };
 
 const START = 6;
@@ -26,7 +29,7 @@ const EDGE = 48;
 
 export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
   let opts = options;
-  let start: { x: number; y: number; id: number; additive: boolean; base: Set<number> } | null = null;
+  let start: { x: number; y: number; id: number; additive: boolean; blank: boolean; base: Set<number> } | null = null;
   let active = false;
   let last = { x: 0, y: 0 };
   let frame = 0;
@@ -44,7 +47,8 @@ export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
     if (opts.from && !opts.from(e)) return;
     const p = local(e.clientX, e.clientY);
     const additive = e.ctrlKey || e.metaKey || e.shiftKey;
-    start = { ...p, id: e.pointerId, additive, base: new Set(additive ? opts.selected() : []) };
+    const blank = !t.closest(`${opts.item}, button, [role=button], label`);
+    start = { ...p, id: e.pointerId, additive, blank, base: new Set(additive ? opts.selected() : []) };
     last = { x: e.clientX, y: e.clientY };
   }
 
@@ -103,6 +107,9 @@ export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
       window.addEventListener('click', swallow, { capture: true, once: true });
       setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
       if (scroller.hasPointerCapture(e.pointerId)) scroller.releasePointerCapture(e.pointerId);
+    } else if (start.blank && !start.additive) {
+      // A click between the items: nothing is selected any more.
+      opts.select(new Set());
     }
     end();
   }

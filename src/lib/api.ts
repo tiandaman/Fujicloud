@@ -94,6 +94,8 @@ export interface Api {
 function tauriApi(): Api {
   // WebView2 serves custom schemes as http://<scheme>.localhost.
   const base = navigator.userAgent.includes('Windows') ? 'http://fuji.localhost' : 'fuji://localhost';
+  /** Files being dragged out of the window right now. */
+  let outgoing = new Set<string>();
   const core = import('@tauri-apps/api/core');
   const invoke = async <T>(cmd: string, args?: Record<string, unknown>) => (await core).invoke<T>(cmd, args);
 
@@ -141,7 +143,13 @@ function tauriApi(): Api {
     async dragOut(ids) {
       const files = await invoke<{ paths: string[]; icon: string }>('drag_files', { ids });
       const { startDrag } = await import('@crabnebula/tauri-plugin-drag');
-      await startDrag({ item: files.paths, icon: files.icon });
+      outgoing = new Set(files.paths);
+      try {
+        await startDrag({ item: files.paths, icon: files.icon });
+      } finally {
+        // The drop event can come just after the drag ends.
+        setTimeout(() => (outgoing = new Set()), 1000);
+      }
     },
     openFolder: (path) => invoke('open_folder', { path }),
     prepareMovie: (id) => invoke('prepare_movie', { id }),
@@ -175,7 +183,11 @@ function tauriApi(): Api {
     async onDropPaths(cb) {
       const { getCurrentWebview } = await import('@tauri-apps/api/webview');
       return getCurrentWebview().onDragDropEvent((e) => {
-        if (e.payload.type === 'drop') cb(e.payload.paths);
+        // Photos dragged out and let go over this window aren't new folders.
+        if (e.payload.type === 'drop') {
+          const paths = e.payload.paths.filter((p) => !outgoing.has(p));
+          if (paths.length) cb(paths);
+        }
       });
     },
     async setFullscreen(on) {

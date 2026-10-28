@@ -520,14 +520,17 @@ fn recycles(_: &Path) -> bool {
 // ---- movies --------------------------------------------------------------------
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct MovieProgress {
     id: i64,
     /// 0–1.
     progress: f32,
+    /// Fetching the converter, before converting.
+    downloading: bool,
 }
 
-/// Converts a movie the window can't play (iPhone HEVC) to H.264 with
-/// Windows' own codecs, once; `/v/<id>` serves the result.
+/// Converts a movie the window can't play (iPhone HEVC) to H.264, once,
+/// with Windows' own codecs or else FFmpeg; `/v/<id>` serves the result.
 #[tauri::command]
 async fn prepare_movie(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<()> {
     let state = state.inner().clone();
@@ -554,13 +557,47 @@ async fn prepare_movie(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<
         let part = dest.with_extension("converting.mp4");
         let _ = std::fs::remove_file(&part);
         let last = Mutex::new(Instant::now());
-        let result = fuji_core::video::transcode_h264(&path, &part, &|progress| {
+        let report = |progress: f32, downloading: bool| {
             let mut last = last.lock();
             if last.elapsed() > Duration::from_millis(200) || progress >= 1.0 {
                 *last = Instant::now();
-                let _ = app.emit("movie-progress", MovieProgress { id, progress });
+                let _ = app.emit(
+                    "movie-progress",
+                    MovieProgress {
+                        id,
+                        progress,
+                        downloading,
+                    },
+                );
             }
-        });
+        };
+        let result = fuji_core::video::transcode_h264(&path, &part, &|p| report(p, false)).or_else(
+            |windows| {
+                // No HEVC decoder in Windows (Microsoft's HEVC Video
+                // Extensions aren't installed): FFmpeg, fetched once.
+                log::info!(
+                    "Windows can't convert {} ({windows}); using FFmpeg",
+                    path.display()
+                );
+                let _ = std::fs::remove_file(&part);
+                let fresh = fuji_core::ffmpeg::find().is_none();
+                let ffmpeg = fuji_core::ffmpeg::download(&state.models_dir, &|done, total| {
+                    if total > 0 {
+                        report(done as f32 / total as f32, true);
+                    }
+                })
+                .map_err(|e| {
+                    fuji_core::Error::Model(format!(
+                        "{e}. Check that this PC can reach github.com, then try again."
+                    ))
+                })?;
+                if fresh {
+                    // Posters of such movies can be made now too.
+                    protocol::forget_failures();
+                }
+                fuji_core::ffmpeg::transcode(&ffmpeg, &path, &part, &|p| report(p, false))
+            },
+        );
         match result {
             Ok(()) => std::fs::rename(&part, &dest).map_err(err),
             Err(e) => {
@@ -1181,6 +1218,8 @@ pub fn run() {
             let workers = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4);
+            // Posters of movies Windows can't decode, once FFmpeg is here.
+            fuji_core::ffmpeg::set_dir(&data.join("models"));
             let state = Arc::new(AppState {
                 lib: Library::open(&data.join("library.db"))?,
                 cache: thumbs::Cache::new(data.join("cache"))?,

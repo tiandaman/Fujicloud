@@ -123,6 +123,16 @@ jobs:
       # decoded with Media Foundation.
       - name: Movie frames on Windows
         run: cargo test -p fuji-core -- --ignored --nocapture real_movie
+      # iPhone HEVC (SDR and HDR) on a PC without Microsoft's HEVC codec:
+      # the FFmpeg the app downloads converts it to H.264 Windows can read.
+      - uses: actions/cache@v5
+        with:
+          path: .ffmpeg
+          key: ffmpeg-6.1.1-win64
+      - name: HEVC movies on Windows (FFmpeg)
+        run: cargo test -p fuji-core -- --ignored --nocapture real_ffmpeg
+        env:
+          FUJICLOUD_MODEL_DIR: ${{ github.workspace }}/.ffmpeg
       - uses: actions/cache@v5
         with:
           path: .models

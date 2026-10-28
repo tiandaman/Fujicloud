@@ -100,6 +100,7 @@
   // Drag a box over faces to select them.
   let canvas = $state<HTMLDivElement>();
   const boxSelect = {
+    item: '.person, [data-person]',
     canvas: () => canvas,
     selected: () => picked,
     select: (ids: Set<number>) => (picked = [...ids]),

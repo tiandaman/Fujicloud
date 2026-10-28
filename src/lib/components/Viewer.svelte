@@ -32,7 +32,7 @@
   let movieFailed = $state(false);
   // Movies the window can't play (iPhone HEVC) are converted once by Windows.
   let converted = $state<Record<number, boolean>>({});
-  let converting = $state<{ id: number; progress: number } | null>(null);
+  let converting = $state<{ id: number; progress: number; downloading?: boolean } | null>(null);
   /** The converted copy came out sideways: turn it upright. */
   let turned = $state(false);
 
@@ -215,7 +215,7 @@
   onMount(() => {
     let stop: (() => void) | undefined;
     api
-      .listen<{ id: number; progress: number }>('movie-progress', (m) => {
+      .listen<{ id: number; progress: number; downloading: boolean }>('movie-progress', (m) => {
         if (converting?.id === m.id) converting = m;
       })
       .then((u) => (stop = u));
@@ -414,8 +414,12 @@
   {#if photo && converting}
     <div class="movie-failed" style:width="{stageW}px">
       <div>
-        <strong>Getting this movie ready…</strong>
-        <p class="muted">It's in a format the window can't play (iPhone HEVC), so Windows is converting it, once.</p>
+        <strong>{converting.downloading ? 'Fetching the movie converter…' : 'Getting this movie ready…'}</strong>
+        <p class="muted">
+          {converting.downloading
+            ? `It's in a format this PC can't play (iPhone HEVC). FFmpeg (30 MB) is downloaded once to convert movies like it, here on this PC.`
+            : "It's in a format the window can't play (iPhone HEVC), so it's being converted, once."}
+        </p>
         <div class="convert"><i style:width="{Math.max(4, converting.progress * 100)}%"></i></div>
       </div>
     </div>
@@ -424,8 +428,7 @@
       <div>
         <strong>This movie can't play here</strong>
         <p class="muted">
-          Windows couldn't convert it either. iPhone movies are HEVC: installing Microsoft's free <em>HEVC Video Extensions</em> from the
-          Microsoft Store usually fixes it.
+          It couldn't be converted either; the log file says why. Opening it in another app may still work.
         </p>
         <button class="btn" onclick={() => api.openDefault((live ?? photo).id).catch((e) => store.toast(String(e), 'error'))}>
           <Icon name="open" size={14} /> Open in another app

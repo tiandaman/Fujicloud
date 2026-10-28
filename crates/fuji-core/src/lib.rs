@@ -14,6 +14,7 @@ pub mod embed;
 pub mod export;
 #[cfg(feature = "smart-search")]
 pub mod faces;
+pub mod ffmpeg;
 pub mod fuji;
 pub mod geo;
 pub mod hdr;

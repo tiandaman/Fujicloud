@@ -164,6 +164,7 @@
   }
 
   const boxSelect = {
+    item: '.tile',
     canvas: () => canvas,
     selected: () => store.selection,
     select: (ids: Set<number>) => (store.selection = ids),

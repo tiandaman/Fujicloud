@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["smart-search"]
 # On-device image/text embeddings (ONNX Runtime) for "search by what's in the photo".
-smart-search = ["dep:ort", "dep:tokenizers", "dep:ureq"]
+smart-search = ["dep:ort", "dep:tokenizers", "dep:ureq", "dep:sha2"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
@@ -37,6 +37,8 @@ base64 = "0.22"
 ort = { version = "=2.0.0-rc.15", optional = true, features = ["half"] }
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
 ureq = { version = "3", optional = true }
+# Checks the downloaded movie converter.
+sha2 = { version = "0.10", optional = true }
 
 # GPU acceleration: DirectML is compiled into the Windows ONNX Runtime build;
 # DXGI finds the card it will run on. The Shell makes movie poster frames.
