@@ -129,14 +129,23 @@ pub fn scan_source(
     let done = AtomicUsize::new(0);
     report(Phase::Reading, 0, total);
     for chunk in todo.chunks(512) {
-        let photos: Vec<NewPhoto> =
-            io_pool().install(|| chunk.par_iter().filter_map(read_one).collect());
+        let photos: Vec<NewPhoto> = io_pool().install(|| {
+            chunk
+                .par_iter()
+                .filter_map(|f| read_one(f, Some(&root)))
+                .collect()
+        });
         summary.failed += chunk.len() - photos.len();
         lib.upsert(source.id, &photos)?;
         let n = done.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
         report(Phase::Reading, n, total);
     }
-    if total > 0 || summary.removed > 0 {
+    // Photos indexed before folder dates were read.
+    let redated = lib.redate_from_names(source.id, &root)?;
+    if redated > 0 {
+        log::info!("{redated} photos dated by their name or folder");
+    }
+    if total > 0 || summary.removed > 0 || redated > 0 {
         lib.link_edits()?;
         lib.infer_locations()?;
     }
@@ -336,15 +345,26 @@ fn pair_tags(lib: &Library, ids: &[i64]) -> Result<Tags, Error> {
 /// Indexes specific files (e.g. fresh imports) without walking the source.
 pub fn index_files(lib: &Library, source_id: i64, paths: &[PathBuf]) -> Result<usize, Error> {
     let files: Vec<FoundFile> = paths.iter().filter_map(|p| found_file(p)).collect();
-    let photos: Vec<NewPhoto> =
-        io_pool().install(|| files.par_iter().filter_map(read_one).collect());
+    let root = lib
+        .sources()?
+        .into_iter()
+        .find(|s| s.id == source_id)
+        .map(|s| PathBuf::from(s.path));
+    let photos: Vec<NewPhoto> = io_pool().install(|| {
+        files
+            .par_iter()
+            .filter_map(|f| read_one(f, root.as_deref()))
+            .collect()
+    });
     lib.upsert(source_id, &photos)?;
     lib.link_edits()?;
     lib.infer_locations()?;
     Ok(photos.len())
 }
 
-fn read_one(file: &FoundFile) -> Option<NewPhoto> {
+/// `root` is the source the file is in: dates in folder names count up to
+/// it (see [`crate::pathdate`]).
+fn read_one(file: &FoundFile, root: Option<&Path>) -> Option<NewPhoto> {
     let meta = match crate::guard(|| meta::read(&file.path, file.kind)) {
         Ok(m) => m,
         Err(e) => {
@@ -358,7 +378,9 @@ fn read_one(file: &FoundFile) -> Option<NewPhoto> {
     };
     let mut meta = meta;
     if meta.taken_at.is_none() {
-        meta.taken_at = Some(file.mtime);
+        // No date of its own: its name's or its folders', else the file's.
+        meta.taken_at =
+            Some(crate::pathdate::taken_at(&file.path, root, file.mtime).unwrap_or(file.mtime));
     }
     let place = meta
         .lat
@@ -745,5 +767,58 @@ mod tests {
         let s = scan_source(&lib, &src, true, &|_| {}).unwrap();
         assert_eq!(s.removed, 1);
         assert_eq!(lib.photos().unwrap().len(), 1);
+    }
+
+    /// Scans and old photos with no date of their own are dated by their
+    /// folders; photos that say when they were taken keep that.
+    #[test]
+    fn photos_without_a_date_take_their_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("1998/07 July")).unwrap();
+        std::fs::create_dir_all(root.join("Scans")).unwrap();
+        let undated = crate::test_jpeg(64, 48, None);
+        std::fs::write(root.join("1998/07 July/scan01.jpg"), &undated).unwrap();
+        std::fs::write(root.join("Scans/IMG_20050102_101500.jpg"), &undated).unwrap();
+        std::fs::write(root.join("Scans/loose.jpg"), &undated).unwrap();
+
+        let lib = Library::open_in_memory().unwrap();
+        let src = lib.add_source(root).unwrap();
+        scan_source(&lib, &src, false, &|_| {}).unwrap();
+        let date = |name: &str| {
+            let p = lib
+                .photos()
+                .unwrap()
+                .into_iter()
+                .find(|p| p.name == name)
+                .unwrap();
+            let t = chrono::DateTime::from_timestamp(p.taken_at.unwrap(), 0).unwrap();
+            (
+                t.format("%Y-%m-%d").to_string(),
+                p.mtime,
+                p.taken_at.unwrap(),
+            )
+        };
+        assert_eq!(date("scan01.jpg").0, "1998-07-01");
+        assert_eq!(date("IMG_20050102_101500.jpg").0, "2005-01-02");
+        let (_, mtime, taken) = date("loose.jpg");
+        assert_eq!(taken, mtime, "nothing better than the file's time");
+
+        // A library indexed before folders were read: re-dated on the next
+        // scan, without reading the files again.
+        let id = lib
+            .photos()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.name == "scan01.jpg")
+            .unwrap()
+            .id;
+        lib.conn
+            .lock()
+            .execute("UPDATE photos SET taken_at = mtime WHERE id = ?1", [id])
+            .unwrap();
+        let s = scan_source(&lib, &src, false, &|_| {}).unwrap();
+        assert_eq!((s.added, s.updated), (0, 0));
+        assert_eq!(date("scan01.jpg").0, "1998-07-01");
     }
 }

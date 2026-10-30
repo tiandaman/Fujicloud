@@ -395,6 +395,41 @@ impl Library {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Photos dated by their file's time alone (no date of their own) that
+    /// their name or folders date better: see [`crate::pathdate`]. For
+    /// libraries indexed before folder dates were read; nothing is read from
+    /// disk. Returns how many were re-dated.
+    pub fn redate_from_names(&self, source_id: i64, root: &Path) -> Result<usize, Error> {
+        let undated: Vec<(i64, String, i64)> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, path, mtime FROM photos WHERE source_id = ?1 AND taken_at = mtime",
+            )?;
+            stmt.query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?
+        };
+        let better: Vec<(i64, i64)> = undated
+            .into_iter()
+            .filter_map(|(id, path, mtime)| {
+                let t = crate::pathdate::taken_at(Path::new(&path), Some(root), mtime)?;
+                (t != mtime).then_some((id, t))
+            })
+            .collect();
+        if better.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached("UPDATE photos SET taken_at = ?2 WHERE id = ?1")?;
+            for (id, t) in &better {
+                stmt.execute(params![id, t])?;
+            }
+        }
+        tx.commit()?;
+        Ok(better.len())
+    }
+
     /// Inserts or refreshes files. User data (rating, flag, label) survives.
     pub fn upsert(&self, source_id: i64, photos: &[NewPhoto]) -> Result<(), Error> {
         let mut conn = self.conn.lock();

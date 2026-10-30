@@ -20,6 +20,7 @@ pub mod geo;
 pub mod hdr;
 pub mod ingest;
 pub mod meta;
+pub mod pathdate;
 pub mod people;
 pub mod raf;
 pub mod scan;
