@@ -43,6 +43,9 @@ pub struct Summary {
     pub failed: usize,
     /// Photos whose ratings, picks, favourites or albums came from a sidecar.
     pub synced: usize,
+    /// Changes from other PCs held for review: marks changed in sidecars,
+    /// and files gone.
+    pub held: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -120,8 +123,14 @@ pub fn scan_source(
         .filter(|(path, _)| really_gone(Path::new(path)))
         .map(|(_, (id, _, _))| id)
         .collect();
-    summary.removed = gone.len();
-    lib.remove_photos(&gone)?;
+    if lib.reviewing() {
+        // Deleted on another PC, most likely: asked about, not forgotten.
+        lib.hold_removed(source.id, &gone)?;
+        summary.held += gone.len();
+    } else {
+        summary.removed = gone.len();
+        lib.remove_photos(&gone)?;
+    }
 
     // Newest first, so a fresh import shows up in the grid right away.
     todo.sort_by_key(|f| std::cmp::Reverse(f.mtime));
@@ -150,7 +159,9 @@ pub fn scan_source(
         lib.infer_locations()?;
     }
     if sidecars {
-        summary.synced = sync_sidecars(lib, source.id, &seen)?;
+        let (synced, held) = sync_sidecars(lib, source.id, &seen)?;
+        summary.synced = synced;
+        summary.held += held;
     }
     report(Phase::Done, total, total);
     Ok(summary)
@@ -162,12 +173,17 @@ pub fn scan_source(
 ///
 /// The first time a photo is synced, nothing is lost on either side: the
 /// database and the sidecar are merged and the result written back. After
-/// that, whichever side changed last wins.
+/// that, whichever side changed last wins, or, when the library is
+/// reviewing, a change to the marks is held to be looked at (what the
+/// models found comes in either way). Returns how many photos were synced
+/// and how many changes are held.
 pub fn sync_sidecars(
     lib: &Library,
     source_id: i64,
     seen: &HashMap<String, i64>,
-) -> Result<usize, Error> {
+) -> Result<(usize, usize), Error> {
+    let reviewing = lib.reviewing();
+    let mut hold = Vec::new();
     let rows = lib.sidecars(source_id)?;
     let on_disk = |r: &crate::db::SidecarRow| seen.get(&sidecar_key(&r.sidecar)).copied();
     let due: Vec<_> = rows
@@ -210,11 +226,14 @@ pub fn sync_sidecars(
             continue; // unreadable: try again next scan
         }
         if r.xmp_mtime.is_some() {
-            apply.push((
-                r.id,
-                theirs.cloned().unwrap_or_default(),
-                mtime.unwrap_or(0),
-            ));
+            let theirs = theirs.cloned().unwrap_or_default();
+            let changed = reviewing && crate::review::Marks::of(&theirs) != lib.marks(r.id)?;
+            let item = (r.id, theirs, mtime.unwrap_or(0));
+            if changed {
+                hold.push(item);
+            } else {
+                apply.push(item);
+            }
             continue;
         }
         let mine = lib.tags(r.id)?;
@@ -225,8 +244,9 @@ pub fn sync_sidecars(
         apply.push((r.id, merged, mtime.unwrap_or(0)));
     }
     let applied = lib.apply_sidecars(&apply)?;
+    lib.hold_changes(&hold)?;
     // What another PC's models found, and the names given there.
-    for (id, tags, _) in &apply {
+    for (id, tags, _) in apply.iter().chain(&hold) {
         let imported = (|| -> Result<(), Error> {
             for (subject, found) in [
                 (crate::people::Subject::Person, &tags.faces),
@@ -246,7 +266,7 @@ pub fn sync_sidecars(
         }
     }
     lib.sidecar_saved(&write_back, None)?;
-    Ok(applied)
+    Ok((applied, hold.len()))
 }
 
 /// Keeps everything either side knows.
@@ -557,6 +577,106 @@ mod tests {
     fn tick() {
         // Sidecar changes are told apart by modified time.
         std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+
+    /// With reviewing on, what another laptop changed or deleted waits to
+    /// be looked at: applied, or rejected (keeping the marks here, or
+    /// bringing the deleted file back from the library folder's trash).
+    #[test]
+    fn changes_from_another_laptop_wait_for_review() {
+        let dir = shared_folder();
+        let (a, b) = (laptop(dir.path()), laptop(dir.path()));
+        b.set_review(true);
+        let b_img = photo(&b, "IMG_0002.JPG").id;
+        b.set_rating(&[b_img], 2).unwrap();
+
+        // Laptop A rates the pair, puts IMG_0002 in an album, and deletes
+        // the pair's RAW into the library folder's trash.
+        let jpg = photo(&a, "DSCF0001.JPG").id;
+        let img = photo(&a, "IMG_0002.JPG").id;
+        a.set_rating(&[jpg], 5).unwrap();
+        a.set_rating(&[img], 4).unwrap();
+        let album = a.create_album("Halifax").unwrap();
+        a.add_to_album(album, &[img]).unwrap();
+        assert_eq!(save_sidecars(&a, &[jpg, img]).unwrap(), 0);
+        let raf = dir.path().join("DSCF0001.RAF");
+        crate::discard::to_trash_folder(dir.path(), &raf).unwrap();
+        tick();
+
+        let s = rescan(&b);
+        assert_eq!((s.held, s.removed, s.synced), (3, 0, 0), "{s:?}");
+        // Nothing changed yet, and the RAW is out of the grid meanwhile.
+        assert_eq!(photo(&b, "IMG_0002.JPG").rating, 2);
+        assert_eq!(photo(&b, "DSCF0001.JPG").rating, 0);
+        assert!(b.photos().unwrap().iter().all(|p| p.name != "DSCF0001.RAF"));
+
+        let held = b.held_changes().unwrap();
+        assert_eq!(held.len(), 3);
+        let of = |name: &str| held.iter().find(|c| c.name == name).unwrap().clone();
+        let (b_jpg, b_raf, change) = (
+            of("DSCF0001.JPG").id,
+            of("DSCF0001.RAF"),
+            of("IMG_0002.JPG"),
+        );
+        assert!(b_raf.removed && b_raf.restorable && b_raf.after.is_none());
+        assert_eq!(change.before.rating, 2);
+        let after = change.after.unwrap();
+        assert_eq!(
+            (after.rating, after.albums),
+            (4, vec!["Halifax".to_owned()])
+        );
+
+        // Take the pair's new rating, keep IMG_0002 as it is here, and
+        // don't let the RAW go.
+        let done = b.resolve_held(&[b_jpg], &[b_img, b_raf.id]).unwrap();
+        assert_eq!(
+            (done.applied, done.kept, done.restored),
+            (1, 1, 1),
+            "{done:?}"
+        );
+        assert!(raf.exists(), "the RAW is back where it was");
+        assert_eq!(photo(&b, "DSCF0001.JPG").rating, 5);
+        assert_eq!(photo(&b, "IMG_0002.JPG").rating, 2);
+        assert!(b.albums().unwrap().iter().all(|a| a.ids.is_empty()));
+
+        // Decided once: the next scan doesn't ask again, and has the RAW.
+        let s = rescan(&b);
+        assert_eq!((s.held, s.removed), (0, 0), "{s:?}");
+        assert!(b.held_changes().unwrap().is_empty());
+        assert_eq!(photo(&b, "DSCF0001.RAF").id, b_raf.id);
+
+        // A change to a RAW+JPEG pair is one change, decided for both.
+        a.set_rating(&[jpg], 3).unwrap();
+        tick();
+        save_sidecars(&a, &[jpg]).unwrap();
+        tick();
+        assert_eq!(rescan(&b).held, 2);
+        let pair = b.held_changes().unwrap();
+        assert_eq!(pair.len(), 1, "{pair:?}");
+        assert_eq!(
+            (pair[0].name.as_str(), pair[0].twins.clone()),
+            ("DSCF0001.JPG", vec![b_raf.id])
+        );
+        b.resolve_held(&[pair[0].id], &[]).unwrap();
+        assert_eq!(photo(&b, "DSCF0001.JPG").rating, 3);
+        assert_eq!(photo(&b, "DSCF0001.RAF").rating, 3);
+        assert_eq!(b.held_count().unwrap(), 0);
+
+        // A deletion that's taken drops the photo.
+        std::fs::remove_file(dir.path().join("IMG_0002.JPG")).unwrap();
+        assert_eq!(rescan(&b).held, 1);
+        let gone = b.held_changes().unwrap();
+        assert!(!gone[0].restorable, "deleted for good, not to the trash");
+        let done = b.resolve_held(&[], &[gone[0].id]).unwrap();
+        assert_eq!(
+            done.failed,
+            vec!["IMG_0002.JPG".to_owned()],
+            "can't be brought back"
+        );
+        assert_eq!(b.held_count().unwrap(), 1, "still to be decided");
+        b.resolve_held(&[gone[0].id], &[]).unwrap();
+        assert_eq!(b.held_count().unwrap(), 0);
+        assert!(b.photo(gone[0].id).is_err());
     }
 
     #[test]

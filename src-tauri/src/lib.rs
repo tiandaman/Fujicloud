@@ -269,6 +269,12 @@ pub(crate) fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
         }
         state.scanning.store(false, Ordering::Release);
         let _ = app.emit("scan-done", ());
+        // Changes from other PCs waiting for a look.
+        if let Ok(n) = state.lib.held_count()
+            && n > 0
+        {
+            let _ = app.emit("sync-review", n);
+        }
         let _ = app.emit("library-changed", ());
         smart::spawn(app.clone(), state.clone());
         faces::spawn(app.clone(), state.clone());
@@ -1153,6 +1159,36 @@ async fn similar_photos(state: Shared<'_>, id: i64) -> CmdResult<Vec<Hit>> {
         .map(hits)
 }
 
+// ---- changes from other PCs -----------------------------------------------------
+
+/// Changes other PCs made, waiting to be applied or rejected.
+#[tauri::command(async)]
+fn sync_review(state: Shared) -> CmdResult<Vec<fuji_core::review::Change>> {
+    state.lib.held_changes().map_err(err)
+}
+
+/// Applies the changes in `apply` and rejects those in `reject`: a rejected
+/// change keeps this PC's marks, a rejected deletion puts the file back
+/// from the library folder's trash.
+#[tauri::command]
+async fn resolve_sync_review(
+    app: AppHandle,
+    state: Shared<'_>,
+    apply: Vec<i64>,
+    reject: Vec<i64>,
+) -> CmdResult<fuji_core::review::Resolved> {
+    let state = state.inner().clone();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        let done = state.lib.resolve_held(&apply, &reject).map_err(err)?;
+        log::info!("changes from other PCs: {done:?}");
+        CmdResult::Ok(done)
+    })
+    .await
+    .map_err(err)??;
+    let _ = app.emit("library-changed", ());
+    Ok(done)
+}
+
 // ---- settings & sync ---------------------------------------------------------
 
 #[tauri::command]
@@ -1170,6 +1206,7 @@ fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdRe
     }
     settings.migrate();
     settings.save(&state.settings_path).map_err(err)?;
+    state.lib.set_review(settings.review_sync);
     let new_backup = settings.backup_to != state.settings.read().backup_to;
     *state.settings.write() = settings;
     if new_backup {
@@ -1330,6 +1367,7 @@ pub fn run() {
                 state.level()
             );
             use_models(&state);
+            state.lib.set_review(state.settings.read().review_sync);
 
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
@@ -1417,6 +1455,8 @@ pub fn run() {
             move_to_person,
             delete_person,
             set_models,
+            sync_review,
+            resolve_sync_review,
             regroup_people,
             reidentify,
             merge_people,

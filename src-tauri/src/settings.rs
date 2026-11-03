@@ -29,6 +29,9 @@ pub struct Settings {
     pub parallel_copies: usize,
     /// Mirror ratings and colour labels into `.xmp` sidecars next to RAWs.
     pub write_xmp: bool,
+    /// Ask before taking changes made on another PC (marks changed in
+    /// sidecars, photos deleted there) rather than applying them.
+    pub review_sync: bool,
     /// Explicit editor path; Photoshop is auto-detected when unset.
     pub editor_path: Option<PathBuf>,
     /// Open the RAF (via Camera Raw) instead of the JPEG for RAW+JPEG pairs.
@@ -57,6 +60,7 @@ impl Default for Settings {
             import_to: None,
             parallel_copies: 4,
             write_xmp: true,
+            review_sync: true,
             editor_path: None,
             edit_raw: true,
             smart_search: false,

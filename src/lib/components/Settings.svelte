@@ -264,6 +264,13 @@
         </div>
         <input type="checkbox" class="switch" bind:checked={draft.writeXmp} />
       </label>
+      <label class="row toggle">
+        <div>
+          <span>Ask before taking changes from other PCs</span>
+          <small class="faint">When another PC changes stars, picks, labels, favourites or albums, or deletes photos, see what changed and choose photo by photo what to take. Off takes everything as it comes.</small>
+        </div>
+        <input type="checkbox" class="switch" bind:checked={draft.reviewSync} />
+      </label>
     </section>
 
     <section>

@@ -3,7 +3,7 @@
   import { api } from '../api';
   import { filmGradient } from '../film';
   import { countryName, recipeSummary, recipeTitle } from '../recipe';
-  import { formatAgo, formatBytes, formatCount } from '../format';
+  import { formatAgo, formatBytes, formatCount, plural } from '../format';
   import { store } from '../store.svelte';
   import type { Collection } from '../types';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
@@ -359,6 +359,13 @@
       </div>
     {/if}
 
+    {#if store.review.length}
+      <button class="backup-line review" title="Look at what another PC changed before it's applied here" onclick={() => (store.reviewOpen = true)}>
+        <Icon name="sync" size={13} />
+        <span class="truncate">{plural(store.review.length, 'change')} from other PCs</span>
+        <span class="go">Review</span>
+      </button>
+    {/if}
     {#if store.backup?.target}
       <button
         class="backup-line"
@@ -649,6 +656,13 @@
   .backup-line:hover {
     background: rgba(255, 255, 255, 0.05);
     color: var(--text-2);
+  }
+  .backup-line.review {
+    color: var(--accent);
+  }
+  .backup-line .go {
+    margin-left: auto;
+    font-weight: 600;
   }
   .backup-line.warn {
     color: #ffb340;

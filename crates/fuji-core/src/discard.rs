@@ -33,6 +33,24 @@ pub fn to_trash_folder(root: &Path, file: &Path) -> io::Result<PathBuf> {
     Ok(dest)
 }
 
+/// Where `file` (somewhere under `root`) went in the library folder's
+/// trash: the same name, or a " (2)" one, with `size` bytes if given (the
+/// latest such if there are several).
+pub fn find_in_trash(root: &Path, file: &Path, size: Option<u64>) -> Option<PathBuf> {
+    let at = trash_dir(root).join(file.strip_prefix(root).ok()?);
+    let stem = at.file_stem()?.to_string_lossy().into_owned();
+    let ext = at
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    std::iter::once(at.clone())
+        .chain((2..100).map(|n| at.with_file_name(format!("{stem} ({n}){ext}"))))
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?, p)))
+        .filter(|(md, _)| md.is_file() && size.is_none_or(|s| md.len() == s))
+        .max_by_key(|(md, _)| md.modified().ok())
+        .map(|(_, p)| p)
+}
+
 /// `path`, or the first of `name (2).ext`, `name (3).ext`, … that is free.
 pub(crate) fn free_name(path: &Path) -> PathBuf {
     if !path.exists() {

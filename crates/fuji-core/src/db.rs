@@ -282,6 +282,8 @@ pub struct Library {
     /// The face and pet models this PC searches with (see
     /// [`Library::use_model`]).
     pub(crate) active_models: Mutex<[Option<String>; 2]>,
+    /// Hold changes from other PCs for review (see [`crate::review`]).
+    pub(crate) review: std::sync::atomic::AtomicBool,
 }
 
 impl Library {
@@ -306,12 +308,14 @@ impl Library {
         )?;
         conn.execute_batch(TABLES)?;
         conn.execute_batch(crate::people::TABLES)?;
+        conn.execute_batch(crate::review::TABLES)?;
         crate::people::migrate(&conn)?;
         migrate(&conn)?;
         conn.execute_batch(INDEXES)?;
         Ok(Self {
             conn: Mutex::new(conn),
             active_models: Mutex::new([None, None]),
+            review: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -533,7 +537,11 @@ impl Library {
 
     pub fn photos(&self) -> Result<Vec<PhotoRow>, Error> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare_cached(&format!("{ROW_SELECT} FROM photos p"))?;
+        // Not those whose files went elsewhere, while that's held for review.
+        let mut stmt = conn.prepare_cached(&format!(
+            "{ROW_SELECT} FROM photos p
+             WHERE p.id NOT IN (SELECT photo_id FROM sync_review WHERE removed = 1)"
+        ))?;
         let rows = stmt.query_map([], row_from)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -845,7 +853,8 @@ impl Library {
     pub fn sidecars(&self, source_id: i64) -> Result<Vec<SidecarRow>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT id, path, kind, xmp_mtime, xmp_dirty FROM photos WHERE source_id = ?1",
+            "SELECT id, path, kind, xmp_mtime, xmp_dirty FROM photos WHERE source_id = ?1
+             AND id NOT IN (SELECT photo_id FROM sync_review WHERE removed = 1)",
         )?;
         let rows = stmt.query_map([source_id], |r| {
             let path = PathBuf::from(r.get::<_, String>(1)?);
@@ -905,6 +914,9 @@ impl Library {
 
     /// Records a sidecar write: `Some(mtime)` saved, `None` still pending.
     pub fn sidecar_saved(&self, ids: &[i64], mtime: Option<i64>) -> Result<(), Error> {
+        if mtime.is_some() {
+            self.drop_held_changes(ids)?;
+        }
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {

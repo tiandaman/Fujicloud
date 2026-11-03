@@ -131,6 +131,8 @@ export interface Settings {
   backupTo: string | null;
   parallelCopies: number;
   writeXmp: boolean;
+  /** Ask before taking changes made on another PC. */
+  reviewSync: boolean;
   editorPath: string | null;
   editRaw: boolean;
   smartSearch: boolean;
@@ -321,4 +323,40 @@ export interface DuplicateGroup {
   ids: number[];
   /** Byte-for-byte the same file; otherwise the same picture saved again (resized, re-saved). */
   exact: boolean;
+}
+
+/** What someone sets on a photo themselves. */
+export interface Marks {
+  rating: number;
+  /** 1 pick, -1 reject. */
+  flag: number;
+  label: string | null;
+  favorite: boolean;
+  albums: string[];
+}
+
+/** A change another PC made, waiting to be applied or rejected. */
+export interface SyncChange {
+  id: number;
+  name: string;
+  folder: string;
+  kind: Kind;
+  takenAt: number | null;
+  /** The file is gone: deleted on another PC. */
+  removed: boolean;
+  /** A deleted file is in the library folder's trash, so it can be put back. */
+  restorable: boolean;
+  before: Marks;
+  /** What the other PC saved (none for a deletion). */
+  after: Marks | null;
+  /** The other half of a RAW+JPEG pair, decided along with it. */
+  twins: number[];
+}
+
+export interface SyncResolved {
+  applied: number;
+  kept: number;
+  restored: number;
+  /** Deleted photos that couldn't be put back. */
+  failed: string[];
 }

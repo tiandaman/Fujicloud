@@ -4,6 +4,7 @@
   import Compare from './lib/components/Compare.svelte';
   import Confirm from './lib/components/Confirm.svelte';
   import ExportDialog from './lib/components/ExportDialog.svelte';
+  import SyncReview from './lib/components/SyncReview.svelte';
   import Grid from './lib/components/Grid.svelte';
   import InfoPanel from './lib/components/InfoPanel.svelte';
   import MapView from './lib/components/MapView.svelte';
@@ -131,6 +132,9 @@
 {/if}
 {#if store.exportDialog}
   <ExportDialog ids={store.exportDialog.ids} />
+{/if}
+{#if store.reviewOpen && store.review.length}
+  <SyncReview />
 {/if}
 {#if store.confirmation}
   <Confirm />

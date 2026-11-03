@@ -67,6 +67,13 @@ thousands of images.
   So does what the models found (faces, pets, smart search) and the names given: a
   laptop opening photos another has looked at takes its results instead of working
   them out again, and knows who's who.
+- **See what another PC changed before it's applied:** when a rescan finds that another
+  PC (or Lightroom) changed stars, picks, labels, favourites or albums, or deleted
+  photos, *N changes from other PCs · Review* appears in the sidebar. The overview shows
+  each photo with what would change (★2 → ★5, Pick → Reject, added to an album, deleted)
+  and lets you take it or keep yours, photo by photo. A deletion you turn down puts the
+  file back from the library folder's `.fujicloud-trash`. A RAW+JPEG pair is one change.
+  Switch it off in Settings to take everything as it comes.
 - **Camera and phone sync over your network:** new shots that land in an inbox folder
   (the camera's PC AutoSave folder, iCloud for Windows' *iCloud Photos* folder, or any
   other) are copied to the Shield's SSD, filed as `YYYY/YYYY-MM-DD/`, several files at

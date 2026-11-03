@@ -24,6 +24,7 @@ pub mod meta;
 pub mod pathdate;
 pub mod people;
 pub mod raf;
+pub mod review;
 pub mod scan;
 pub mod search;
 pub mod thumbs;

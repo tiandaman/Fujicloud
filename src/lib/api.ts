@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, SyncChange, SyncResolved } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -52,6 +52,11 @@ export interface Api {
   faceUrl(faceId: number): string;
   /** Copies of the same file, and of the same picture saved again. */
   findDuplicates(): Promise<DuplicateGroup[]>;
+  /** Changes other PCs made, waiting to be applied or rejected. */
+  syncReview(): Promise<SyncChange[]>;
+  resolveSyncReview(apply: number[], reject: number[]): Promise<SyncResolved>;
+  /** The thumbnail of a photo by id (one that may be out of the grid). */
+  thumbUrlById(id: number): string;
   /** Moves photos (with their twins and sidecars) to the Recycle Bin. */
   deletePhotos(ids: number[]): Promise<Deleted>;
   /** Exports copies into `folder`; progress arrives as `export` events. */
@@ -140,6 +145,8 @@ function tauriApi(): Api {
     hideFace: (id) => invoke('hide_face', { id }),
     faceUrl: (id) => `${base}/f/${id}?v=${cacheVersion.n}`,
     findDuplicates: () => invoke('find_duplicates'),
+    syncReview: () => invoke('sync_review'),
+    resolveSyncReview: (apply, reject) => invoke('resolve_sync_review', { apply, reject }),
     deletePhotos: (ids) => invoke('delete_photos', { ids }),
     exportPhotos: (ids, preset, location, folder) => invoke('export_photos', { ids, preset, location, folder }),
     async dragOut(ids) {
@@ -204,6 +211,7 @@ function tauriApi(): Api {
     // The mtime makes each URL immutable, so the webview can cache forever.
     thumbUrl: (p) => `${base}/t/${p.id}?v=${p.mtime}.${cacheVersion.n}`,
     previewUrl: (p) => `${base}/p/${p.id}?v=${p.mtime}.${cacheVersion.n}`,
+    thumbUrlById: (id) => `${base}/t/${id}?v=review.${cacheVersion.n}`,
     originalUrl: (p) => `${base}/o/${p.id}?v=${p.mtime}`,
   };
 }

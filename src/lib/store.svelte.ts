@@ -27,6 +27,7 @@ import type {
   Subject,
   SyncStatus,
   ModelChoice,
+  SyncChange,
   Models,
 } from './types';
 
@@ -132,6 +133,9 @@ class Store {
   keepers = $derived(new Set((this.duplicates ?? []).map((g) => g.ids[0])));
   /** The export sheet, for these photos. */
   exportDialog = $state.raw<{ ids: number[] } | null>(null);
+  /** Changes other PCs made, waiting for a look; and whether it's open. */
+  review = $state.raw<SyncChange[]>([]);
+  reviewOpen = $state(false);
   /** "Merge with…": who to merge `id` into. */
   /** Merging a person into another, or with `photos`, moving those photos to someone. */
   mergePicker = $state.raw<{ x: number; y: number; id: number; photos?: number[] } | null>(null);
@@ -496,6 +500,7 @@ class Store {
     this.version = boot.version;
     await this.refresh();
     this.ready = true;
+    this.loadReview();
 
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     await api.listen('library-changed', () => {
@@ -506,6 +511,13 @@ class Store {
       this.scan = progress.phase === 'done' ? null : { label, progress };
     });
     await api.listen('scan-done', () => (this.scan = null));
+    await api.listen<number>('sync-review', async (n) => {
+      const before = this.review.length;
+      await this.loadReview();
+      if (n > before && !this.reviewOpen) {
+        this.toast(`${plural(n, 'change')} from another PC to look at`, 'info', { label: 'Review', run: () => (this.reviewOpen = true) });
+      }
+    });
     await api.listen<string>('scan-error', (msg) => this.toast(msg, 'error'));
     await api.listen<{ done: number; total: number }>('warm', (w) => (this.warm = w.done >= w.total ? null : w));
     await api.listen<SyncStatus>('sync', (s) => {
@@ -1046,6 +1058,37 @@ class Store {
           ? `Searching every photo for ${pets ? 'pets' : 'faces'} again${forgetNames ? '' : '. Names stay'}.`
           : `Done. Turn on ${pets ? 'pets' : 'face recognition'} to search the photos again.`,
       );
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  async loadReview() {
+    try {
+      this.review = await api.syncReview();
+    } catch (e) {
+      console.warn('sync review', e);
+    }
+  }
+
+  /** Applies the changes in `apply` and rejects those in `reject`. */
+  async resolveReview(apply: number[], reject: number[]) {
+    try {
+      const done = await api.resolveSyncReview(apply, reject);
+      await this.loadReview();
+      if (!this.review.length) this.reviewOpen = false;
+      const parts = [
+        done.applied && `${plural(done.applied, 'change')} applied`,
+        done.kept && `${plural(done.kept, 'photo')} kept as ${done.kept === 1 ? 'it was' : 'they were'}`,
+        done.restored && `${plural(done.restored, 'photo')} put back`,
+      ].filter(Boolean);
+      if (parts.length) this.toast(parts.join(' · '));
+      if (done.failed.length) {
+        this.toast(
+          `${done.failed.length === 1 ? done.failed[0] : plural(done.failed.length, 'photo')} couldn't be put back: not in the library folder's trash, so deleted for good on the other PC. Still waiting for a decision.`,
+          'error',
+        );
+      }
     } catch (e) {
       this.toast(String(e), 'error');
     }

@@ -2,7 +2,7 @@
 // browser (`npm run dev`) without the Rust backend or a camera.
 
 import type { Api } from './api';
-import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Models, Person, PetsStatus, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Models, Person, PetsStatus, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source, SyncChange, SyncResolved } from './types';
 
 const FILMS = ['Classic Chrome', 'Classic Neg.', 'Provia', 'Velvia', 'Acros', 'Nostalgic Neg.', 'Reala Ace', 'Eterna', 'Astia', 'Pro Neg. Hi', 'Acros +R', 'Monochrome'];
 const FILM_WEIGHTS = [18, 16, 12, 9, 8, 7, 7, 5, 5, 4, 3, 2];
@@ -267,6 +267,7 @@ export function mockApi(): Api {
     backupTo: 'E:\\Fujicloud Backup',
     parallelCopies: 4,
     writeXmp: true,
+    reviewSync: true,
     editorPath: null,
     editRaw: true,
     smartSearch: false,
@@ -278,6 +279,47 @@ export function mockApi(): Api {
   };
   const hardware = { processors: 16, memoryGb: 31.8, gpu: 'NVIDIA GeForce RTX 4070 Laptop GPU', gpuMemoryGb: 8 };
   const models = (): Models => ({ hardware, recommended: 'best', level: settings.models === 'auto' ? 'best' : settings.models });
+  // `?review` shows changes another PC made, waiting for a look.
+  let gonePhotos: Photo[] = [];
+  let review: SyncChange[] = [];
+  if (new URLSearchParams(location.search).has('review') && photos.length > 40) {
+    const marks = (p: Photo, albums: string[] = []) => ({ rating: p.rating, flag: p.flag, label: p.label, favorite: p.favorite, albums });
+    const pick = (i: number) => photos[i];
+    const changed = (p: Photo, after: Partial<SyncChange['before']>, before: string[] = [], albums?: string[]): SyncChange => ({
+      id: p.id,
+      name: p.name,
+      folder: p.folder,
+      kind: p.kind,
+      takenAt: p.takenAt,
+      removed: false,
+      restorable: false,
+      before: marks(p, before),
+      after: { ...marks(p, albums ?? before), ...after },
+      twins: p.pairId != null ? [p.pairId] : [],
+    });
+    review = [
+      changed(pick(3), { rating: 5, flag: 1 }),
+      changed(pick(8), { favorite: true }, [], ['Halifax']),
+      changed(pick(12), { label: 'Red', rating: 2 }),
+      changed(pick(20), {}, ['Trip 2025', 'Family'], ['Family']),
+    ];
+    gonePhotos = [pick(30), pick(31)];
+    photos = photos.filter((p) => !gonePhotos.includes(p));
+    review.push(
+      ...gonePhotos.map((p, i) => ({
+        id: p.id,
+        name: p.name,
+        folder: p.folder,
+        kind: p.kind,
+        takenAt: p.takenAt,
+        removed: true,
+        restorable: i === 0,
+        before: marks(p),
+        after: null,
+        twins: [],
+      })),
+    );
+  }
   let backup: BackupStatus = {
     target: settings.backupTo,
     lastBackedUp: Date.now() / 1000 - 2.2 * 3600,
@@ -569,6 +611,36 @@ export function mockApi(): Api {
       return id;
     },
     faceUrl: (id) => avatar(Math.floor(id / 1000) || id),
+    async syncReview() {
+      return review;
+    },
+    async resolveSyncReview(apply, reject) {
+      const done: SyncResolved = { applied: 0, kept: 0, restored: 0, failed: [] };
+      for (const c of review.filter((c) => apply.includes(c.id) || reject.includes(c.id))) {
+        const take = apply.includes(c.id);
+        if (c.removed && !take && !c.restorable) {
+          done.failed.push(c.name);
+          continue;
+        }
+        if (c.removed && take) gonePhotos = gonePhotos.filter((p) => p.id !== c.id);
+        if (c.removed && !take) {
+          photos = [...photos, ...gonePhotos.filter((p) => p.id === c.id)];
+          gonePhotos = gonePhotos.filter((p) => p.id !== c.id);
+          done.restored++;
+        } else if (take) {
+          done.applied++;
+          const a = c.after;
+          if (a) {
+            photos = photos.map((p) =>
+              p.id === c.id || c.twins.includes(p.id) ? { ...p, rating: a.rating, flag: a.flag, label: a.label as Label | null, favorite: a.favorite } : p,
+            );
+          }
+        } else done.kept++;
+        review = review.filter((x) => x.id !== c.id);
+      }
+      emit('library-changed', null);
+      return done;
+    },
     async findDuplicates() {
       await delay(500);
       // Copies: photos of one outing saved again, best rated first.
@@ -715,6 +787,10 @@ export function mockApi(): Api {
     },
     isFullscreen: async () => !!document.fullscreenElement,
     thumbUrl: sceneFor,
+    thumbUrlById: (id) => {
+      const p = photos.find((x) => x.id === id) ?? gonePhotos.find((x) => x.id === id);
+      return p ? sceneFor(p) : '';
+    },
     previewUrl: sceneFor,
     originalUrl: sceneFor,
   };
