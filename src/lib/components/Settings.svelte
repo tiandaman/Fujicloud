@@ -269,8 +269,9 @@
     <section>
       <h3><Icon name="stack" size={16} /> Analysis models</h3>
       <p class="hint">
-        Smart search, faces and pets can use bigger models on a PC with power to spare: they find photos from a description far more often
-        and tell people and pets apart better, but take about 2 GB more to download and longer to analyse each photo.
+        Smart search and faces can use bigger models on a PC with power to spare: they find photos from a description far more often
+        and tell people apart better, but take about 2 GB more to download and longer to analyse each photo. Light keeps smart search
+        quick on a PC with 4 processors or less than 8 GB of memory.
       </p>
       {#if store.models}
         {@const hw = store.models.hardware}
@@ -279,11 +280,11 @@
             <span>Model size</span>
             <small class="faint">
               This PC: {plural(hw.processors, 'processor')} · {Math.round(hw.memoryGb)} GB memory{hw.gpu ? ` · ${hw.gpu}${hw.gpuMemoryGb >= 1 ? ` (${Math.round(hw.gpuMemoryGb)} GB)` : ''}` : ''}.
-              Automatic uses {store.models.recommended === 'best' ? 'the bigger models here' : 'the standard models here'}.
+              Automatic uses {({ light: 'the light', standard: 'the standard', best: 'the bigger' })[store.models.recommended]} models here.
             </small>
           </div>
           <div class="seg" role="radiogroup" aria-label="Model size">
-            {#each [['auto', 'Automatic'], ['standard', 'Standard'], ['best', 'Best']] as [value, label] (value)}
+            {#each [['auto', 'Automatic'], ['light', 'Light'], ['standard', 'Standard'], ['best', 'Best']] as [value, label] (value)}
               <button
                 role="radio"
                 aria-checked={(store.settings?.models ?? 'auto') === value}
@@ -302,7 +303,7 @@
       <h3><Icon name="sparkle" size={16} /> Smart search</h3>
       <p class="hint">
         Find photos by describing them, like <em>“golden hour at the beach”</em> or <em>“dog in the snow”</em>, and right-click any photo to
-        find similar ones. Uses Google's SigLIP model, downloaded once ({store.smart?.downloadMb ?? 210} MB). It runs entirely on this PC, so
+        find similar ones. Uses Google's {({ light: 'SigLIP', standard: 'SigLIP 2', best: 'SigLIP 2 large' })[store.models?.level ?? 'standard']} model, downloaded once ({store.smart?.downloadMb ?? 210} MB). It runs entirely on this PC, so
         your photos never leave your network.
       </p>
       <label class="row toggle">
@@ -431,7 +432,7 @@
     <section class="credits">
       <p class="faint">
         Place names © <a href="https://www.geonames.org" target="_blank" rel="noreferrer">GeoNames</a> (CC BY 4.0). Map © OpenStreetMap
-        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP model; People uses InsightFace's SCRFD and ArcFace models (for non-commercial use); Pets uses OpenCV's YOLOX and Meta's DINOv3 models. Movies Windows can't play are converted with FFmpeg (gyan.dev's build, downloaded when first needed).
+        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP and SigLIP 2 models; People uses InsightFace's SCRFD and ArcFace models (for non-commercial use); Pets uses OpenCV's YOLOX and Meta's DINOv3 models. Movies Windows can't play are converted with FFmpeg (gyan.dev's build, downloaded when first needed).
       </p>
     </section>
 

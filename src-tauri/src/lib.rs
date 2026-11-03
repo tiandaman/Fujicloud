@@ -432,7 +432,12 @@ async fn find_duplicates(state: Shared<'_>) -> CmdResult<Vec<dupes::Group>> {
                 .then(|| ingest::checksum(path).ok())
                 .flatten()
         };
-        Ok(dupes::find(&rows, index.as_deref(), &checksum))
+        let near = smart::model(&state).near_duplicate;
+        Ok(dupes::find(
+            &rows,
+            index.as_deref().map(|i| (i, near)),
+            &checksum,
+        ))
     })
     .await
     .map_err(err)?
@@ -1068,16 +1073,13 @@ fn set_models(app: AppHandle, state: Shared, choice: Choice) -> CmdResult<Models
     if level != before {
         log::info!("model size {before:?} -> {level:?}");
         use_models(&state);
-        state.smart.reset_device();
+        state.smart.reset_model();
         state.faces.unload();
-        state.pets.unload();
         let _ = app.emit("smart", state.smart.status(&state));
         let _ = app.emit("faces", state.faces.status(&state));
-        let _ = app.emit("pets", state.pets.status(&state));
         let _ = app.emit("people-changed", ());
         smart::spawn(app.clone(), state.inner().clone());
-        faces::spawn(app.clone(), state.inner().clone());
-        pets::spawn(app, state.inner().clone());
+        faces::spawn(app, state.inner().clone());
     }
     Ok(models(&state))
 }
@@ -1088,9 +1090,12 @@ fn use_models(state: &AppState) {
     state
         .lib
         .use_model(fuji_core::people::Subject::Person, faces::model_id(level));
-    state
-        .lib
-        .use_model(fuji_core::people::Subject::Pet, pets::model_id(level));
+    // Pets: DINOv3-large told cats apart no better than base, at four times
+    // the work, so every size uses the same.
+    state.lib.use_model(
+        fuji_core::people::Subject::Pet,
+        fuji_core::animals::MODEL_ID,
+    );
 }
 
 /// Switches photo analysis between the graphics card and the CPU.

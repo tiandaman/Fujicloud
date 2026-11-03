@@ -16,11 +16,13 @@ pub struct Hardware {
     pub gpu_memory_gb: f32,
 }
 
-/// How big the models are: the ones every PC can run, or bigger, slower
-/// and more accurate ones for a PC with power to spare.
+/// How big the models are: light ones for a PC with little to spare, the
+/// standard ones, or bigger, slower and more accurate ones for a PC with
+/// power to spare.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
+    Light,
     #[default]
     Standard,
     Best,
@@ -32,6 +34,7 @@ pub enum Level {
 pub enum Choice {
     #[default]
     Auto,
+    Light,
     Standard,
     Best,
 }
@@ -47,20 +50,28 @@ impl Hardware {
         }
     }
 
-    /// Whether the bigger models suit this PC: they need about 3 GB more
-    /// memory, and run four times as long, which a graphics card with its
-    /// own memory or a dozen processors makes up for.
-    pub fn suits_best(&self) -> bool {
+    /// The size that suits this PC. The bigger models need about 3 GB more
+    /// memory and run several times as long, which a graphics card with
+    /// its own memory or a dozen processors makes up for. The light ones
+    /// keep smart search's first run as short as before on 4 processors or
+    /// less than 8 GB (SigLIP 2's picture model does three times the work).
+    pub fn suits(&self) -> Level {
         let fast = self.gpu_memory_gb >= 4.0 || self.processors >= 12;
-        fast && self.memory_gb >= 15.0
+        if fast && self.memory_gb >= 15.0 {
+            Level::Best
+        } else if self.processors <= 4 || self.memory_gb < 7.5 {
+            Level::Light
+        } else {
+            Level::Standard
+        }
     }
 
     pub fn level(&self, choice: Choice) -> Level {
         match choice {
+            Choice::Light => Level::Light,
             Choice::Standard => Level::Standard,
             Choice::Best => Level::Best,
-            Choice::Auto if self.suits_best() => Level::Best,
-            Choice::Auto => Level::Standard,
+            Choice::Auto => self.suits(),
         }
     }
 }
@@ -114,16 +125,20 @@ mod tests {
             gpu: None,
             gpu_memory_gb,
         };
-        // A 4-core laptop with 8 GB.
-        assert_eq!(pc(4, 8.0, 0.0).level(Choice::Auto), Level::Standard);
+        // A 4-core laptop with 8 GB, and an 8-thread one with 6 GB.
+        assert_eq!(pc(4, 8.0, 0.0).level(Choice::Auto), Level::Light);
+        assert_eq!(pc(8, 5.9, 0.0).level(Choice::Auto), Level::Light);
+        // An 8-thread laptop with 16 GB and graphics built into the processor.
+        assert_eq!(pc(8, 15.8, 0.5).level(Choice::Auto), Level::Standard);
         // A gaming laptop: an 8 GB graphics card and 16 GB.
         assert_eq!(pc(8, 15.8, 8.0).level(Choice::Auto), Level::Best);
         // A 16-thread desktop with 32 GB and no graphics card.
         assert_eq!(pc(16, 32.0, 0.0).level(Choice::Auto), Level::Best);
-        // Plenty of processors but too little memory.
+        // Plenty of processors but too little memory for the bigger models.
         assert_eq!(pc(16, 8.0, 0.0).level(Choice::Auto), Level::Standard);
         // The choice in Settings wins either way.
         assert_eq!(pc(4, 8.0, 0.0).level(Choice::Best), Level::Best);
+        assert_eq!(pc(16, 32.0, 8.0).level(Choice::Light), Level::Light);
         assert_eq!(pc(16, 32.0, 8.0).level(Choice::Standard), Level::Standard);
         let here = Hardware::detect();
         assert!(here.processors >= 1 && here.memory_gb > 0.5, "{here:?}");

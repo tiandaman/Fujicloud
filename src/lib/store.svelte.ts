@@ -1057,14 +1057,25 @@ class Store {
     const after = choice === 'auto' ? this.models?.recommended : choice;
     const analysing = this.settings?.smartSearch || this.settings?.faces || this.settings?.pets;
     if (after && after !== before && analysing) {
-      const best = after === 'best';
-      const ok = await this.ask(
-        best ? 'Use the bigger models?' : 'Use the standard models?',
-        best
-          ? 'Smart search, faces and pets switch to bigger, more accurate models: about 2 GB to download, and every photo is analysed again in the background. Names you\'ve given stay.'
-          : 'Smart search, faces and pets switch to the standard models, quicker and lighter: every photo is analysed again in the background. Names you\'ve given stay.',
-        best ? 'Use bigger models' : 'Use standard models',
-      );
+      const texts = {
+        light: [
+          'Use the light models?',
+          'Smart search switches to a lighter model that analyses photos about three times as fast but finds them from a description less often. Every photo is analysed again in the background. Names you\'ve given stay.',
+          'Use light models',
+        ],
+        standard: [
+          'Use the standard models?',
+          'Smart search and faces switch to the standard models. Every photo is analysed again in the background. Names you\'ve given stay.',
+          'Use standard models',
+        ],
+        best: [
+          'Use the bigger models?',
+          'Smart search and faces switch to bigger, more accurate models: about 2 GB to download, and every photo is analysed again in the background. Names you\'ve given stay.',
+          'Use bigger models',
+        ],
+      } as const;
+      const [title, body, button] = texts[after];
+      const ok = await this.ask(title, body, button);
       if (!ok) return;
     }
     try {

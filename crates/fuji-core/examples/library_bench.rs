@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use fuji_core::animals::{Detector, Identifier};
 use fuji_core::embed::{Device, Engine, SIGLIP_BASE};
-use fuji_core::faces::FaceModels;
+use fuji_core::faces::{FaceModels, STANDARD};
 use fuji_core::thumbs::{self, Cache, Size, Source};
 use fuji_core::{Kind, Library, scan};
 
@@ -151,10 +151,10 @@ fn main() {
     }
 
     // Faces.
-    fuji_core::faces::download(&models, &|_, _| {}).expect("download faces");
+    fuji_core::faces::download(&models, &STANDARD, &|_, _| {}).expect("download faces");
     let pictures: Vec<_> = photos.iter().map(|p| picture(&cache, p)).collect();
     for threads in [face_threads, cores] {
-        let faces = FaceModels::load(&models, threads).unwrap();
+        let faces = FaceModels::load(&models, &STANDARD, threads).unwrap();
         let start = Instant::now();
         let mut found = 0;
         for image in &pictures {
@@ -209,7 +209,7 @@ fn main() {
         ("faces' share bigger", faces_first),
     ] {
         let engine = Engine::load(&models, &SIGLIP_BASE, Device::Cpu, threads[0]).unwrap();
-        let faces = FaceModels::load(&models, threads[1]).unwrap();
+        let faces = FaceModels::load(&models, &STANDARD, threads[1]).unwrap();
         let detector = Detector::load(&models, threads[2]).unwrap();
         let identifier = Identifier::load(&models, threads[2]).unwrap();
         println!("{label} {threads:?}: all models loaded, {}", memory());

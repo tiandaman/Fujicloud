@@ -120,6 +120,20 @@ thousands of images.
   photo is analysed once from its cached thumbnail, and a search over 100k photos takes
   about 20 ms. Right-click any photo to *Find similar photos*. Nothing leaves your
   network.
+- **Models sized to the PC:** the app looks at the processors, memory and graphics card
+  and picks a model size (Settings → *Analysis models* to choose yourself):
+
+  | Size | For | Smart search | Faces |
+  |---|---|---|---|
+  | Light | 4 processors or less than 8 GB | SigLIP base | buffalo_l (ArcFace R50) |
+  | Standard | most PCs | SigLIP 2 base | buffalo_l (ArcFace R50) |
+  | Best | a graphics card with 4 GB+ or 12+ processors, and 16 GB | SigLIP 2 large | antelopev2 (ArcFace R100) |
+
+  On Flickr30k's 1,000 test photos, a caption's photo comes first 60% of the time with
+  Light, 85% with Standard and 88.5% with Best (in the top five: 81%, 96%, 98%). On 475
+  AgeDB faces of 60 people, Best keeps 88% of a person's faces together against 82%,
+  with no strangers merged either way. PCs sharing a library through sidecars can run
+  different sizes: each analyses with its own models.
 - **Export and share:** right-click → *Export…* (`Ctrl+Shift+E`) for JPEGs sized for the
   web (2048 px) or Instagram (1080 px wide), full-size JPEGs or the original files.
   Exports are upright sRGB, keep the date and camera, and leave the location out unless
@@ -192,7 +206,7 @@ makes them all again.
 | RAW | RAF embedded JPEG | Reads a few MB from the RAF header instead of demosaicing 50 MB of X-Trans data. |
 | Index | SQLite (WAL) | Incremental rescans only touch new or changed files. Ratings survive rescans. |
 | Network | Parallel directory walk + metadata reads | SMB is latency-bound, so many requests stay in flight at once. |
-| Smart search | SigLIP via ONNX Runtime + DirectML | fp16 on the GPU (batches of 32) or int8 on the CPU. Results are stored as 8-bit vectors (~770 bytes per photo, 75 MB per 100k in RAM) and searched by a brute-force scan with no index to maintain. |
+| Smart search | SigLIP / SigLIP 2 via ONNX Runtime + DirectML | fp16 on the GPU (batches of 32); on the CPU, int8 for SigLIP and fp32 for SigLIP 2 (its int8 picture model loses half its accuracy, and fp16 runs 2.5× slower on CPUs). Results are stored as 8-bit vectors (~770 bytes per photo, 75 MB per 100k in RAM) and searched by a brute-force scan with no index to maintain. |
 | Map | MapLibre GL (WebGL) + Supercluster | A GPU-rendered globe, loaded only when you open Places. Clustering 100k points takes milliseconds. |
 | Places | GeoNames gazetteer bucketed in a 1° grid | Offline reverse geocoding in microseconds per photo. |
 
@@ -245,12 +259,14 @@ cargo run --release -p fuji-core --example thumb_bench [photo.jpg]
 
 Place names © [GeoNames](https://www.geonames.org) (CC BY 4.0). Map data ©
 OpenStreetMap contributors, tiles by [OpenFreeMap](https://openfreemap.org). Country
-borders from Natural Earth via `world-atlas`. Smart search uses Google's SigLIP model,
-via the [Xenova ONNX export](https://huggingface.co/Xenova/siglip-base-patch16-224). HEIC decoding by
+borders from Natural Earth via `world-atlas`. Smart search uses Google's SigLIP and SigLIP 2 models,
+via the [Xenova](https://huggingface.co/Xenova/siglip-base-patch16-224) and
+[onnx-community](https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX) ONNX exports. HEIC decoding by
 [heic-decoder](https://github.com/Multipad-cyber/heic-decoder-rust); test images from
 [heic-rs](https://github.com/tbraun96/heic-rs). Face detection and recognition use
 [InsightFace](https://github.com/deepinsight/insightface)'s "buffalo_l" models, SCRFD and
-ArcFace, from [Immich's copy](https://huggingface.co/immich-app/buffalo_l) (InsightFace's
+ArcFace, from [Immich's copy](https://huggingface.co/immich-app/buffalo_l) (and the
+"antelopev2" ArcFace R100 for the Best size, [likewise](https://huggingface.co/immich-app/antelopev2)) (InsightFace's
 pretrained models are for non-commercial use, such as a personal library); the face tests
 use example photos from [face_recognition](https://github.com/ageitgey/face_recognition)
 and [LFW](https://vis-www.cs.umass.edu/lfw/), downloaded at test time.

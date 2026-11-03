@@ -12,7 +12,8 @@ use crate::Kind;
 use crate::db::PhotoRow;
 use crate::search::Index;
 
-/// Smart search similarity at which two photos count as near-identical.
+/// Smart search similarity at which two photos count as near-identical, for
+/// SigLIP (each model has its own: [`crate::embed::ModelSpec::near_duplicate`]).
 /// Checked against the real model in `embed`'s tests.
 pub const NEAR_DUPLICATE: f32 = 0.92;
 /// Near-identical shots are looked for among photos taken this close together.
@@ -85,7 +86,7 @@ fn exact_pairs(
 }
 
 /// Pairs of photos taken within [`WINDOW_SECS`] that look the same.
-fn similar_pairs(rows: &[&PhotoRow], index: &Index) -> Vec<(i64, i64)> {
+fn similar_pairs(rows: &[&PhotoRow], index: &Index, near: f32) -> Vec<(i64, i64)> {
     let mut timed: Vec<(i64, i64)> = rows
         .iter()
         .filter_map(|p| Some((p.taken_at?, p.id)))
@@ -99,7 +100,7 @@ fn similar_pairs(rows: &[&PhotoRow], index: &Index) -> Vec<(i64, i64)> {
             timed[i + 1..]
                 .iter()
                 .take_while(move |(u, _)| u - t <= WINDOW_SECS)
-                .filter(move |(_, b)| index.similarity(a, *b).is_some_and(|s| s >= NEAR_DUPLICATE))
+                .filter(move |(_, b)| index.similarity(a, *b).is_some_and(|s| s >= near))
                 .map(move |(_, b)| (a, *b))
         })
         .collect()
@@ -107,14 +108,16 @@ fn similar_pairs(rows: &[&PhotoRow], index: &Index) -> Vec<(i64, i64)> {
 
 /// Groups of duplicates, biggest first, each with the photo to keep first:
 /// the best rated, then picked, then the most pixels, then the biggest file.
+/// `index` is smart search's, with the similarity at which its model counts
+/// two photos as near-identical.
 pub fn find(
     rows: &[PhotoRow],
-    index: Option<&Index>,
+    index: Option<(&Index, f32)>,
     checksum: &(dyn Fn(&Path) -> Option<u128> + Sync),
 ) -> Vec<Group> {
     let shown = candidates(rows);
     let (exact, sums) = exact_pairs(&shown, checksum);
-    let similar = index.map_or_else(Vec::new, |i| similar_pairs(&shown, i));
+    let similar = index.map_or_else(Vec::new, |(i, near)| similar_pairs(&shown, i, near));
 
     // Union-find over both kinds of pair.
     let mut parent: HashMap<i64, i64> = HashMap::new();
@@ -248,7 +251,7 @@ mod tests {
                 name.len() as u128 * 7 + 2
             })
         };
-        let groups = find(&rows, Some(&index), &sums);
+        let groups = find(&rows, Some((&index, NEAR_DUPLICATE)), &sums);
         assert_eq!(
             groups,
             vec![

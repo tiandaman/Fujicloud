@@ -35,7 +35,48 @@ const OLD_MODELS: [&str; 2] = [
     "face_recognition_sface_2021dec.onnx",
 ];
 
-/// The similarity at which two faces described by `model` are one person.
+/// The face models for a size of model: the detector is the same, the
+/// recogniser bigger for a PC with power to spare.
+#[derive(Debug)]
+pub struct Variant {
+    /// Stored with each photo searched: another variant searches again.
+    pub id: &'static str,
+    recogniser: &'static str,
+    recogniser_url: &'static str,
+    /// Both models together, for the UI.
+    pub download_mb: u32,
+}
+
+/// InsightFace's buffalo_l: SCRFD-10G and ArcFace (ResNet-50, WebFace600K).
+pub const STANDARD: Variant = Variant {
+    id: MODEL_ID,
+    recogniser: RECOGNISER,
+    recogniser_url: RECOGNISER_URL,
+    download_mb: DOWNLOAD_MB,
+};
+
+/// The same detector with antelopev2's recogniser (ArcFace, ResNet-100,
+/// Glint360K). On AgeDB (60 people, 8 photos each over 25 years or more)
+/// it recognised 92% of same-person pairs at one false match in 10,000
+/// (ResNet-50: 89%) and, grouped at [`crate::people::SAME_PERSON`] with no
+/// mistakes either way, kept 88% of a person's photos together (82%), at
+/// about two and a half times the work.
+pub const BEST: Variant = Variant {
+    id: "scrfd-10g+arcface-glint-r100",
+    recogniser: "arcface_glint_r100.onnx",
+    recogniser_url: "https://huggingface.co/immich-app/antelopev2/resolve/main/recognition/model.onnx",
+    download_mb: 278,
+};
+
+pub fn variant_for(level: crate::hardware::Level) -> &'static Variant {
+    match level {
+        crate::hardware::Level::Best => &BEST,
+        _ => &STANDARD,
+    }
+}
+
+/// The similarity at which two faces described by `model` are one person:
+/// both recognisers group without mistakes at the same one.
 pub fn same_person(model: Option<&str>) -> f32 {
     let _ = model;
     crate::people::SAME_PERSON
@@ -80,17 +121,20 @@ fn dir_for(dir: &Path) -> PathBuf {
     dir.join("faces")
 }
 
-pub fn is_downloaded(dir: &Path) -> bool {
-    [DETECTOR, RECOGNISER]
+pub fn is_downloaded(dir: &Path, variant: &Variant) -> bool {
+    [DETECTOR, variant.recogniser]
         .iter()
         .all(|f| dir_for(dir).join(f).is_file())
 }
 
-/// Fetches both models into `dir` (~183 MB). `progress(done, total)` in bytes.
-pub fn download(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
+/// Fetches both models into `dir`. `progress(done, total)` in bytes.
+pub fn download(dir: &Path, variant: &Variant, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
     let files = [
         (DETECTOR_URL, dir_for(dir).join(DETECTOR)),
-        (RECOGNISER_URL, dir_for(dir).join(RECOGNISER)),
+        (
+            variant.recogniser_url,
+            dir_for(dir).join(variant.recogniser),
+        ),
     ];
     download_files(&files, progress)?;
     for old in OLD_MODELS {
@@ -106,7 +150,7 @@ pub struct FaceModels {
 
 impl FaceModels {
     /// Loads the downloaded models (CPU).
-    pub fn load(dir: &Path, threads: usize) -> Result<Self, Error> {
+    pub fn load(dir: &Path, variant: &Variant, threads: usize) -> Result<Self, Error> {
         let env = environment()?;
         let session = |name: &str| -> Result<Session, Error> {
             let path = dir_for(dir).join(name);
@@ -117,7 +161,7 @@ impl FaceModels {
         };
         Ok(Self {
             detector: Mutex::new(session(DETECTOR)?),
-            recogniser: Mutex::new(session(RECOGNISER)?),
+            recogniser: Mutex::new(session(variant.recogniser)?),
         })
     }
 
@@ -430,15 +474,22 @@ mod tests {
     }
 
     /// The real models on LFW: same-person and different-person similarity,
-    /// and grouping twelve people as the app does (run with `--ignored`).
+    /// and grouping twelve people as the app does (run with `--ignored`),
+    /// with each size's recogniser.
     #[test]
     #[ignore]
     fn real_faces_group_lfw_people() {
+        group_lfw_people(&STANDARD);
+        group_lfw_people(&BEST);
+    }
+
+    fn group_lfw_people(variant: &Variant) {
+        println!("{}:", variant.id);
         let dir = PathBuf::from(
             std::env::var("FUJICLOUD_MODEL_DIR").unwrap_or_else(|_| ".models".into()),
         );
-        download(&dir, &|_, _| {}).expect("download models");
-        let models = FaceModels::load(&dir, 4).unwrap();
+        download(&dir, variant, &|_, _| {}).expect("download models");
+        let models = FaceModels::load(&dir, variant, 4).unwrap();
         let photos = PathBuf::from(
             std::env::var("FUJICLOUD_FACE_TEST").unwrap_or_else(|_| ".models/face-test".into()),
         );
@@ -549,11 +600,17 @@ mod tests {
     #[test]
     #[ignore]
     fn real_faces_are_found_and_told_apart() {
+        found_and_told_apart(&STANDARD);
+        found_and_told_apart(&BEST);
+    }
+
+    fn found_and_told_apart(variant: &Variant) {
+        println!("{}:", variant.id);
         let dir = PathBuf::from(
             std::env::var("FUJICLOUD_MODEL_DIR").unwrap_or_else(|_| ".models".into()),
         );
-        download(&dir, &|_, _| {}).expect("download models");
-        let models = FaceModels::load(&dir, 4).unwrap();
+        download(&dir, variant, &|_, _| {}).expect("download models");
+        let models = FaceModels::load(&dir, variant, 4).unwrap();
         let photos = PathBuf::from(
             std::env::var("FUJICLOUD_FACE_TEST").unwrap_or_else(|_| ".models/face-test".into()),
         );

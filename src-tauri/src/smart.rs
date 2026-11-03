@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use fuji_core::embed::{self, Device, Engine, Gpu, SIGLIP_BASE as MODEL};
+use fuji_core::embed::{self, Device, Engine, Gpu, ModelSpec};
 use fuji_core::search::{self, Index};
 use fuji_core::thumbs::{self, Size};
 use parking_lot::Mutex;
@@ -70,8 +70,8 @@ impl Smart {
         drop(settings);
         s.gpu = self.gpu().cloned();
         s.gpu_error = self.gpu_error.lock().clone();
-        s.download_mb = MODEL.download_mb(self.preferred(state));
-        s.indexed = state.lib.embedding_count(MODEL.id).unwrap_or(0);
+        s.download_mb = model(state).download_mb(self.preferred(state));
+        s.indexed = state.lib.embedding_count(model(state).id).unwrap_or(0);
         // Never wait here: status is polled from the UI while a model loads.
         s.running_on = self
             .engine
@@ -84,7 +84,7 @@ impl Smart {
         if !s.enabled {
             s.phase = Phase::Off;
         } else if s.phase == Phase::Off {
-            s.phase = if MODEL.is_downloaded(&state.models_dir, self.preferred(state)) {
+            s.phase = if model(state).is_downloaded(&state.models_dir, self.preferred(state)) {
                 Phase::Ready
             } else {
                 Phase::Downloading
@@ -117,6 +117,13 @@ impl Smart {
         *self.gpu_error.lock() = None;
     }
 
+    /// Forgets the model and its descriptions of the library, for another
+    /// size of model.
+    pub fn reset_model(&self) {
+        self.reset_device();
+        *self.index.lock() = None;
+    }
+
     fn update(&self, app: &AppHandle, state: &AppState, f: impl FnOnce(&mut Status)) {
         f(&mut self.status.lock());
         let _ = app.emit("smart", self.status(state));
@@ -132,8 +139,8 @@ impl Smart {
         let dir = &state.models_dir;
         let threads = crate::cpu::threads(crate::cpu::Analysis::SmartSearch);
         let mut engine = None;
-        if self.preferred(state).is_gpu() && MODEL.is_downloaded(dir, Device::Gpu(None)) {
-            match Engine::load(dir, &MODEL, Device::Gpu(None), threads) {
+        if self.preferred(state).is_gpu() && model(state).is_downloaded(dir, Device::Gpu(None)) {
+            match Engine::load(dir, model(state), Device::Gpu(None), threads) {
                 Ok(e) => engine = Some(e),
                 Err(e) => {
                     log::warn!("GPU unavailable, using the CPU: {e}");
@@ -143,8 +150,8 @@ impl Smart {
         }
         let engine = match engine {
             Some(e) => e,
-            None if MODEL.is_downloaded(dir, Device::Cpu) => {
-                Engine::load(dir, &MODEL, Device::Cpu, threads).map_err(|e| e.to_string())?
+            None if model(state).is_downloaded(dir, Device::Cpu) => {
+                Engine::load(dir, model(state), Device::Cpu, threads).map_err(|e| e.to_string())?
             }
             None => return Err("The smart search model isn't downloaded yet.".into()),
         };
@@ -159,7 +166,10 @@ impl Smart {
             return Ok(index.clone());
         }
         let index = Arc::new(Index::new(
-            state.lib.embeddings(MODEL.id).map_err(|e| e.to_string())?,
+            state
+                .lib
+                .embeddings(model(state).id)
+                .map_err(|e| e.to_string())?,
         ));
         *slot = Some(index.clone());
         Ok(index)
@@ -252,7 +262,7 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
 
 fn download(app: &AppHandle, state: &AppState, device: Device) -> Result<(), String> {
     let smart = &state.smart;
-    if MODEL.is_downloaded(&state.models_dir, device) {
+    if model(state).is_downloaded(&state.models_dir, device) {
         return Ok(());
     }
     smart.update(app, state, |s| {
@@ -260,7 +270,7 @@ fn download(app: &AppHandle, state: &AppState, device: Device) -> Result<(), Str
         s.error = None;
     });
     let last = Mutex::new(std::time::Instant::now());
-    MODEL
+    model(state)
         .download(&state.models_dir, device, &|done, total| {
             let mut last = last.lock();
             if last.elapsed().as_millis() > 250 || (total > 0 && done == total) {
@@ -290,11 +300,14 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         Err(e) => return Err(e),
     };
     let batch = engine.batch_size();
+    // The model this run describes photos with, whatever size is chosen
+    // meanwhile (it stops then, and the next run takes the new one).
+    let spec = engine.spec();
 
     let failed = smart.failed.lock().clone();
     let todo: Vec<i64> = state
         .lib
-        .missing_embeddings(MODEL.id)
+        .missing_embeddings(spec.id)
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|id| !failed.contains(id))
@@ -306,7 +319,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
     });
 
     for (n, chunk) in todo.chunks(batch).enumerate() {
-        if !state.settings.read().smart_search {
+        if !state.settings.read().smart_search || model(state).id != spec.id {
             return Ok(());
         }
         let mut ids = Vec::with_capacity(chunk.len());
@@ -352,7 +365,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
             .collect();
         state
             .lib
-            .store_embeddings(MODEL.id, &rows)
+            .store_embeddings(spec.id, &rows)
             .map_err(|e| e.to_string())?;
         // So other PCs needn't describe them again.
         crate::sidecars::save(&rows.iter().map(|r| r.0).collect::<Vec<_>>());
@@ -397,4 +410,9 @@ fn thumbnail(state: &AppState, id: i64) -> Thumb {
         },
     };
     std::fs::read(cached).map_or(Thumb::Failed, Thumb::Ready)
+}
+
+/// The smart search model for this PC's size of model.
+pub fn model(state: &AppState) -> &'static ModelSpec {
+    embed::model_for(state.level())
 }

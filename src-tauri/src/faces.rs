@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use fuji_core::decode::Rgb;
-use fuji_core::faces::{self, FaceModels, MODEL_ID};
+use fuji_core::faces::{self, FaceModels, Variant};
 use fuji_core::people::{NewFace, Subject};
 use fuji_core::thumbs::{self, Size};
 use parking_lot::Mutex;
@@ -49,7 +49,8 @@ pub struct Status {
 
 #[derive(Default)]
 pub struct Faces {
-    models: Mutex<Option<Arc<FaceModels>>>,
+    /// The loaded models, and which variant they are.
+    models: Mutex<Option<(&'static str, Arc<FaceModels>)>>,
     status: Mutex<Status>,
     running: AtomicBool,
     again: AtomicBool,
@@ -61,12 +62,13 @@ impl Faces {
     pub fn status(&self, state: &AppState) -> Status {
         let mut s = self.status.lock().clone();
         s.enabled = state.settings.read().faces;
-        s.download_mb = faces::DOWNLOAD_MB;
-        s.scanned = state.lib.faces_scanned(MODEL_ID).unwrap_or(0);
+        let variant = variant(state);
+        s.download_mb = variant.download_mb;
+        s.scanned = state.lib.faces_scanned(variant.id).unwrap_or(0);
         if !s.enabled {
             s.phase = Phase::Off;
         } else if s.phase == Phase::Off {
-            s.phase = if faces::is_downloaded(&state.models_dir) {
+            s.phase = if faces::is_downloaded(&state.models_dir, variant) {
                 Phase::Ready
             } else {
                 Phase::Downloading
@@ -80,15 +82,22 @@ impl Faces {
         let _ = app.emit("faces", self.status(state));
     }
 
-    fn models(&self, state: &AppState) -> Result<Arc<FaceModels>, String> {
+    fn models(
+        &self,
+        state: &AppState,
+        variant: &'static Variant,
+    ) -> Result<Arc<FaceModels>, String> {
         let mut slot = self.models.lock();
-        if let Some(m) = slot.as_ref() {
+        if let Some((id, m)) = slot.as_ref()
+            && *id == variant.id
+        {
             return Ok(m.clone());
         }
         let threads = crate::cpu::threads(crate::cpu::Analysis::Faces);
-        let models =
-            Arc::new(FaceModels::load(&state.models_dir, threads).map_err(|e| e.to_string())?);
-        *slot = Some(models.clone());
+        let models = Arc::new(
+            FaceModels::load(&state.models_dir, variant, threads).map_err(|e| e.to_string())?,
+        );
+        *slot = Some((variant.id, models.clone()));
         Ok(models)
     }
 
@@ -154,13 +163,16 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
 
 fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let faces = &state.faces;
-    if !faces::is_downloaded(&state.models_dir) {
+    // The models this run looks with, whatever size is chosen meanwhile (it
+    // stops then, and the next run takes the new ones).
+    let variant = variant(state);
+    if !faces::is_downloaded(&state.models_dir, variant) {
         faces.update(app, state, |s| {
             s.phase = Phase::Downloading;
             s.error = None;
         });
         let last = Mutex::new(Instant::now());
-        faces::download(&state.models_dir, &|done, total| {
+        faces::download(&state.models_dir, variant, &|done, total| {
             let mut last = last.lock();
             if last.elapsed() > Duration::from_millis(250) || (total > 0 && done == total) {
                 *last = Instant::now();
@@ -180,7 +192,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let failed = faces.failed.lock().clone();
     let todo: Vec<i64> = state
         .lib
-        .faces_todo(MODEL_ID)
+        .faces_todo(variant.id)
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|id| !failed.contains(id))
@@ -193,14 +205,14 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
 
     let mut regroup = Regroup::new(Subject::Person);
     for (n, &id) in todo.iter().enumerate() {
-        if !state.settings.read().faces {
+        if !state.settings.read().faces || self::variant(state).id != variant.id {
             return Ok(());
         }
         match picture(state, id) {
             Picture::Ready(image) => {
                 let models = match &models {
                     Some(m) => m,
-                    None => models.insert(faces.models(state)?),
+                    None => models.insert(faces.models(state, variant)?),
                 };
                 let found = fuji_core::guard(|| models.faces(&image));
                 match found {
@@ -215,7 +227,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                             .collect();
                         state
                             .lib
-                            .store_faces(id, MODEL_ID, &found)
+                            .store_faces(id, variant.id, &found)
                             .map_err(|e| e.to_string())?;
                         // So other PCs needn't look again.
                         crate::sidecars::save(&[id]);
@@ -359,6 +371,10 @@ pub fn crop(state: &AppState, face_id: i64) -> Result<Vec<u8>, fuji_core::Error>
 
 /// The model photos are searched with at this size.
 pub fn model_id(level: fuji_core::hardware::Level) -> &'static str {
-    let _ = level;
-    MODEL_ID
+    faces::variant_for(level).id
+}
+
+/// The face models for this PC's size of model.
+fn variant(state: &AppState) -> &'static Variant {
+    faces::variant_for(state.level())
 }

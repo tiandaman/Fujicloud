@@ -41,7 +41,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .models
-          key: siglip-base-patch16-224-cpu
+          key: siglip-base-siglip2-base-large-cpu-v1
       # Downloads the same model the app does and checks real image↔text
       # matching end to end (inputs, outputs, preprocessing, tokenizer).
       - run: cargo test -p fuji-core -- --ignored --nocapture real_siglip
@@ -52,7 +52,7 @@ jobs:
           path: |
             .models/faces
             .models/face-test
-          key: faces-buffalo-l-lfw-v1
+          key: faces-buffalo-l-antelopev2-lfw-v1
       # Face detection and recognition with the real models on real photos:
       # the same person must match across photos, different people mustn't,
       # and twelve people from LFW must be grouped apart.
@@ -142,7 +142,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .models
-          key: siglip-base-patch16-224-gpu
+          key: siglip-base-siglip2-base-large-gpu-v1
       # Real model on the CPU and through DirectML (on Windows' software
       # renderer, since CI machines have no GPU): proves the GPU code path,
       # the fp16 model and the bundled DirectML.dll work together.

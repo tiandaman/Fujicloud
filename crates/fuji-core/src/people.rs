@@ -68,14 +68,12 @@ impl Subject {
         match self {
             #[cfg(feature = "smart-search")]
             Subject::Person => crate::faces::same_person(model),
-            #[cfg(feature = "smart-search")]
-            Subject::Pet => crate::animals::same_pet(model),
             #[cfg(not(feature = "smart-search"))]
             Subject::Person => {
                 let _ = model;
                 SAME_PERSON
             }
-            #[cfg(not(feature = "smart-search"))]
+            // One model at every size.
             Subject::Pet => SAME_PET,
         }
     }

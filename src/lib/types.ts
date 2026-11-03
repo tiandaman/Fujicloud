@@ -142,8 +142,8 @@ export interface Settings {
   cacheVersion: number;
 }
 
-export type ModelChoice = 'auto' | 'standard' | 'best';
-export type ModelLevel = 'standard' | 'best';
+export type ModelChoice = 'auto' | ModelLevel;
+export type ModelLevel = 'light' | 'standard' | 'best';
 
 /** What this PC has, and the size of model it gets. */
 export interface Models {

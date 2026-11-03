@@ -96,7 +96,7 @@ pub struct ModelSpec {
     /// vector space, so switching CPU/GPU doesn't re-index the library.
     pub id: &'static str,
     pub base_url: &'static str,
-    /// 8-bit weights: smallest download, fastest on CPUs.
+    /// The fastest on CPUs that keeps the model's accuracy.
     pub vision_cpu: &'static str,
     /// Half-precision first (GPUs are built for it), full precision if the
     /// repository doesn't have it.
@@ -111,6 +111,9 @@ pub struct ModelSpec {
     pub std: [f32; 3],
     /// SigLIP was trained with text padded to exactly this many tokens.
     pub text_len: usize,
+    /// Similarity at which two photos are near-identical shots (the same
+    /// scene a moment later); each model has its own.
+    pub near_duplicate: f32,
 }
 
 /// Google's SigLIP (base, 224px), as exported to ONNX for transformers.js.
@@ -127,7 +130,61 @@ pub const SIGLIP_BASE: ModelSpec = ModelSpec {
     mean: [0.5, 0.5, 0.5],
     std: [0.5, 0.5, 0.5],
     text_len: 64,
+    near_duplicate: 0.92,
 };
+
+/// Google's SigLIP 2 (base, 224px). On Flickr30k's 1,000 test photos it
+/// found the photo a caption describes first 85% of the time (SigLIP: 60%),
+/// in the first five 96% (81%). Its 8-bit picture model loses most of that
+/// (45%), so the CPU runs the full-precision one (on 4 threads 106 ms a
+/// photo, against 260 for the half-precision one, which CPUs convert as
+/// they go); the 8-bit text model is as good as the half-precision one.
+pub const SIGLIP2_BASE: ModelSpec = ModelSpec {
+    id: "siglip2-base-patch16-224",
+    base_url: "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/main/",
+    vision_cpu: "onnx/vision_model.onnx",
+    vision_gpu: &["onnx/vision_model_fp16.onnx"],
+    text: "onnx/text_model_quantized.onnx",
+    tokenizer: "tokenizer.json",
+    download_mb_cpu: 690,
+    download_mb_gpu: 500,
+    image_size: 224,
+    mean: [0.5, 0.5, 0.5],
+    std: [0.5, 0.5, 0.5],
+    text_len: 64,
+    near_duplicate: NEAR_DUPLICATE_SIGLIP2_BASE,
+};
+
+/// Google's SigLIP 2 (large, 256px), for a PC with power to spare: on the
+/// same test, first 88.5% of the time, in the first five 98%, at about four
+/// times SigLIP 2 base's work per photo.
+pub const SIGLIP2_LARGE: ModelSpec = ModelSpec {
+    id: "siglip2-large-patch16-256",
+    base_url: "https://huggingface.co/onnx-community/siglip2-large-patch16-256-ONNX/resolve/main/",
+    vision_cpu: "onnx/vision_model.onnx",
+    vision_gpu: &["onnx/vision_model_fp16.onnx"],
+    text: "onnx/text_model_quantized.onnx",
+    tokenizer: "tokenizer.json",
+    download_mb_cpu: 1870,
+    download_mb_gpu: 1235,
+    image_size: 256,
+    mean: [0.5, 0.5, 0.5],
+    std: [0.5, 0.5, 0.5],
+    text_len: 64,
+    near_duplicate: NEAR_DUPLICATE_SIGLIP2_LARGE,
+};
+
+const NEAR_DUPLICATE_SIGLIP2_BASE: f32 = 0.935;
+const NEAR_DUPLICATE_SIGLIP2_LARGE: f32 = 0.925;
+
+/// The smart search model for a size of model.
+pub fn model_for(level: crate::hardware::Level) -> &'static ModelSpec {
+    match level {
+        crate::hardware::Level::Light => &SIGLIP_BASE,
+        crate::hardware::Level::Standard => &SIGLIP2_BASE,
+        crate::hardware::Level::Best => &SIGLIP2_LARGE,
+    }
+}
 
 impl ModelSpec {
     fn local(&self, dir: &Path, remote: &str) -> PathBuf {
@@ -931,11 +988,11 @@ mod tests {
         let (near, other) = (dot(&v[0], &v[1]), dot(&v[0], &v[2]));
         println!("near-identical {near:.3}, different {other:.3}");
         assert!(
-            near >= crate::dupes::NEAR_DUPLICATE,
+            near >= engine.spec.near_duplicate,
             "near-identical scored {near}"
         );
         assert!(
-            other < crate::dupes::NEAR_DUPLICATE,
+            other < engine.spec.near_duplicate,
             "a different picture scored {other}"
         );
     }
@@ -1133,16 +1190,19 @@ mod tests {
             .unwrap_or_else(|_| std::env::temp_dir().join("fujicloud-models"))
     }
 
-    /// The real model, end to end. Downloads ~200 MB, so it only runs when
-    /// asked: `FUJICLOUD_MODEL_DIR=… cargo test -p fuji-core -- --ignored`.
+    /// The real models, end to end, on the CPU as every PC can run them.
+    /// Downloads about 2.8 GB, so it only runs when asked:
+    /// `FUJICLOUD_MODEL_DIR=… cargo test -p fuji-core -- --ignored`.
     #[test]
     #[ignore]
     fn real_siglip_matches_colours_and_meaning() {
         let dir = model_dir();
-        SIGLIP_BASE
-            .download(&dir, Device::Cpu, &|_, _| {})
-            .expect("download");
-        check_real(&Engine::load(&dir, &SIGLIP_BASE, Device::Cpu, 4).expect("load"));
+        for spec in [&SIGLIP_BASE, &SIGLIP2_BASE, &SIGLIP2_LARGE] {
+            println!("{}", spec.id);
+            spec.download(&dir, Device::Cpu, &|_, _| {})
+                .expect("download");
+            check_real(&Engine::load(&dir, spec, Device::Cpu, 4).expect("load"));
+        }
     }
 
     /// The GPU path: DirectML with the half-precision model. On a machine
@@ -1153,16 +1213,23 @@ mod tests {
     #[ignore]
     #[cfg(windows)]
     fn real_siglip_on_directml() {
+        // SigLIP 2 large is left out: on WARP it would take an age.
+        for spec in [&SIGLIP_BASE, &SIGLIP2_BASE] {
+            println!("{}", spec.id);
+            directml(spec);
+        }
+    }
+
+    #[cfg(windows)]
+    fn directml(spec: &'static ModelSpec) {
         let dir = model_dir();
-        SIGLIP_BASE
-            .download(&dir, Device::Gpu(None), &|_, _| {})
+        spec.download(&dir, Device::Gpu(None), &|_, _| {})
             .expect("download");
         let engine = if let Some(gpu) = best_gpu() {
             println!("DirectML on {gpu:?}");
-            Engine::load(&dir, &SIGLIP_BASE, Device::Gpu(None), 4)
+            Engine::load(&dir, spec, Device::Gpu(None), 4)
         } else {
             println!("DirectML on WARP (no GPU)");
-            let spec = &SIGLIP_BASE;
             Engine::load_with(
                 &spec.vision_file(&dir, Device::Gpu(None)).unwrap(),
                 &spec.local(&dir, spec.text),
@@ -1177,13 +1244,12 @@ mod tests {
         println!("vision input is fp16: {}", engine.vision_f16);
         check_real(&engine);
 
-        // The GPU's half-precision model and the CPU's 8-bit one round
+        // The GPU's half-precision model and the CPU's model round
         // differently, but a library indexed partly on each must still work:
         // every picture has to be closest to its own counterpart.
-        SIGLIP_BASE
-            .download(&dir, Device::Cpu, &|_, _| {})
+        spec.download(&dir, Device::Cpu, &|_, _| {})
             .expect("download");
-        let cpu = Engine::load(&dir, &SIGLIP_BASE, Device::Cpu, 4).unwrap();
+        let cpu = Engine::load(&dir, spec, Device::Cpu, 4).unwrap();
         let pictures = [
             solid([220, 30, 30]),
             solid([30, 60, 220]),

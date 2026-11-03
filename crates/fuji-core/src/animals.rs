@@ -262,12 +262,6 @@ fn basis() -> &'static Vec<f32> {
 /// one cat's photos together a little more; more makes it worse.
 const COAT_SHARE: f32 = 0.2;
 
-/// The similarity at which two pets described by `model` are one pet.
-pub fn same_pet(model: Option<&str>) -> f32 {
-    let _ = model;
-    crate::people::SAME_PET
-}
-
 /// A pet's description (from [`Identifier::pet`]) for comparing one pet
 /// with another: each part with the average pet taken away, the coat
 /// counting for [`COAT_SHARE`].
