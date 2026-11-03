@@ -187,9 +187,8 @@ fn main() {
         );
     }
 
-    // Everything at once, as on a first run, while someone opens photos:
-    // side by side with a share of the processor each, then taking turns
-    // with all but one processor each.
+    // Everything at once, as on a first run, while someone opens photos,
+    // with two ways of sharing the processor out.
     let open_photo = |p: &Photo| {
         let t = Instant::now();
         let file = cache.get(&p.source(), Size::Preview).unwrap();
@@ -201,57 +200,40 @@ fn main() {
         "opening a photo when idle: {:.0} ms",
         idle.as_secs_f64() * 1000.0
     );
-    let turns_threads = (cores - 1).clamp(1, 6);
-    for (label, threads, turns) in [
+    let faces_first = [(cores / 4).max(1), (cores / 2).max(1), (cores / 4).max(1)];
+    for (label, threads) in [
         (
-            "side by side",
+            "smart search's share bigger",
             [smart_threads, face_threads, pet_threads],
-            false,
         ),
-        ("taking turns", [turns_threads; 3], true),
+        ("faces' share bigger", faces_first),
     ] {
         let engine = Engine::load(&models, &SIGLIP_BASE, Device::Cpu, threads[0]).unwrap();
         let faces = FaceModels::load(&models, threads[1]).unwrap();
         let detector = Detector::load(&models, threads[2]).unwrap();
         let identifier = Identifier::load(&models, threads[2]).unwrap();
-        println!("{label}: all models loaded, {}", memory());
-        let turn = parking_lot::Mutex::new(());
-        let in_turn = |work: &mut dyn FnMut()| {
-            if turns {
-                let guard = turn.lock();
-                work();
-                parking_lot::MutexGuard::unlock_fair(guard);
-            } else {
-                work();
-            }
-        };
+        println!("{label} {threads:?}: all models loaded, {}", memory());
         let busy = AtomicBool::new(true);
         let start = Instant::now();
         let took = std::thread::scope(|s| {
             let jobs = [
                 s.spawn(|| {
                     for chunk in thumbs.chunks(engine.batch_size()) {
-                        in_turn(&mut || {
-                            engine.embed_images(chunk).unwrap();
-                        });
+                        engine.embed_images(chunk).unwrap();
                     }
                     start.elapsed()
                 }),
                 s.spawn(|| {
                     for image in &pictures {
-                        in_turn(&mut || {
-                            faces.faces(image).unwrap();
-                        });
+                        faces.faces(image).unwrap();
                     }
                     start.elapsed()
                 }),
                 s.spawn(|| {
                     for image in &pictures {
-                        in_turn(&mut || {
-                            for animal in detector.animals(image).unwrap() {
-                                identifier.pet(image, &animal).unwrap();
-                            }
-                        });
+                        for animal in detector.animals(image).unwrap() {
+                            identifier.pet(image, &animal).unwrap();
+                        }
                     }
                     start.elapsed()
                 }),

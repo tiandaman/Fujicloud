@@ -324,15 +324,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                 }
             }
         }
-        // On the CPU, in turn with faces and pets; a graphics card needs no turn.
-        let embed = |jpegs: &[Vec<u8>]| {
-            let work = || fuji_core::guard(|| engine.embed_images(jpegs));
-            if engine.device().is_gpu() {
-                work()
-            } else {
-                crate::cpu::in_turn(work)
-            }
-        };
+        let embed = |jpegs: &[Vec<u8>]| fuji_core::guard(|| engine.embed_images(jpegs));
         let vectors = match embed(&jpegs) {
             Ok(v) => v,
             // One bad image shouldn't sink its batch: retry individually.

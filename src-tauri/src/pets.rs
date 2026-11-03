@@ -165,8 +165,9 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
             )
         })?;
     }
-    let models = pets.models(state)?;
-    let (detector, identifier) = (&models.0, &models.1);
+    // Loaded only once there's a photo to look at: runs after every scan
+    // mostly find nothing new.
+    let mut models = None;
 
     let failed = pets.failed.lock().clone();
     let todo: Vec<i64> = state
@@ -189,23 +190,26 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         }
         match picture(state, id) {
             Picture::Ready(image) => {
-                let found = crate::cpu::in_turn(|| {
-                    fuji_core::guard(|| {
-                        let animals = detector.animals(&image)?;
-                        let vectors = animals
-                            .iter()
-                            .map(|a| identifier.pet(&image, a))
-                            .collect::<Result<Vec<_>, _>>()?;
-                        Ok(animals
-                            .into_iter()
-                            .zip(vectors)
-                            .map(|(a, embedding)| NewFace {
-                                bbox: a.bbox,
-                                score: a.score,
-                                embedding,
-                            })
-                            .collect::<Vec<_>>())
-                    })
+                let models = match &models {
+                    Some(m) => m,
+                    None => models.insert(pets.models(state)?),
+                };
+                let (detector, identifier) = (&models.0, &models.1);
+                let found = fuji_core::guard(|| {
+                    let animals = detector.animals(&image)?;
+                    let vectors = animals
+                        .iter()
+                        .map(|a| identifier.pet(&image, a))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(animals
+                        .into_iter()
+                        .zip(vectors)
+                        .map(|(a, embedding)| NewFace {
+                            bbox: a.bbox,
+                            score: a.score,
+                            embedding,
+                        })
+                        .collect::<Vec<_>>())
                 });
                 match found {
                     Ok(found) => {

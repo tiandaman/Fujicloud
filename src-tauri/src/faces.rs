@@ -168,7 +168,9 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
             )
         })?;
     }
-    let models = faces.models(state)?;
+    // Loaded only once there's a photo to look at: runs after every scan
+    // mostly find nothing new.
+    let mut models = None;
 
     let failed = faces.failed.lock().clone();
     let todo: Vec<i64> = state
@@ -191,7 +193,11 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         }
         match picture(state, id) {
             Picture::Ready(image) => {
-                let found = crate::cpu::in_turn(|| fuji_core::guard(|| models.faces(&image)));
+                let models = match &models {
+                    Some(m) => m,
+                    None => models.insert(faces.models(state)?),
+                };
+                let found = fuji_core::guard(|| models.faces(&image));
                 match found {
                     Ok(found) => {
                         let found: Vec<NewFace> = found
