@@ -60,7 +60,10 @@ impl Look {
                 let (x0, x1) = span(cx, w);
                 let mut sum = [0f32; 3];
                 for y in y0..y1 {
-                    for px in image.data[(y * w + x0) * 3..(y * w + x1) * 3].chunks_exact(3) {
+                    for px in image.data[(y * w + x0) * 3..(y * w + x1) * 3]
+                        .as_chunks::<3>()
+                        .0
+                    {
                         for c in 0..3 {
                             sum[c] += px[c] as f32;
                         }
