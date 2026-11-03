@@ -79,8 +79,7 @@ impl Pets {
         if let Some(m) = slot.as_ref() {
             return Ok(m.clone());
         }
-        // Leave most of the CPU for browsing.
-        let threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 4).max(1));
+        let threads = crate::cpu::threads(crate::cpu::Analysis::Pets);
         let dir = &state.models_dir;
         let models = Arc::new((
             Detector::load(dir, threads).map_err(|e| e.to_string())?,
@@ -138,6 +137,8 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
                     break;
                 }
             }
+            // Nothing left to look at: give the memory back until there is.
+            *pets.models.lock() = None;
             pets.running.store(false, Ordering::Release);
         })
         .expect("spawn pets thread");
@@ -188,21 +189,23 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         }
         match picture(state, id) {
             Picture::Ready(image) => {
-                let found = fuji_core::guard(|| {
-                    let animals = detector.animals(&image)?;
-                    let vectors = animals
-                        .iter()
-                        .map(|a| identifier.pet(&image, a))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok(animals
-                        .into_iter()
-                        .zip(vectors)
-                        .map(|(a, embedding)| NewFace {
-                            bbox: a.bbox,
-                            score: a.score,
-                            embedding,
-                        })
-                        .collect::<Vec<_>>())
+                let found = crate::cpu::in_turn(|| {
+                    fuji_core::guard(|| {
+                        let animals = detector.animals(&image)?;
+                        let vectors = animals
+                            .iter()
+                            .map(|a| identifier.pet(&image, a))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(animals
+                            .into_iter()
+                            .zip(vectors)
+                            .map(|(a, embedding)| NewFace {
+                                bbox: a.bbox,
+                                score: a.score,
+                                embedding,
+                            })
+                            .collect::<Vec<_>>())
+                    })
                 });
                 match found {
                     Ok(found) => {

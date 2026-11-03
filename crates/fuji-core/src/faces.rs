@@ -16,7 +16,7 @@ use parking_lot::Mutex;
 
 use crate::Error;
 use crate::decode::Rgb;
-use crate::embed::{download_files, environment, model_err};
+use crate::embed::{cpu_builder, download_files, environment, model_err};
 
 /// Stored with each photo searched: a new model searches every photo again.
 pub const MODEL_ID: &str = "scrfd-10g+arcface-w600k-r50";
@@ -106,9 +106,7 @@ impl FaceModels {
             let path = dir_for(dir).join(name);
             let fail = |e: &dyn std::fmt::Display| Error::Model(format!("{}: {e}", path.display()));
             let builder = Session::builder(&env).map_err(|e| fail(&e))?;
-            let mut builder = builder
-                .with_intra_threads(threads.max(1))
-                .map_err(|e| fail(&e))?;
+            let mut builder = cpu_builder(builder, threads).map_err(|e| fail(&e))?;
             builder.commit_from_file(&path).map_err(|e| fail(&e))
         };
         Ok(Self {

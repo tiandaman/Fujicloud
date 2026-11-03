@@ -8,7 +8,9 @@
 //! * high   – the photo open in the viewer (FIFO)
 //! * normal – grid thumbnails (LIFO: when scrolling fast, what's on screen
 //!   *now* is served before what scrolled past a second ago)
-//! * low    – background cache warming
+//! * low    – background cache warming, never on every worker: one is
+//!   always free for what's on screen (on a 4-core PC, building a 12 MP
+//!   photo's thumbnail takes a quarter of a second)
 //!
 //! URLs: `/t/<id>` thumbnail, `/p/<id>` preview, `/o/<id>` full resolution.
 
@@ -39,20 +41,26 @@ struct Lanes {
     high: VecDeque<Job>,
     normal: Vec<Job>,
     low: VecDeque<Job>,
+    /// Low-lane jobs being worked on.
+    low_running: usize,
 }
 
 pub struct Queue {
     lanes: Mutex<Lanes>,
     ready: Condvar,
+    /// How many workers may be on the low lane at once.
+    low_limit: usize,
 }
 
 impl Queue {
     pub fn start(workers: usize) -> Arc<Self> {
+        let workers = workers.max(2);
         let queue = Arc::new(Queue {
             lanes: Mutex::default(),
             ready: Condvar::new(),
+            low_limit: workers - 1,
         });
-        for i in 0..workers.max(2) {
+        for i in 0..workers {
             let q = queue.clone();
             std::thread::Builder::new()
                 .name(format!("fuji-img-{i}"))
@@ -80,22 +88,28 @@ impl Queue {
 
     fn work(&self) {
         loop {
-            let job = {
+            let (job, low) = {
                 let mut lanes = self.lanes.lock();
                 loop {
-                    if let Some(job) = lanes
-                        .high
-                        .pop_front()
-                        .or_else(|| lanes.normal.pop())
-                        .or_else(|| lanes.low.pop_front())
+                    if let Some(job) = lanes.high.pop_front().or_else(|| lanes.normal.pop()) {
+                        break (job, false);
+                    }
+                    if lanes.low_running < self.low_limit
+                        && let Some(job) = lanes.low.pop_front()
                     {
-                        break job;
+                        lanes.low_running += 1;
+                        break (job, true);
                     }
                     self.ready.wait(&mut lanes);
                 }
             };
             // A panic in one decode must not take a worker down with it.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+            if low {
+                self.lanes.lock().low_running -= 1;
+                // A worker waiting only because of the limit can go on.
+                self.ready.notify_one();
+            }
         }
     }
 }
@@ -344,6 +358,29 @@ fn status(code: StatusCode) -> Response<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With the low lane full of slow warming jobs, a thumbnail on screen
+    /// starts at once rather than after one of them.
+    #[test]
+    fn a_worker_is_kept_for_what_is_on_screen() {
+        use std::time::{Duration, Instant};
+        let queue = Queue::start(3);
+        for _ in 0..12 {
+            queue.push(Lane::Low, || std::thread::sleep(Duration::from_millis(300)));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let asked = Instant::now();
+        queue.push(Lane::Normal, move || tx.send(asked.elapsed()).unwrap());
+        let waited = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(waited < Duration::from_millis(100), "waited {waited:?}");
+        // And the warming still finishes.
+        let started = Instant::now();
+        while queue.backlog() > 0 {
+            assert!(started.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 
     #[test]
     fn players_get_the_bytes_they_ask_for() {

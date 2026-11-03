@@ -22,14 +22,19 @@ use serde::Serialize;
 
 use crate::Error;
 use crate::decode::Rgb;
-use crate::embed::{download_files, environment, model_err};
+use crate::embed::{cpu_builder, download_files, environment, model_err};
 
-const DETECTOR: &str = "object_detection_yolox_2022nov_int8.onnx";
-const URL: &str = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/object_detection_yolox/object_detection_yolox_2022nov_int8.onnx";
-/// The detector (9 MB) and DINOv3 (343 MB) together, for the UI.
-pub const DOWNLOAD_MB: u32 = 352;
+/// YOLOX-S at full precision. Its 8-bit twin, used before, is a quarter
+/// the size but took four times as long on the CPU (940 ms a photo rather
+/// than 220, on one core of a 4-core PC), and longer still on processors
+/// without 8-bit instructions.
+const DETECTOR: &str = "object_detection_yolox_2022nov.onnx";
+const URL: &str = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/object_detection_yolox/object_detection_yolox_2022nov.onnx";
+/// The detector (36 MB) and DINOv3 (343 MB) together, for the UI.
+pub const DOWNLOAD_MB: u32 = 379;
 /// Stored with each photo searched: the detector, and the model that tells
-/// pets apart.
+/// pets apart. Named for the 8-bit detector it started with: the full
+/// precision one finds the same boxes, so photos searched with either count.
 pub const MODEL_ID: &str = "yolox-2022nov-int8+dinov3-base-box+coat";
 
 const SIDE: usize = 640;
@@ -77,7 +82,7 @@ pub fn is_downloaded(dir: &Path) -> bool {
             .all(|f| identifier_dir(dir).join(f).is_file())
 }
 
-/// Fetches the detector and DINOv3 (~352 MB). `progress(done, total)` in bytes.
+/// Fetches the detector and DINOv3 (~379 MB). `progress(done, total)` in bytes.
 pub fn download(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
     let urls: Vec<String> = IDENTIFIER_FILES
         .iter()
@@ -88,8 +93,12 @@ pub fn download(dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), Error> {
         files.push((url.as_str(), identifier_dir(dir).join(f)));
     }
     download_files(&files, progress)?;
-    // The DINOv2s earlier versions used.
-    for old in ["dinov2_small.onnx", "dinov2_base.onnx"] {
+    // The DINOv2s and 8-bit detector earlier versions used.
+    for old in [
+        "dinov2_small.onnx",
+        "dinov2_base.onnx",
+        "object_detection_yolox_2022nov_int8.onnx",
+    ] {
         let _ = std::fs::remove_file(dir.join("pets").join(old));
     }
     Ok(())
@@ -105,9 +114,7 @@ impl Detector {
         let file = path(dir);
         let fail = |e: &dyn std::fmt::Display| Error::Model(format!("{}: {e}", file.display()));
         let builder = Session::builder(&env).map_err(|e| fail(&e))?;
-        let mut builder = builder
-            .with_intra_threads(threads.max(1))
-            .map_err(|e| fail(&e))?;
+        let mut builder = cpu_builder(builder, threads).map_err(|e| fail(&e))?;
         Ok(Self {
             session: Mutex::new(builder.commit_from_file(&file).map_err(|e| fail(&e))?),
         })
@@ -302,9 +309,7 @@ impl Identifier {
         let env = environment()?;
         let fail = |e: &dyn std::fmt::Display| Error::Model(format!("{}: {e}", file.display()));
         let builder = Session::builder(&env).map_err(|e| fail(&e))?;
-        let mut builder = builder
-            .with_intra_threads(threads.max(1))
-            .map_err(|e| fail(&e))?;
+        let mut builder = cpu_builder(builder, threads).map_err(|e| fail(&e))?;
         Ok(Self {
             session: Mutex::new(builder.commit_from_file(file).map_err(|e| fail(&e))?),
         })

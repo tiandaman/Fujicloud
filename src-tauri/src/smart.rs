@@ -130,7 +130,7 @@ impl Smart {
             return Ok(engine.clone());
         }
         let dir = &state.models_dir;
-        let threads = std::thread::available_parallelism().map_or(2, |n| n.get() / 2);
+        let threads = crate::cpu::threads(crate::cpu::Analysis::SmartSearch);
         let mut engine = None;
         if self.preferred(state).is_gpu() && MODEL.is_downloaded(dir, Device::Gpu(None)) {
             match Engine::load(dir, &MODEL, Device::Gpu(None), threads) {
@@ -324,7 +324,15 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                 }
             }
         }
-        let embed = |jpegs: &[Vec<u8>]| fuji_core::guard(|| engine.embed_images(jpegs));
+        // On the CPU, in turn with faces and pets; a graphics card needs no turn.
+        let embed = |jpegs: &[Vec<u8>]| {
+            let work = || fuji_core::guard(|| engine.embed_images(jpegs));
+            if engine.device().is_gpu() {
+                work()
+            } else {
+                crate::cpu::in_turn(work)
+            }
+        };
         let vectors = match embed(&jpegs) {
             Ok(v) => v,
             // One bad image shouldn't sink its batch: retry individually.

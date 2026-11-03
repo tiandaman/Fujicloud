@@ -1,4 +1,5 @@
 mod backup;
+mod cpu;
 mod faces;
 mod logfile;
 mod pets;

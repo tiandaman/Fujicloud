@@ -85,8 +85,7 @@ impl Faces {
         if let Some(m) = slot.as_ref() {
             return Ok(m.clone());
         }
-        // Leave most of the CPU for browsing.
-        let threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 4).max(1));
+        let threads = crate::cpu::threads(crate::cpu::Analysis::Faces);
         let models =
             Arc::new(FaceModels::load(&state.models_dir, threads).map_err(|e| e.to_string())?);
         *slot = Some(models.clone());
@@ -141,6 +140,8 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
                     break;
                 }
             }
+            // Nothing left to look at: give the memory back until there is.
+            *faces.models.lock() = None;
             faces.running.store(false, Ordering::Release);
         })
         .expect("spawn face recognition thread");
@@ -190,7 +191,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         }
         match picture(state, id) {
             Picture::Ready(image) => {
-                let found = fuji_core::guard(|| models.faces(&image));
+                let found = crate::cpu::in_turn(|| fuji_core::guard(|| models.faces(&image)));
                 match found {
                     Ok(found) => {
                         let found: Vec<NewFace> = found
