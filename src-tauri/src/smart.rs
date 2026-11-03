@@ -385,13 +385,13 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-enum Thumb {
+pub(crate) enum Thumb {
     Ready(Vec<u8>),
     Offline,
     Failed,
 }
 
-fn thumbnail(state: &AppState, id: i64) -> Thumb {
+pub(crate) fn thumbnail(state: &AppState, id: i64) -> Thumb {
     let Ok((path, kind, size, mtime)) = state.lib.file_of(id) else {
         return Thumb::Failed;
     };

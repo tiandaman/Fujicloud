@@ -433,9 +433,18 @@ async fn find_duplicates(state: Shared<'_>) -> CmdResult<Vec<dupes::Group>> {
                 .flatten()
         };
         let near = smart::model(&state).near_duplicate;
+        // Photos smart search finds alike are compared picture to picture,
+        // from their thumbnails.
+        let look = |id: i64| match smart::thumbnail(&state, id) {
+            smart::Thumb::Ready(jpeg) => {
+                dupes::Look::of(&fuji_core::thumbs::decode_rendition(&jpeg, 512).ok()?)
+            }
+            _ => None,
+        };
         Ok(dupes::find(
             &rows,
             index.as_deref().map(|i| (i, near)),
+            &look,
             &checksum,
         ))
     })

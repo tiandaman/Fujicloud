@@ -319,6 +319,6 @@ export interface Section {
 /** Photos that are copies of each other, the one to keep first. */
 export interface DuplicateGroup {
   ids: number[];
-  /** Byte-for-byte the same file; otherwise near-identical shots. */
+  /** Byte-for-byte the same file; otherwise the same picture saved again (resized, re-saved). */
   exact: boolean;
 }

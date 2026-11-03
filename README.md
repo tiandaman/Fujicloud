@@ -50,8 +50,9 @@ thousands of images.
   as for people. Pets that look much alike, such as two black cats, may be grouped
   together; *Not this pet* sorts them out.
 - **Find duplicates:** *Duplicates* in the sidebar finds byte-for-byte copies (the same
-  shot imported twice) and, with smart search on, near-identical shots taken moments
-  apart. The best of each group (highest rated, then most pixels) is marked *KEEP*, and
+  shot imported twice) and, with smart search on, the same picture saved again (resized
+  for the web, re-saved, converted). Those must be at least 99.5% the same, picture to
+  picture, so bursts and the same scene taken again a moment later aren't counted. The best of each group (highest rated, then most pixels) is marked *KEEP*, and
   one click rejects the rest, ready for *Delete all rejected*.
 - **Favourites and albums:** press `.` or the heart to favourite, separate from stars.
   Albums live in the sidebar; add photos from the right-click menu, the viewer or the

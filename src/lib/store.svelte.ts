@@ -1189,7 +1189,7 @@ class Store {
       return [
         {
           key: `dupes-${i}`,
-          title: g.exact ? 'Identical copies' : 'Near-identical shots',
+          title: g.exact ? 'Identical copies' : 'Copies of the same picture',
           subtitle: `${plural(items.length, 'photo')}${day}`,
           items,
           action: { label: extras.length === 1 ? 'Reject the extra' : `Reject the ${extras.length} extras`, run: () => this.flag(-1, extras) },

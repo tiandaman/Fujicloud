@@ -571,7 +571,7 @@ export function mockApi(): Api {
     faceUrl: (id) => avatar(Math.floor(id / 1000) || id),
     async findDuplicates() {
       await delay(500);
-      // Bursts: shots of one outing a few seconds apart, best rated first.
+      // Copies: photos of one outing saved again, best rated first.
       const shown = photos.filter((p) => p.kind !== 'raf' && p.editOf == null && p.flag !== -1);
       const groups = [];
       for (let i = 0; i + 2 < shown.length && groups.length < 12; i += 37) {

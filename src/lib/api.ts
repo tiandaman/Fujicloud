@@ -50,7 +50,7 @@ export interface Api {
   /** "I don't know them", from one face in a photo. Returns who's hidden. */
   hideFace(faceId: number): Promise<number>;
   faceUrl(faceId: number): string;
-  /** Copies of the same file, and near-identical shots. */
+  /** Copies of the same file, and of the same picture saved again. */
   findDuplicates(): Promise<DuplicateGroup[]>;
   /** Moves photos (with their twins and sidecars) to the Recycle Bin. */
   deletePhotos(ids: number[]): Promise<Deleted>;

@@ -486,10 +486,10 @@
       <p>
         {#if store.collection.type === 'duplicates'}
           {store.findingDuplicates
-            ? 'Comparing files of the same size, and shots taken moments apart.'
+            ? 'Comparing files of the same size, and photos that might be copies of each other.'
             : store.smartReady
-              ? 'No copies of the same file, and no near-identical shots.'
-              : 'No copies of the same file. Turn on smart search to find near-identical shots too.'}
+              ? 'No copies of the same file, and no copies of the same picture.'
+              : 'No copies of the same file. Turn on smart search to find copies of the same picture saved again too.'}
         {:else if store.query}Nothing matches “{store.query}”.
         {:else if store.minRating || store.kindsFiltered}Try loosening the filters in the toolbar.
         {:else}Photos you add will show up here.{/if}
