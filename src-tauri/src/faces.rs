@@ -92,6 +92,11 @@ impl Faces {
         Ok(models)
     }
 
+    /// Lets the models go (another size is wanted); loaded again when needed.
+    pub fn unload(&self) {
+        *self.models.lock() = None;
+    }
+
     /// Lets photos that couldn't be read be tried again.
     pub fn forget_failures(&self) {
         self.failed.lock().clear();
@@ -350,4 +355,10 @@ pub fn crop(state: &AppState, face_id: i64) -> Result<Vec<u8>, fuji_core::Error>
         Subject::Pet => 1.05,
     };
     thumbs::crop_square(&image, bbox, margin, 160)
+}
+
+/// The model photos are searched with at this size.
+pub fn model_id(level: fuji_core::hardware::Level) -> &'static str {
+    let _ = level;
+    MODEL_ID
 }

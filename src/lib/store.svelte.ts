@@ -26,6 +26,8 @@ import type {
   Source,
   Subject,
   SyncStatus,
+  ModelChoice,
+  Models,
 } from './types';
 
 export interface Toast {
@@ -163,6 +165,8 @@ class Store {
   hiddenPets = $derived(this.allPeople.filter((p) => p.hidden && p.kind === 'pet'));
   faces = $state.raw<FacesStatus | null>(null);
   petStatus = $state.raw<PetsStatus | null>(null);
+  /** This PC's hardware and the size of model its analyses use. */
+  models = $state.raw<Models | null>(null);
   personById = $derived(new Map(this.allPeople.map((p) => [p.id, p])));
   /** Named people, for name suggestions. */
   names = $derived(this.people.filter((p) => p.name).map((p) => p.name!));
@@ -488,6 +492,7 @@ class Store {
     this.backup = boot.backup;
     this.faces = boot.faces;
     this.petStatus = boot.pets;
+    this.models = boot.models;
     this.version = boot.version;
     await this.refresh();
     this.ready = true;
@@ -1041,6 +1046,30 @@ class Store {
           ? `Searching every photo for ${pets ? 'pets' : 'faces'} again${forgetNames ? '' : '. Names stay'}.`
           : `Done. Turn on ${pets ? 'pets' : 'face recognition'} to search the photos again.`,
       );
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Chooses how big a model each analysis uses; a different size analyses photos again. */
+  async setModels(choice: ModelChoice) {
+    const before = this.models?.level;
+    const after = choice === 'auto' ? this.models?.recommended : choice;
+    const analysing = this.settings?.smartSearch || this.settings?.faces || this.settings?.pets;
+    if (after && after !== before && analysing) {
+      const best = after === 'best';
+      const ok = await this.ask(
+        best ? 'Use the bigger models?' : 'Use the standard models?',
+        best
+          ? 'Smart search, faces and pets switch to bigger, more accurate models: about 2 GB to download, and every photo is analysed again in the background. Names you\'ve given stay.'
+          : 'Smart search, faces and pets switch to the standard models, quicker and lighter: every photo is analysed again in the background. Names you\'ve given stay.',
+        best ? 'Use bigger models' : 'Use standard models',
+      );
+      if (!ok) return;
+    }
+    try {
+      this.models = await api.setModels(choice);
+      if (this.settings) this.settings = { ...this.settings, models: choice };
     } catch (e) {
       this.toast(String(e), 'error');
     }

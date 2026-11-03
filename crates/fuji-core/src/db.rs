@@ -279,6 +279,9 @@ pub struct Touched {
 
 pub struct Library {
     pub(crate) conn: Mutex<Connection>,
+    /// The face and pet models this PC searches with (see
+    /// [`Library::use_model`]).
+    pub(crate) active_models: Mutex<[Option<String>; 2]>,
 }
 
 impl Library {
@@ -308,6 +311,7 @@ impl Library {
         conn.execute_batch(INDEXES)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            active_models: Mutex::new([None, None]),
         })
     }
 

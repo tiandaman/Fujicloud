@@ -62,10 +62,28 @@ impl Subject {
         }
     }
 
-    fn same(self) -> f32 {
+    /// The similarity at which two descriptions by `model` are one person
+    /// (or pet): each model has its own.
+    fn same(self, model: Option<&str>) -> f32 {
         match self {
-            Subject::Person => SAME_PERSON,
+            #[cfg(feature = "smart-search")]
+            Subject::Person => crate::faces::same_person(model),
+            #[cfg(feature = "smart-search")]
+            Subject::Pet => crate::animals::same_pet(model),
+            #[cfg(not(feature = "smart-search"))]
+            Subject::Person => {
+                let _ = model;
+                SAME_PERSON
+            }
+            #[cfg(not(feature = "smart-search"))]
             Subject::Pet => SAME_PET,
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Subject::Person => 0,
+            Subject::Pet => 1,
         }
     }
 
@@ -258,15 +276,33 @@ pub(crate) struct Loose {
     pub embedding: Vec<f32>,
 }
 
-/// The model whose descriptions compare now: the one the newest face (or
-/// pet) was found with, and how long its descriptions are. Two models can
-/// describe at the same length (DINOv2 and DINOv3 pets do), so the length
-/// alone doesn't tell them apart; the model is `None` when the newest face's
-/// photo is waiting to be searched again.
+/// The model whose descriptions compare now, and how long its descriptions
+/// are: the one this PC searches with ([`Library::use_model`]), else the one
+/// the newest face (or pet) was found with. Two models can describe at the
+/// same length (DINOv2 and DINOv3 pets do), so the length alone doesn't tell
+/// them apart; nor does the newest face, when another PC with a bigger model
+/// shared what it found. The model is `None` when the newest face's photo
+/// is waiting to be searched again.
 fn current_model(
     conn: &rusqlite::Connection,
     subject: Subject,
+    active: Option<String>,
 ) -> Result<(Option<String>, i64), Error> {
+    if let Some(model) = active {
+        let length: Option<i64> = conn
+            .query_row(
+                &format!(
+                    "SELECT length(f.embedding) FROM faces f
+                     JOIN {} s ON s.photo_id = f.photo_id AND s.model = ?2
+                     WHERE f.kind = ?1 ORDER BY f.id DESC LIMIT 1",
+                    subject.scans()
+                ),
+                params![subject.as_str(), model],
+                |r| r.get(0),
+            )
+            .optional()?;
+        return Ok((Some(model), length.unwrap_or(0)));
+    }
     let found: Option<(i64, Option<String>)> = conn
         .query_row(
             &format!(
@@ -316,6 +352,16 @@ pub(crate) fn cluster(faces: Vec<Loose>, same: f32) -> Vec<Vec<i64>> {
 }
 
 impl Library {
+    /// Says which model this PC finds faces (or pets) with: only its
+    /// descriptions are grouped, with its own threshold.
+    pub fn use_model(&self, subject: Subject, model: &str) {
+        self.active_models.lock()[subject.index()] = Some(model.to_owned());
+    }
+
+    fn active_model(&self, subject: Subject) -> Option<String> {
+        self.active_models.lock()[subject.index()].clone()
+    }
+
     /// Photos not yet searched for faces with `model`, newest first. A RAW
     /// stacked under its JPEG and movies are skipped.
     pub fn faces_todo(&self, model: &str) -> Result<Vec<i64>, Error> {
@@ -600,15 +646,16 @@ impl Library {
         // One grouping at a time: the face and pet searches both ask.
         static GROUPING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
         let _one = GROUPING.lock();
-        let same = subject.same();
         let mut people: HashMap<i64, Centroid> = HashMap::new();
         let mut loose = Vec::new();
+        let same;
         {
             let conn = self.conn.lock();
-            // Only descriptions from the current model compare: the newest
-            // face says which that is. Faces from an earlier model wait to be
-            // searched again (keeping their person meanwhile).
-            let (model, length) = current_model(&conn, subject)?;
+            // Only descriptions from the current model compare. Faces from
+            // another model wait to be searched again (keeping their person
+            // meanwhile).
+            let (model, length) = current_model(&conn, subject, self.active_model(subject))?;
+            same = subject.same(model.as_deref());
             let mut stmt = conn.prepare(&format!(
                 "SELECT f.id, f.person_id, f.not_person, f.embedding FROM faces f
                  LEFT JOIN {} s ON s.photo_id = f.photo_id
@@ -1142,7 +1189,6 @@ impl Library {
     /// again. Names, confirmed faces and hidden strangers stay as they are.
     /// Returns how many faces were taken out of a named person.
     pub fn regroup(&self, subject: Subject) -> Result<usize, Error> {
-        let same = subject.same();
         let kind = subject.as_str();
         let doubtful = {
             let mut conn = self.conn.lock();
@@ -1153,7 +1199,8 @@ impl Library {
                    (SELECT id FROM people WHERE name IS NULL AND hidden = 0 AND kind = ?1)",
                 [kind],
             )?;
-            let (model, length) = current_model(&tx, subject)?;
+            let (model, length) = current_model(&tx, subject, self.active_model(subject))?;
+            let same = subject.same(model.as_deref());
             // Per named person: what the confirmed faces look like, and the rest.
             let mut confirmed: HashMap<i64, Centroid> = HashMap::new();
             let mut filed: Vec<(i64, i64, Vec<f32>)> = Vec::new();

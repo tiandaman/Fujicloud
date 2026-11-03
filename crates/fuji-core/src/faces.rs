@@ -35,6 +35,12 @@ const OLD_MODELS: [&str; 2] = [
     "face_recognition_sface_2021dec.onnx",
 ];
 
+/// The similarity at which two faces described by `model` are one person.
+pub fn same_person(model: Option<&str>) -> f32 {
+    let _ = model;
+    crate::people::SAME_PERSON
+}
+
 /// The detector's input size.
 const SIDE: usize = 640;
 /// Detections less sure than this are dropped (Immich's default).

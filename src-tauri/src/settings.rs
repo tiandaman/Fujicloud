@@ -41,6 +41,8 @@ pub struct Settings {
     pub faces: bool,
     /// Find cats and dogs and tell them apart (downloads two small models).
     pub pets: bool,
+    /// How big a model each analysis uses: left to the PC, or chosen.
+    pub models: fuji_core::hardware::Choice,
     /// Bumped by "Rebuild thumbnails" so the window stops reusing the old
     /// images it has cached.
     pub cache_version: u32,
@@ -61,6 +63,7 @@ impl Default for Settings {
             smart_gpu: true,
             faces: false,
             pets: false,
+            models: fuji_core::hardware::Choice::Auto,
             cache_version: 0,
         }
     }

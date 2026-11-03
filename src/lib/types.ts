@@ -137,7 +137,20 @@ export interface Settings {
   smartGpu: boolean;
   faces: boolean;
   pets: boolean;
+  /** How big a model each analysis uses: left to the PC, or chosen. */
+  models: ModelChoice;
   cacheVersion: number;
+}
+
+export type ModelChoice = 'auto' | 'standard' | 'best';
+export type ModelLevel = 'standard' | 'best';
+
+/** What this PC has, and the size of model it gets. */
+export interface Models {
+  hardware: { processors: number; memoryGb: number; gpu: string | null; gpuMemoryGb: number };
+  level: ModelLevel;
+  /** What Automatic would choose here. */
+  recommended: ModelLevel;
 }
 
 export interface Bootstrap {
@@ -151,6 +164,7 @@ export interface Bootstrap {
   backup: BackupStatus;
   faces: FacesStatus;
   pets: PetsStatus;
+  models: Models;
 }
 
 /** Someone found in the photos: named, or a group of faces waiting for a name. */

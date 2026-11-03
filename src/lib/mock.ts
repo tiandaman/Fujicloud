@@ -2,7 +2,7 @@
 // browser (`npm run dev`) without the Rust backend or a camera.
 
 import type { Api } from './api';
-import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Person, PetsStatus, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
+import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Models, Person, PetsStatus, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source } from './types';
 
 const FILMS = ['Classic Chrome', 'Classic Neg.', 'Provia', 'Velvia', 'Acros', 'Nostalgic Neg.', 'Reala Ace', 'Eterna', 'Astia', 'Pro Neg. Hi', 'Acros +R', 'Monochrome'];
 const FILM_WEIGHTS = [18, 16, 12, 9, 8, 7, 7, 5, 5, 4, 3, 2];
@@ -273,8 +273,11 @@ export function mockApi(): Api {
     smartGpu: true,
     faces: true,
     pets: true,
+    models: 'auto',
     cacheVersion: 0,
   };
+  const hardware = { processors: 16, memoryGb: 31.8, gpu: 'NVIDIA GeForce RTX 4070 Laptop GPU', gpuMemoryGb: 8 };
+  const models = (): Models => ({ hardware, recommended: 'best', level: settings.models === 'auto' ? 'best' : settings.models });
   let backup: BackupStatus = {
     target: settings.backupTo,
     lastBackedUp: Date.now() / 1000 - 2.2 * 3600,
@@ -389,7 +392,7 @@ export function mockApi(): Api {
 
   return {
     native: false,
-    bootstrap: async (): Promise<Bootstrap> => ({ version: '0.2.0', sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup, faces, pets }),
+    bootstrap: async (): Promise<Bootstrap> => ({ version: '0.2.0', sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup, faces, pets, models: models() }),
     listPhotos: async () => photos,
     listSources: async () => sources,
     async photoDetail(id) {
@@ -650,6 +653,11 @@ export function mockApi(): Api {
       };
       setTimeout(() => step(1), 50);
       return smart;
+    },
+    async setModels(choice) {
+      await delay(150);
+      settings = { ...settings, models: choice };
+      return models();
     },
     async setSmartGpu(enabled) {
       smart = { ...smart, useGpu: enabled, runningOn: smart.runningOn ? (enabled ? 'GPU' : 'CPU') : null, downloadMb: enabled ? 300 : 210 };

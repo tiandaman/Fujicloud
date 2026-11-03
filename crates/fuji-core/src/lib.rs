@@ -17,6 +17,7 @@ pub mod faces;
 pub mod ffmpeg;
 pub mod fuji;
 pub mod geo;
+pub mod hardware;
 pub mod hdr;
 pub mod ingest;
 pub mod meta;

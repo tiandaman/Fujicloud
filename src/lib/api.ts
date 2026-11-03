@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, DuplicateGroup, FaceInPhoto, FacesStatus, Person, PetsStatus, ExportPreset, Exported, Detail, Hit, Label, Photo, RecipeRow, Settings, SmartStatus, Source, Subject } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -79,6 +79,8 @@ export interface Api {
   smartStatus(): Promise<SmartStatus>;
   setSmartSearch(enabled: boolean): Promise<SmartStatus>;
   setSmartGpu(enabled: boolean): Promise<SmartStatus>;
+  /** Chooses how big a model each analysis uses; a change analyses photos again. */
+  setModels(choice: ModelChoice): Promise<Models>;
   searchSmart(query: string): Promise<Hit[]>;
   similarPhotos(id: number): Promise<Hit[]>;
   pickFolder(title: string): Promise<string | null>;
@@ -169,6 +171,7 @@ function tauriApi(): Api {
     smartStatus: () => invoke('smart_status'),
     setSmartSearch: (enabled) => invoke('set_smart_search', { enabled }),
     setSmartGpu: (enabled) => invoke('set_smart_gpu', { enabled }),
+    setModels: (choice) => invoke('set_models', { choice }),
     searchSmart: (query) => invoke('search_smart', { query }),
     similarPhotos: (id) => invoke('similar_photos', { id }),
     async pickFolder(title) {

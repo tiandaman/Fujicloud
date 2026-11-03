@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use fuji_core::db::{AlbumRow, PhotoDetail, PhotoRow, RecipeRow, SourceRow, Touched};
+use fuji_core::hardware::{Choice, Hardware, Level};
 use fuji_core::people::{FaceRow, PersonRow, Subject};
 use fuji_core::thumbs::{self, Size};
 use fuji_core::{Kind, Library, discard, dupes, export, ingest, meta, scan, xmp};
@@ -40,6 +41,15 @@ pub struct AppState {
     pub backup: backup::Backup,
     pub faces: faces::Faces,
     pub pets: pets::Pets,
+    /// The processors, memory and graphics card found at start.
+    pub hardware: Hardware,
+}
+
+impl AppState {
+    /// How big a model each analysis uses on this PC.
+    pub fn level(&self) -> Level {
+        self.hardware.level(self.settings.read().models)
+    }
 }
 
 type Shared<'a> = State<'a, Arc<AppState>>;
@@ -81,6 +91,25 @@ struct Bootstrap {
     backup: backup::Status,
     faces: faces::Status,
     pets: pets::Status,
+    models: Models,
+}
+
+/// The PC's hardware and the size of model it gets.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Models {
+    hardware: Hardware,
+    level: Level,
+    /// What Automatic would choose here.
+    recommended: Level,
+}
+
+fn models(state: &AppState) -> Models {
+    Models {
+        hardware: state.hardware.clone(),
+        level: state.level(),
+        recommended: state.hardware.level(Choice::Auto),
+    }
 }
 
 // Off the window's own thread, like every command the window waits on as it
@@ -104,6 +133,7 @@ fn bootstrap(app: AppHandle, state: Shared) -> CmdResult<Bootstrap> {
         backup: state.backup.status(&state),
         faces: state.faces.status(&state),
         pets: state.pets.status(&state),
+        models: models(&state),
     })
 }
 
@@ -1023,6 +1053,46 @@ async fn reidentify(
     Ok(())
 }
 
+/// Chooses how big a model each analysis uses (or leaves it to the PC).
+/// A different size describes photos differently, so they're analysed again
+/// in the background; names stay, matched to where the faces are.
+#[tauri::command]
+fn set_models(app: AppHandle, state: Shared, choice: Choice) -> CmdResult<Models> {
+    let before = state.level();
+    {
+        let mut settings = state.settings.write();
+        settings.models = choice;
+        settings.save(&state.settings_path).map_err(err)?;
+    }
+    let level = state.level();
+    if level != before {
+        log::info!("model size {before:?} -> {level:?}");
+        use_models(&state);
+        state.smart.reset_device();
+        state.faces.unload();
+        state.pets.unload();
+        let _ = app.emit("smart", state.smart.status(&state));
+        let _ = app.emit("faces", state.faces.status(&state));
+        let _ = app.emit("pets", state.pets.status(&state));
+        let _ = app.emit("people-changed", ());
+        smart::spawn(app.clone(), state.inner().clone());
+        faces::spawn(app.clone(), state.inner().clone());
+        pets::spawn(app, state.inner().clone());
+    }
+    Ok(models(&state))
+}
+
+/// Tells the library which face and pet models this PC groups with.
+fn use_models(state: &AppState) {
+    let level = state.level();
+    state
+        .lib
+        .use_model(fuji_core::people::Subject::Person, faces::model_id(level));
+    state
+        .lib
+        .use_model(fuji_core::people::Subject::Pet, pets::model_id(level));
+}
+
 /// Switches photo analysis between the graphics card and the CPU.
 #[tauri::command]
 fn set_smart_gpu(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<smart::Status> {
@@ -1238,7 +1308,14 @@ pub fn run() {
                 backup: backup::Backup::new(data.join("backup.json")),
                 faces: faces::Faces::default(),
                 pets: pets::Pets::default(),
+                hardware: Hardware::detect(),
             });
+            log::info!(
+                "{:?}: model size {:?}",
+                state.hardware,
+                state.level()
+            );
+            use_models(&state);
 
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
@@ -1325,6 +1402,7 @@ pub fn run() {
             remove_from_person,
             move_to_person,
             delete_person,
+            set_models,
             regroup_people,
             reidentify,
             merge_people,

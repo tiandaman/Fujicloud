@@ -89,6 +89,11 @@ impl Pets {
         Ok(models)
     }
 
+    /// Lets the models go (another size is wanted); loaded again when needed.
+    pub fn unload(&self) {
+        *self.models.lock() = None;
+    }
+
     /// Lets photos that couldn't be read be tried again.
     pub fn forget_failures(&self) {
         self.failed.lock().clear();
@@ -244,4 +249,10 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         (s.done, s.total) = (total, total);
     });
     Ok(())
+}
+
+/// The model photos are searched with at this size.
+pub fn model_id(level: fuji_core::hardware::Level) -> &'static str {
+    let _ = level;
+    MODEL_ID
 }

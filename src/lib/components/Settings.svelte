@@ -2,7 +2,7 @@
   import { api } from '../api';
   import { formatAgo, formatBytes, formatCount, plural } from '../format';
   import { store } from '../store.svelte';
-  import type { CacheInfo, Settings, Subject } from '../types';
+  import type { CacheInfo, ModelChoice, Settings, Subject } from '../types';
   import Icon from './Icon.svelte';
 
   let draft = $state<Settings>(structuredClone($state.snapshot(store.settings!)));
@@ -264,6 +264,38 @@
         </div>
         <input type="checkbox" class="switch" bind:checked={draft.writeXmp} />
       </label>
+    </section>
+
+    <section>
+      <h3><Icon name="stack" size={16} /> Analysis models</h3>
+      <p class="hint">
+        Smart search, faces and pets can use bigger models on a PC with power to spare: they find photos from a description far more often
+        and tell people and pets apart better, but take about 2 GB more to download and longer to analyse each photo.
+      </p>
+      {#if store.models}
+        {@const hw = store.models.hardware}
+        <div class="row">
+          <div class="grow">
+            <span>Model size</span>
+            <small class="faint">
+              This PC: {plural(hw.processors, 'processor')} · {Math.round(hw.memoryGb)} GB memory{hw.gpu ? ` · ${hw.gpu}${hw.gpuMemoryGb >= 1 ? ` (${Math.round(hw.gpuMemoryGb)} GB)` : ''}` : ''}.
+              Automatic uses {store.models.recommended === 'best' ? 'the bigger models here' : 'the standard models here'}.
+            </small>
+          </div>
+          <div class="seg" role="radiogroup" aria-label="Model size">
+            {#each [['auto', 'Automatic'], ['standard', 'Standard'], ['best', 'Best']] as [value, label] (value)}
+              <button
+                role="radio"
+                aria-checked={(store.settings?.models ?? 'auto') === value}
+                class:on={(store.settings?.models ?? 'auto') === value}
+                onclick={() => store.setModels(value as ModelChoice)}
+              >
+                {label}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
     </section>
 
     <section>
@@ -703,6 +735,26 @@
   }
   .inline.wrap {
     flex-wrap: wrap;
+  }
+  .seg {
+    display: flex;
+    flex: none;
+    padding: 2px;
+    border-radius: 9px;
+    background: var(--bg-input);
+    box-shadow: inset 0 0 0 0.5px var(--border);
+  }
+  .seg button {
+    height: 26px;
+    padding: 0 11px;
+    border-radius: 7px;
+    color: var(--text-2);
+    font-weight: 500;
+  }
+  .seg button.on {
+    background: rgba(255, 255, 255, 0.14);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
   .btn.ghost {
     background: transparent;
