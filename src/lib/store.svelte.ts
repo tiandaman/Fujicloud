@@ -511,6 +511,7 @@ class Store {
       this.scan = progress.phase === 'done' ? null : { label, progress };
     });
     await api.listen('scan-done', () => (this.scan = null));
+    await api.listen<number>('pets-learned', (n) => this.toast(`Learned from your names: ${plural(n, 'pet photo')} sorted again`));
     await api.listen<number>('sync-review', async (n) => {
       const before = this.review.length;
       await this.loadReview();

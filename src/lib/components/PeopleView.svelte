@@ -284,8 +284,9 @@
         </div>
         <p class="hint">
           {#if pets}
-            Name a pet and Fujicloud finds them in new photos too. Using a name that's already taken adds the photos to that pet. Not yours?
-            The × hides them, and their new photos stay hidden too.
+            Name a pet and Fujicloud finds them in new photos too, and learns from every name and correction: the rest are sorted again
+            by what your named pets look like, and photos too close to call between two look-alikes are asked about here instead of guessed.
+            Using a name that's already taken adds the photos to that pet. Not yours? The × hides them, and their new photos stay hidden too.
           {:else}
             Name a face and Fujicloud finds them in new photos too. Using a name that's already taken adds the photos to that person. Don't
             know them? The × on their face hides them, and their new photos stay hidden too.

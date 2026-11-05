@@ -245,3 +245,51 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
     });
     Ok(())
 }
+
+/// Learns from a name or a correction just given: a moment later (so a run
+/// of corrections is one pass), every pet picture nobody confirmed is filed
+/// again against what each named pet looks like in the pictures someone did
+/// name or confirm. Photos whose pet changed have their sidecars saved.
+pub fn learn_soon(app: &AppHandle, state: &Arc<AppState>) {
+    use std::sync::atomic::AtomicU64;
+    static ASKED: AtomicU64 = AtomicU64::new(0);
+    if !state.settings.read().pets {
+        return;
+    }
+    let ticket = ASKED.fetch_add(1, Ordering::AcqRel) + 1;
+    let (app, state) = (app.clone(), state.clone());
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(800));
+        if ASKED.load(Ordering::Acquire) != ticket {
+            return; // a later correction will do it
+        }
+        let pet_of = |state: &AppState| -> std::collections::HashMap<i64, Option<String>> {
+            state
+                .lib
+                .people()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| p.kind == Subject::Pet)
+                .flat_map(|p| p.photo_ids.into_iter().map(move |id| (id, p.name.clone())))
+                .collect()
+        };
+        let before = pet_of(&state);
+        match fuji_core::guard(|| state.lib.learn_named(Subject::Pet)) {
+            Ok(0) => {}
+            Ok(n) => {
+                log::info!("learned from names: {n} pet pictures filed again");
+                let after = pet_of(&state);
+                let changed: Vec<i64> = before
+                    .keys()
+                    .chain(after.keys())
+                    .filter(|id| before.get(id) != after.get(id))
+                    .copied()
+                    .collect();
+                crate::sidecars::save(&changed);
+                let _ = app.emit("people-changed", ());
+                let _ = app.emit("pets-learned", n);
+            }
+            Err(e) => log::warn!("learning from pet names: {e}"),
+        }
+    });
+}

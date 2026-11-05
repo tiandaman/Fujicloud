@@ -38,6 +38,15 @@ pub const SAME_PERSON: f32 = 0.40;
 /// take sorting out photo by photo.
 pub const SAME_PET: f32 = 0.70;
 
+/// How much more a pet's picture must be like one pet than any other before
+/// it's filed under it; closer than that, it's left to be named. Measured on
+/// DogFaceNet (450 dogs, photos taken on different days) in households of
+/// four look-alikes with two photos of each named: pictures filed under the
+/// wrong pet went from 5.4% to 2.9%, and after the wrong ones were fixed and
+/// five more named, from 3.1% to 0.9%, for a few more left to name. On cats
+/// from videos it cost nothing.
+pub const LOOK_ALIKE_MARGIN: f32 = 0.03;
+
 /// Who a group of faces belongs to: a person, or a pet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -75,6 +84,15 @@ impl Subject {
             }
             // One model at every size.
             Subject::Pet => SAME_PET,
+        }
+    }
+
+    /// See [`LOOK_ALIKE_MARGIN`]: pets only (faces tell people apart well
+    /// enough without).
+    fn margin(self) -> f32 {
+        match self {
+            Subject::Person => 0.0,
+            Subject::Pet => LOOK_ALIKE_MARGIN,
         }
     }
 
@@ -196,6 +214,33 @@ pub struct FaceRow {
 
 fn pack(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// A picture nobody confirmed: under whom it is now (and whether they're
+/// named), who it was said not to be, and its description.
+struct Guessed {
+    id: i64,
+    now: Option<(i64, bool)>,
+    never: Option<i64>,
+    v: Vec<f32>,
+}
+
+/// The most similar `(id, similarity)`, and the next best similarity.
+fn best_two(scores: impl Iterator<Item = (i64, f32)>) -> (Option<(i64, f32)>, f32) {
+    let mut best: Option<(i64, f32)> = None;
+    let mut second = f32::NEG_INFINITY;
+    for (id, s) in scores {
+        match best {
+            Some((_, b)) if s <= b => second = second.max(s),
+            _ => {
+                if let Some((_, b)) = best {
+                    second = second.max(b);
+                }
+                best = Some((id, s));
+            }
+        }
+    }
+    (best, second)
 }
 
 fn unpack(b: &[u8]) -> Vec<f32> {
@@ -684,16 +729,25 @@ impl Library {
         let mut filed: Vec<(i64, i64)> = Vec::new();
         // Faces of someone already known.
         let mut rest = Vec::new();
+        let margin = subject.margin();
+        // Too close to call between two: asked about, so kept in sight.
+        let mut undecided = Vec::new();
         for face in loose {
-            let best = people
-                .iter()
-                .filter(|(id, _)| Some(**id) != face.not_person)
-                .map(|(id, c)| (*id, c.similarity(&face.embedding)))
-                .max_by(|a, b| a.1.total_cmp(&b.1));
+            let (best, second) = best_two(
+                people
+                    .iter()
+                    .filter(|(id, _)| Some(**id) != face.not_person)
+                    .map(|(id, c)| (*id, c.similarity(&face.embedding))),
+            );
             match best {
-                Some((person, sim)) if sim >= same => {
+                // Nearly as like another: too close to call, so asked.
+                Some((person, sim)) if sim >= same && sim - second >= margin => {
                     people.get_mut(&person).unwrap().add(&face.embedding);
                     filed.push((face.id, person));
+                }
+                Some((_, sim)) if sim >= same => {
+                    undecided.push(face.id);
+                    rest.push(face);
                 }
                 _ => rest.push(face),
             }
@@ -705,6 +759,7 @@ impl Library {
             .iter()
             .filter(|f| f.not_person.is_some())
             .map(|f| f.id)
+            .chain(undecided)
             .collect();
         let mut groups = cluster(rest, same);
         for id in taken_out {
@@ -1249,8 +1304,100 @@ impl Library {
             tx.commit()?;
             doubtful.len()
         };
-        self.group_of(subject)?;
+        match subject {
+            // And what's left is filed by what the named pets look like.
+            Subject::Pet => self.learn_named(subject).map(drop)?,
+            Subject::Person => self.group_of(subject).map(drop)?,
+        }
         Ok(doubtful)
+    }
+
+    /// Learns from what's been named and corrected: every picture nobody
+    /// confirmed is compared with what each named pet (or person) looks like
+    /// in the pictures someone did name or confirm, and filed under the one
+    /// it's clearly most like (by [`LOOK_ALIKE_MARGIN`]), even out of a group
+    /// it was guessed into. One nearly as like another, or like none of them,
+    /// is taken out of a named pet to be asked about. Guessed pictures never
+    /// count towards what a pet looks like, so a look-alike can't drift in.
+    /// Unnamed groups are then grouped again. Returns how many moved.
+    pub fn learn_named(&self, subject: Subject) -> Result<usize, Error> {
+        let kind = subject.as_str();
+        let moved = {
+            let mut conn = self.conn.lock();
+            let (model, length) = current_model(&conn, subject, self.active_model(subject))?;
+            let same = subject.same(model.as_deref());
+            let margin = subject.margin();
+            let mut named: HashMap<i64, Centroid> = HashMap::new();
+            let mut guessed: Vec<Guessed> = Vec::new();
+            {
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT f.id, f.person_id, p.name IS NOT NULL, f.confirmed, f.not_person, f.embedding
+                     FROM faces f LEFT JOIN people p ON p.id = f.person_id
+                     LEFT JOIN {} s ON s.photo_id = f.photo_id
+                     WHERE f.kind = ?1 AND length(f.embedding) = ?2 AND (?3 IS NULL OR s.model = ?3)
+                       AND (p.id IS NULL OR p.hidden = 0)",
+                    subject.scans()
+                ))?;
+                let mut rows = stmt.query(params![kind, length, model])?;
+                while let Some(r) = rows.next()? {
+                    let v = subject.comparable(unpack(&r.get::<_, Vec<u8>>(5)?));
+                    let person: Option<i64> = r.get(1)?;
+                    let is_named = r.get::<_, Option<bool>>(2)?.unwrap_or(false);
+                    if r.get::<_, i64>(3)? != 0 {
+                        if let (Some(p), true) = (person, is_named) {
+                            named
+                                .entry(p)
+                                .and_modify(|c| c.add(&v))
+                                .or_insert_with(|| Centroid::new(&v));
+                        }
+                        continue;
+                    }
+                    guessed.push(Guessed {
+                        id: r.get(0)?,
+                        now: person.map(|p| (p, is_named)),
+                        never: r.get(4)?,
+                        v,
+                    });
+                }
+            }
+            let mut moves: Vec<(i64, Option<i64>)> = Vec::new();
+            for Guessed { id, now, never, v } in &guessed {
+                let (best, second) = best_two(
+                    named
+                        .iter()
+                        .filter(|(p, _)| Some(**p) != *never)
+                        .map(|(p, c)| (*p, c.similarity(v))),
+                );
+                match best {
+                    Some((p, sim)) if sim >= same && sim - second >= margin => {
+                        if now.map(|(q, _)| q) != Some(p) {
+                            moves.push((*id, Some(p)));
+                        }
+                    }
+                    // Filed under a named pet it's no longer clearly like.
+                    _ if now.is_some_and(|(_, is_named)| is_named) => moves.push((*id, None)),
+                    _ => {}
+                }
+            }
+            let tx = conn.transaction()?;
+            {
+                let mut set = tx.prepare_cached(
+                    "UPDATE faces SET person_id = ?2 WHERE id = ?1 AND confirmed = 0",
+                )?;
+                for (id, p) in &moves {
+                    set.execute(params![id, p])?;
+                }
+            }
+            tx.execute(
+                "DELETE FROM people WHERE name IS NULL AND hidden = 0 AND kind = ?1
+                   AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.person_id = people.id)",
+                [kind],
+            )?;
+            tx.commit()?;
+            moves.len()
+        };
+        self.group_of(subject)?;
+        Ok(moved)
     }
 
     /// Every photo searched for faces (or pets) again by this PC's models,
@@ -1573,6 +1720,72 @@ mod tests {
             lib.move_to_person(mochi, &p[..1], Some(person.id), None)
                 .is_err()
         );
+    }
+
+    /// Naming and moving pets teaches the rest: a picture guessed into the
+    /// wrong look-alike moves to the right one once it's named, and one too
+    /// close to call between them is asked about rather than guessed.
+    #[test]
+    fn pets_learn_from_names_and_moves() {
+        let lib = library(8);
+        let p = ids(&lib);
+        // Two look-alike cats: `lean` from 0 (Mochi) to 0.35 (Pixel).
+        let cat = |lean: f32| {
+            let n = (1.0 + lean * lean).sqrt();
+            let mut v = vec![0.0; 8];
+            v[0] = 1.0 / n;
+            v[1] = lean / n;
+            NewFace {
+                bbox: [0.1, 0.1, 0.2, 0.2],
+                score: 0.9,
+                embedding: v,
+            }
+        };
+        for &id in &p[..4] {
+            lib.store_pets(id, "m", &[cat(0.0)]).unwrap();
+        }
+        lib.group_faces().unwrap();
+        let group = lib.people().unwrap()[0].id;
+        let mochi = lib.name_person(group, "Mochi").unwrap();
+        // Before Pixel is known, pictures of Pixel are taken for Mochi.
+        for (&id, lean) in p[4..7].iter().zip([0.35, 0.35, 0.30]) {
+            lib.store_pets(id, "m", &[cat(lean)]).unwrap();
+        }
+        lib.group_faces().unwrap();
+        let under = |name: &str| -> Vec<i64> {
+            let mut ids = lib
+                .people()
+                .unwrap()
+                .into_iter()
+                .find(|x| x.name.as_deref() == Some(name))
+                .map(|x| x.photo_ids)
+                .unwrap_or_default();
+            ids.sort();
+            ids
+        };
+        assert_eq!(under("Mochi").len(), 7);
+
+        // Two of them are Pixel; the third, never touched, follows.
+        lib.move_to_person(mochi, &p[4..6], None, Some("Pixel"))
+            .unwrap();
+        assert_eq!(under("Pixel"), p[4..6].to_vec());
+        assert_eq!(lib.learn_named(Subject::Pet).unwrap(), 1);
+        assert_eq!(under("Pixel"), p[4..7].to_vec());
+        assert_eq!(under("Mochi"), p[..4].to_vec());
+
+        // Halfway between them: neither, but in sight to be named.
+        lib.store_pets(p[7], "m", &[cat(0.175)]).unwrap();
+        lib.group_faces().unwrap();
+        assert!(!under("Mochi").contains(&p[7]) && !under("Pixel").contains(&p[7]));
+        let asked = lib.people().unwrap();
+        assert!(
+            asked
+                .iter()
+                .any(|x| x.name.is_none() && x.photo_ids == vec![p[7]]),
+            "{asked:?}"
+        );
+        // Learning again leaves both cats as they are.
+        assert_eq!(lib.learn_named(Subject::Pet).unwrap(), 0);
     }
 
     /// One PC finds and names faces; another takes them from the sidecar

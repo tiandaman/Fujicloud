@@ -921,12 +921,13 @@ async fn faces_in(state: Shared<'_>, id: i64) -> CmdResult<Vec<FaceRow>> {
 
 /// Names a person or unnamed group; a name already in use merges the two.
 #[tauri::command]
-async fn name_person(state: Shared<'_>, id: i64, name: String) -> CmdResult<i64> {
+async fn name_person(app: AppHandle, state: Shared<'_>, id: i64, name: String) -> CmdResult<i64> {
     if name.trim().is_empty() {
         return Err("A name can't be empty".into());
     }
     let person = state.lib.name_person(id, &name).map_err(err)?;
     save_person_sidecars(&state, person);
+    pets::learn_soon(&app, state.inner());
     Ok(person)
 }
 
@@ -941,12 +942,13 @@ fn save_person_sidecars(state: &AppState, person: i64) {
 
 /// Says who one face is.
 #[tauri::command]
-async fn name_face(state: Shared<'_>, id: i64, name: String) -> CmdResult<i64> {
+async fn name_face(app: AppHandle, state: Shared<'_>, id: i64, name: String) -> CmdResult<i64> {
     if name.trim().is_empty() {
         return Err("A name can't be empty".into());
     }
     let person = state.lib.name_face(id, &name).map_err(err)?;
     save_person_sidecars(&state, person);
+    pets::learn_soon(&app, state.inner());
     Ok(person)
 }
 
@@ -960,7 +962,9 @@ async fn remove_from_person(
 ) -> CmdResult<()> {
     state.lib.remove_from_person(id, &photo_ids).map_err(err)?;
     sidecars::save(&photo_ids);
-    faces::group(&app, &state)
+    faces::group(&app, &state)?;
+    pets::learn_soon(&app, state.inner());
+    Ok(())
 }
 
 /// "Not this person, it's that one": moves `from`'s faces in these photos to
@@ -980,14 +984,21 @@ async fn move_to_person(
         .map_err(err)?;
     sidecars::save(&photo_ids);
     faces::group(&app, &state)?;
+    pets::learn_soon(&app, state.inner());
     Ok(person)
 }
 
 /// One person found as several: moves `from` into `into`.
 #[tauri::command]
-async fn merge_people(state: Shared<'_>, from: Vec<i64>, into: i64) -> CmdResult<i64> {
+async fn merge_people(
+    app: AppHandle,
+    state: Shared<'_>,
+    from: Vec<i64>,
+    into: i64,
+) -> CmdResult<i64> {
     let person = state.lib.merge_people(&from, into).map_err(err)?;
     save_person_sidecars(&state, person);
+    pets::learn_soon(&app, state.inner());
     Ok(person)
 }
 
