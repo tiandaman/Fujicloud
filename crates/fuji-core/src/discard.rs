@@ -43,9 +43,11 @@ pub fn find_in_trash(root: &Path, file: &Path, size: Option<u64>) -> Option<Path
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
+    // Names are given out in order, so the first one free ends the search
+    // (each look is a round trip to the share).
     std::iter::once(at.clone())
         .chain((2..100).map(|n| at.with_file_name(format!("{stem} ({n}){ext}"))))
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?, p)))
+        .map_while(|p| Some((std::fs::metadata(&p).ok()?, p)))
         .filter(|(md, _)| md.is_file() && size.is_none_or(|s| md.len() == s))
         .max_by_key(|(md, _)| md.modified().ok())
         .map(|(_, p)| p)

@@ -30,6 +30,22 @@ pub fn start(app: tauri::AppHandle, state: Arc<AppState>) {
                 if !state.settings.read().write_xmp {
                     continue;
                 }
+                // A share that's switched off would be waited on file by
+                // file: those stay owed, and are saved when it's back.
+                let (ids, away): (Vec<i64>, Vec<i64>) = ids.into_iter().partition(|id| {
+                    state
+                        .lib
+                        .file_info(*id)
+                        .is_ok_and(|f| !state.reach.is_offline(f.source_id))
+                });
+                if !away.is_empty()
+                    && let Err(e) = state.lib.mark_unsaved(&away, false)
+                {
+                    log::warn!("sidecars: {e}");
+                }
+                if ids.is_empty() {
+                    continue;
+                }
                 match fuji_core::guard(|| scan::save_sidecars(&state.lib, &ids)) {
                     Ok(saved) => {
                         if saved.failed > 0 {

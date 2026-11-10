@@ -5,7 +5,12 @@
   import type { Marks, SyncChange } from '../types';
   import Icon from './Icon.svelte';
 
-  const changes = $derived(store.review);
+  // A folder moved or tidied on another PC can mean thousands of changes:
+  // they're shown, and decided, a page at a time.
+  const PAGE = 300;
+  const changes = $derived(store.review.slice(0, PAGE));
+  const total = $derived(Math.max(store.reviewTotal, changes.length));
+  const more = $derived(total - changes.length);
   const deleted = $derived(changes.filter((c) => c.removed));
   const changed = $derived(changes.filter((c) => !c.removed));
 
@@ -26,6 +31,15 @@
     const reject: number[] = [];
     for (const c of changes) (kept(c) ? reject : apply).push(c.id);
     store.resolveReview(apply, reject);
+  }
+
+  async function takeEverything() {
+    const ok = await store.ask(
+      `Take all ${total.toLocaleString()} changes?`,
+      'Every change from the other PC is applied here, the ones not shown too: photos deleted there are removed from this library as well.',
+      'Take all',
+    );
+    if (ok) store.resolveReview([], [], true);
   }
 
   function close() {
@@ -65,12 +79,16 @@
   <header>
     <h2 id="review-title"><Icon name="sync" size={17} /> Changes from other PCs</h2>
     <p class="hint">
-      Another PC (or Lightroom) changed {plural(changes.length, 'photo')} in the library. Nothing here has changed yet: choose what to take.
+      Another PC (or Lightroom) changed {plural(total, 'photo')} in the library. Nothing here has changed yet: choose what to take.
       Kept photos stay as they are on this PC.
     </p>
     <div class="all">
       <button class="btn subtle" onclick={() => setAll(false)}>Take all</button>
       <button class="btn subtle" onclick={() => setAll(true)}>Keep all as they are</button>
+      {#if more > 0}
+        <span class="faint paging">Showing the first {changes.length} of {total.toLocaleString()}. Done decides these; the rest come next.</span>
+        <button class="btn subtle" onclick={takeEverything}>Take all {total.toLocaleString()}…</button>
+      {/if}
     </div>
   </header>
 
@@ -189,7 +207,13 @@
   }
   .all {
     display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
+  }
+  .paging {
+    margin-left: auto;
+    font-size: 11.5px;
   }
   .list {
     flex: 1;

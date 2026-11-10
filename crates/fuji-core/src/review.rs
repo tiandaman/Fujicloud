@@ -231,6 +231,21 @@ impl Library {
 
     /// Every held change, newest photo first.
     pub fn held_changes(&self) -> Result<Vec<Change>, Error> {
+        Ok(self.held_page(usize::MAX)?.0)
+    }
+
+    /// The photos with a held change (both halves of a pair).
+    pub fn held_ids(&self) -> Result<Vec<i64>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached("SELECT photo_id FROM sync_review")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The first `limit` held changes, newest photo first, and how many
+    /// there are in all. (Each one shown is looked up in the library
+    /// folder's trash, which on a network share takes a moment.)
+    pub fn held_page(&self, limit: usize) -> Result<(Vec<Change>, usize), Error> {
         let rows: Vec<(Change, Marks)> = {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(
@@ -293,6 +308,8 @@ impl Library {
                 .cmp(&a.taken_at)
                 .then_with(|| a.name.cmp(&b.name))
         });
+        let total = kept.len();
+        kept.truncate(limit);
         let roots = self.roots()?;
         let mut out = Vec::with_capacity(kept.len());
         for (mut change, after) in kept {
@@ -304,7 +321,7 @@ impl Library {
             }
             out.push(change);
         }
-        Ok(out)
+        Ok((out, total))
     }
 
     /// Applies these held changes (`apply`) and rejects those (`reject`).

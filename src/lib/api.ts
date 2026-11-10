@@ -53,8 +53,9 @@ export interface Api {
   /** Copies of the same file, and of the same picture saved again. */
   findDuplicates(): Promise<DuplicateGroup[]>;
   /** Changes other PCs made, waiting to be applied or rejected. */
-  syncReview(): Promise<SyncChange[]>;
-  resolveSyncReview(apply: number[], reject: number[]): Promise<SyncResolved>;
+  syncReview(): Promise<{ changes: SyncChange[]; total: number }>;
+  /** With `everything`, takes every change waiting, the ones not listed too. */
+  resolveSyncReview(apply: number[], reject: number[], everything?: boolean): Promise<SyncResolved>;
   /** The thumbnail of a photo by id (one that may be out of the grid). */
   thumbUrlById(id: number): string;
   /** Moves photos (with their twins and sidecars) to the Recycle Bin. */
@@ -146,7 +147,7 @@ function tauriApi(): Api {
     faceUrl: (id) => `${base}/f/${id}?v=${cacheVersion.n}`,
     findDuplicates: () => invoke('find_duplicates'),
     syncReview: () => invoke('sync_review'),
-    resolveSyncReview: (apply, reject) => invoke('resolve_sync_review', { apply, reject }),
+    resolveSyncReview: (apply, reject, everything = false) => invoke('resolve_sync_review', { apply, reject, everything }),
     deletePhotos: (ids) => invoke('delete_photos', { ids }),
     exportPhotos: (ids, preset, location, folder) => invoke('export_photos', { ids, preset, location, folder }),
     async dragOut(ids) {

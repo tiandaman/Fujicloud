@@ -1172,13 +1172,23 @@ async fn similar_photos(state: Shared<'_>, id: i64) -> CmdResult<Vec<Hit>> {
 
 // ---- changes from other PCs -----------------------------------------------------
 
-/// Changes other PCs made, waiting to be applied or rejected.
-#[tauri::command(async)]
-fn sync_review(state: Shared) -> CmdResult<Vec<fuji_core::review::Change>> {
-    state.lib.held_changes().map_err(err)
+#[derive(Serialize)]
+struct SyncReview {
+    /// The first few hundred, newest photo first.
+    changes: Vec<fuji_core::review::Change>,
+    /// How many are waiting in all.
+    total: usize,
 }
 
-/// Applies the changes in `apply` and rejects those in `reject`: a rejected
+/// Changes other PCs made, waiting to be applied or rejected.
+#[tauri::command(async)]
+fn sync_review(state: Shared) -> CmdResult<SyncReview> {
+    let (changes, total) = state.lib.held_page(300).map_err(err)?;
+    Ok(SyncReview { changes, total })
+}
+
+/// Applies the changes in `apply` (or, with `everything`, every one waiting)
+/// and rejects those in `reject`: a rejected
 /// change keeps this PC's marks, a rejected deletion puts the file back
 /// from the library folder's trash.
 #[tauri::command]
@@ -1187,9 +1197,16 @@ async fn resolve_sync_review(
     state: Shared<'_>,
     apply: Vec<i64>,
     reject: Vec<i64>,
+    everything: bool,
 ) -> CmdResult<fuji_core::review::Resolved> {
     let state = state.inner().clone();
     let done = tauri::async_runtime::spawn_blocking(move || {
+        // "Take all", the ones not shown too.
+        let apply = if everything {
+            state.lib.held_ids().map_err(err)?
+        } else {
+            apply
+        };
         let done = state.lib.resolve_held(&apply, &reject).map_err(err)?;
         log::info!("changes from other PCs: {done:?}");
         CmdResult::Ok(done)

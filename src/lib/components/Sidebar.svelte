@@ -362,7 +362,7 @@
     {#if store.review.length}
       <button class="backup-line review" title="Look at what another PC changed before it's applied here" onclick={() => (store.reviewOpen = true)}>
         <Icon name="sync" size={13} />
-        <span class="truncate">{plural(store.review.length, 'change')} from other PCs</span>
+        <span class="truncate">{plural(store.reviewTotal, 'change')} from other PCs</span>
         <span class="go">Review</span>
       </button>
     {/if}

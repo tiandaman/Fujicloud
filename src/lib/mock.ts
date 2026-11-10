@@ -612,9 +612,10 @@ export function mockApi(): Api {
     },
     faceUrl: (id) => avatar(Math.floor(id / 1000) || id),
     async syncReview() {
-      return review;
+      return { changes: review, total: review.length };
     },
-    async resolveSyncReview(apply, reject) {
+    async resolveSyncReview(apply, reject, everything) {
+      if (everything) apply = review.map((c) => c.id);
       const done: SyncResolved = { applied: 0, kept: 0, restored: 0, failed: [] };
       for (const c of review.filter((c) => apply.includes(c.id) || reject.includes(c.id))) {
         const take = apply.includes(c.id);

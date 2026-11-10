@@ -135,6 +135,8 @@ class Store {
   exportDialog = $state.raw<{ ids: number[] } | null>(null);
   /** Changes other PCs made, waiting for a look; and whether it's open. */
   review = $state.raw<SyncChange[]>([]);
+  /** How many are waiting in all (`review` is the first few hundred). */
+  reviewTotal = $state(0);
   reviewOpen = $state(false);
   /** "Merge with…": who to merge `id` into. */
   /** Merging a person into another, or with `photos`, moving those photos to someone. */
@@ -510,13 +512,26 @@ class Store {
     await api.listen<[string, ScanProgress]>('scan', ([label, progress]) => {
       this.scan = progress.phase === 'done' ? null : { label, progress };
     });
-    await api.listen('scan-done', () => (this.scan = null));
+    // Other PCs' changes are found by a scan. Besides the one at start,
+    // look again when the window comes back into use after a while, so two
+    // PCs left open still see each other's stars, albums and deletions.
+    let lastScan = Date.now();
+    await api.listen('scan-done', () => {
+      this.scan = null;
+      lastScan = Date.now();
+    });
+    window.addEventListener('focus', () => {
+      if (!this.scan && this.sources.length && Date.now() - lastScan > 15 * 60_000) {
+        lastScan = Date.now();
+        api.rescan();
+      }
+    });
     await api.listen<number>('pets-learned', (n) => this.toast(`Learned from your names: ${plural(n, 'pet photo')} sorted again`));
-    await api.listen<number>('sync-review', async (n) => {
-      const before = this.review.length;
+    await api.listen<number>('sync-review', async () => {
+      const before = this.reviewTotal;
       await this.loadReview();
-      if (n > before && !this.reviewOpen) {
-        this.toast(`${plural(n, 'change')} from another PC to look at`, 'info', { label: 'Review', run: () => (this.reviewOpen = true) });
+      if (this.reviewTotal > before && !this.reviewOpen) {
+        this.toast(`${plural(this.reviewTotal, 'change')} from another PC to look at`, 'info', { label: 'Review', run: () => (this.reviewOpen = true) });
       }
     });
     await api.listen<string>('scan-error', (msg) => this.toast(msg, 'error'));
@@ -579,6 +594,18 @@ class Store {
       api.listAlbums(),
       api.listPeople(),
     ]);
+    // Photos that went away meanwhile (deleted on another PC, a folder
+    // removed): nothing may still point at them.
+    const have = new Set(photos.map((p) => p.id));
+    if (this.viewerId != null && !have.has(this.viewerId)) {
+      const list = this.viewerList ?? this.visible.map((p) => p.id);
+      const at = list.indexOf(this.viewerId);
+      this.viewerId = list.slice(at + 1).find((id) => have.has(id)) ?? list.slice(0, Math.max(at, 0)).findLast((id) => have.has(id)) ?? null;
+    }
+    if (this.viewerList?.some((id) => !have.has(id))) this.viewerList = this.viewerList.filter((id) => have.has(id));
+    if ([...this.selection].some((id) => !have.has(id))) this.selection = new Set([...this.selection].filter((id) => have.has(id)));
+    if (this.focusId != null && !have.has(this.focusId)) this.focusId = null;
+    if (this.compare && !(have.has(this.compare.before) && have.has(this.compare.after))) this.compare = null;
     this.photos = photos;
     this.sources = sources;
     this.recipes = recipes;
@@ -1066,16 +1093,18 @@ class Store {
 
   async loadReview() {
     try {
-      this.review = await api.syncReview();
+      const { changes, total } = await api.syncReview();
+      this.review = changes;
+      this.reviewTotal = total;
     } catch (e) {
       console.warn('sync review', e);
     }
   }
 
   /** Applies the changes in `apply` and rejects those in `reject`. */
-  async resolveReview(apply: number[], reject: number[]) {
+  async resolveReview(apply: number[], reject: number[], everything = false) {
     try {
-      const done = await api.resolveSyncReview(apply, reject);
+      const done = await api.resolveSyncReview(apply, reject, everything);
       await this.loadReview();
       if (!this.review.length) this.reviewOpen = false;
       const parts = [
