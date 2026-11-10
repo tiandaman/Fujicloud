@@ -7,6 +7,7 @@
 //! rejected: a rejected change keeps this PC's marks, and a rejected
 //! deletion brings the file back from the library folder's trash.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{OptionalExtension, params};
@@ -30,9 +31,23 @@ CREATE TABLE IF NOT EXISTS sync_review (
 );
 "#;
 
+/// Columns added since: which PC made the change, and when.
+pub(crate) fn migrate(conn: &rusqlite::Connection) -> Result<(), Error> {
+    let have: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('sync_review')")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for (name, decl) in [("by_name", "TEXT"), ("by_at", "INTEGER")] {
+        if !have.iter().any(|c| c == name) {
+            conn.execute_batch(&format!("ALTER TABLE sync_review ADD COLUMN {name} {decl}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// What someone sets on a photo themselves.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Marks {
     pub rating: i32,
     /// `1` pick, `-1` reject.
@@ -55,6 +70,51 @@ impl Marks {
             albums,
         }
     }
+
+    /// Two PCs' marks brought together, field by field. `base` is what both
+    /// last agreed on; whatever `latest` changed since wins, and the rest
+    /// is as `other` has it. So stars set on one PC and an album added on
+    /// another both survive; where both changed the same thing, the latest
+    /// does. Albums merge by album: `latest`'s additions and removals are
+    /// made to `other`'s list.
+    pub fn merge3(base: &Marks, latest: &Marks, other: &Marks) -> Marks {
+        fn pick<T: PartialEq + Clone>(base: &T, latest: &T, other: &T) -> T {
+            if latest != base { latest } else { other }.clone()
+        }
+        let has = |list: &[String], a: &str| list.iter().any(|b| b.eq_ignore_ascii_case(a));
+        let mut albums: Vec<String> = other
+            .albums
+            .iter()
+            // Taken out by `latest`.
+            .filter(|a| !(has(&base.albums, a) && !has(&latest.albums, a)))
+            .cloned()
+            .collect();
+        for a in &latest.albums {
+            if !has(&base.albums, a) && !has(&albums, a) {
+                albums.push(a.clone());
+            }
+        }
+        albums.sort_by_key(|a| a.to_lowercase());
+        Marks {
+            rating: pick(&base.rating, &latest.rating, &other.rating),
+            flag: pick(&base.flag, &latest.flag, &other.flag),
+            label: pick(&base.label, &latest.label, &other.label),
+            favorite: pick(&base.favorite, &latest.favorite, &other.favorite),
+            albums,
+        }
+    }
+
+    /// These marks on a photo's tags.
+    pub(crate) fn onto(&self, tags: Tags) -> Tags {
+        Tags {
+            rating: self.rating,
+            flag: self.flag,
+            label: self.label.clone(),
+            favorite: self.favorite,
+            albums: self.albums.clone(),
+            ..tags
+        }
+    }
 }
 
 /// One held change, for the overview.
@@ -73,8 +133,11 @@ pub struct Change {
     pub restorable: bool,
     /// The marks here now.
     pub before: Marks,
-    /// What the other PC saved (none for a deletion).
+    /// What it would be with the other PC's changes (none for a deletion).
     pub after: Option<Marks>,
+    /// Which PC made the change, and when (Unix seconds), where known.
+    pub by: Option<String>,
+    pub at: Option<i64>,
     /// The other halves of a RAW+JPEG pair, which share its sidecar and so
     /// this change: decided along with it.
     pub twins: Vec<i64>,
@@ -97,6 +160,12 @@ impl Library {
     /// applying them.
     pub fn set_review(&self, on: bool) {
         self.review.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// This PC's name, recorded with the changes it makes (by default the
+    /// computer's own name).
+    pub fn set_device(&self, name: &str) {
+        *self.device.lock() = name.to_owned();
     }
 
     pub fn reviewing(&self) -> bool {
@@ -139,10 +208,11 @@ impl Library {
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT INTO sync_review (photo_id, removed, rating, label, flag, favorite, albums, xmp_mtime)
-                 VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO sync_review (photo_id, removed, rating, label, flag, favorite, albums,
+                                          xmp_mtime, by_name, by_at)
+                 VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(photo_id) DO UPDATE SET removed = 0, rating = ?2, label = ?3,
-                   flag = ?4, favorite = ?5, albums = ?6, xmp_mtime = ?7
+                   flag = ?4, favorite = ?5, albums = ?6, xmp_mtime = ?7, by_name = ?8, by_at = ?9
                  WHERE removed = 0",
             )?;
             for (id, tags, mtime) in items {
@@ -154,7 +224,9 @@ impl Library {
                     m.flag,
                     m.favorite as i64,
                     serde_json::to_string(&m.albums).unwrap_or_else(|_| "[]".into()),
-                    mtime
+                    mtime,
+                    tags.by.as_ref().map(|b| &b.0),
+                    tags.by.as_ref().map(|b| b.1)
                 ])?;
             }
         }
@@ -175,20 +247,6 @@ impl Library {
             }
         }
         tx.commit()?;
-        Ok(())
-    }
-
-    /// A sidecar holding a held change was saved again with the same marks
-    /// (only what the models found was added): the change is as of the new
-    /// file, so deciding it doesn't make the next scan ask again.
-    pub(crate) fn move_held(&self, ids: &[i64], mtime: i64) -> Result<(), Error> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare_cached(
-            "UPDATE sync_review SET xmp_mtime = ?2 WHERE photo_id = ?1 AND removed = 0",
-        )?;
-        for id in ids {
-            stmt.execute(params![id, mtime])?;
-        }
         Ok(())
     }
 
@@ -246,11 +304,12 @@ impl Library {
     /// there are in all. (Each one shown is looked up in the library
     /// folder's trash, which on a network share takes a moment.)
     pub fn held_page(&self, limit: usize) -> Result<(Vec<Change>, usize), Error> {
-        let rows: Vec<(Change, Marks)> = {
+        let rows: Vec<(Change, (Marks, Option<Marks>))> = {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(
                 "SELECT p.id, p.name, p.folder, p.kind, p.taken_at, r.removed,
-                        r.rating, r.flag, r.label, r.favorite, r.albums
+                        r.rating, r.flag, r.label, r.favorite, r.albums, r.by_name, r.by_at,
+                        p.xmp_base
                  FROM sync_review r JOIN photos p ON p.id = r.photo_id
                  ORDER BY p.taken_at DESC, p.name",
             )?;
@@ -265,8 +324,13 @@ impl Library {
                     restorable: false,
                     before: Marks::default(),
                     after: None,
+                    by: r.get(11)?,
+                    at: r.get(12)?,
                     twins: Vec::new(),
                 };
+                let base: Option<Marks> = r
+                    .get::<_, Option<String>>(13)?
+                    .and_then(|j| serde_json::from_str(&j).ok());
                 let after = Marks {
                     rating: r.get(6)?,
                     flag: r.get(7)?,
@@ -274,7 +338,7 @@ impl Library {
                     favorite: r.get::<_, i64>(9)? != 0,
                     albums: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
                 };
-                Ok((change, after))
+                Ok((change, (after, base)))
             })?
             .collect::<Result<_, _>>()?
         };
@@ -286,7 +350,7 @@ impl Library {
             .map(|(c, _)| c.id)
             .collect();
         let mut merged = std::collections::HashSet::new();
-        let mut rows: Vec<(Change, Marks)> = rows;
+        let mut rows = rows;
         rows.sort_by_key(|(c, _)| (c.removed, is_raw(c.kind), c.id));
         let mut kept = Vec::with_capacity(rows.len());
         for (mut change, after) in rows {
@@ -312,12 +376,27 @@ impl Library {
         kept.truncate(limit);
         let roots = self.roots()?;
         let mut out = Vec::with_capacity(kept.len());
-        for (mut change, after) in kept {
+        let mut log = HashMap::new();
+        for (mut change, (theirs, base)) in kept {
             change.before = self.marks(change.id)?;
             if change.removed {
                 change.restorable = self.trashed_copy(change.id, &roots)?.is_some();
+                // Who deleted it, if this app did.
+                if let Ok(info) = self.file_info(change.id)
+                    && let Some((_, root)) = roots.iter().find(|(s, _)| *s == info.source_id)
+                    && let Some((by, at)) = log
+                        .entry(root.clone())
+                        .or_insert_with(|| crate::discard::deletions(root))
+                        .get(&info.path)
+                {
+                    (change.by, change.at) = (Some(by.clone()), Some(*at));
+                }
             } else {
-                change.after = Some(after);
+                // Only what the other PC changed since both last agreed.
+                change.after = Some(match &base {
+                    Some(base) => Marks::merge3(base, &theirs, &change.before),
+                    None => theirs,
+                });
             }
             out.push(change);
         }
@@ -335,8 +414,8 @@ impl Library {
             let held = {
                 let conn = self.conn.lock();
                 conn.query_row(
-                    "SELECT removed, rating, flag, label, favorite, albums, xmp_mtime
-                     FROM sync_review WHERE photo_id = ?1",
+                    "SELECT r.removed, r.rating, r.flag, r.label, r.favorite, r.albums, r.xmp_mtime
+                     FROM sync_review r WHERE r.photo_id = ?1",
                     [id],
                     |r| {
                         Ok((
@@ -385,20 +464,34 @@ impl Library {
                         .into_iter()
                         .filter(|t| *t == id || !self.held_removed(*t).unwrap_or(true))
                         .collect();
+                    // What the file holds becomes what both sides last
+                    // agreed on; taken, their changes are made here too,
+                    // kept, the marks here stay (and this version of the
+                    // file isn't asked about again).
+                    let theirs = Marks::of(&tags);
+                    let mut items = Vec::new();
+                    for &t in &pair {
+                        let marks = if accepted {
+                            let (_, _, base) = self.sidecar_state(&[t])?;
+                            Some(match base {
+                                Some(base) => Marks::merge3(&base, &theirs, &self.marks(t)?),
+                                None => theirs.clone(),
+                            })
+                        } else {
+                            None
+                        };
+                        items.push(crate::db::Settle {
+                            id: t,
+                            marks,
+                            mtime,
+                            base: theirs.clone(),
+                            force: true,
+                        });
+                    }
+                    self.settle(&items)?;
                     if accepted {
-                        let items: Vec<_> =
-                            pair.iter().map(|&t| (t, tags.clone(), mtime)).collect();
-                        self.apply_sidecars(&items)?;
                         done.applied += 1;
                     } else {
-                        // Keep the marks here; don't ask about this version again.
-                        let conn = self.conn.lock();
-                        for t in &pair {
-                            conn.execute(
-                                "UPDATE photos SET xmp_mtime = ?2 WHERE id = ?1",
-                                params![t, mtime],
-                            )?;
-                        }
                         done.kept += 1;
                     }
                     let conn = self.conn.lock();

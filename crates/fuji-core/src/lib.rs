@@ -1,6 +1,17 @@
 //! Core of Fujicloud: everything that touches files lives here, independent
 //! of the desktop shell, so it can be tested and benchmarked on its own.
 
+/// This PC's name, as Windows (or the host) gives it.
+pub fn device_name() -> String {
+    ["COMPUTERNAME", "HOSTNAME"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok())
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|n| n.trim().to_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "this PC".to_owned())
+}
+
 #[cfg(feature = "smart-search")]
 pub mod animals;
 pub mod backup;

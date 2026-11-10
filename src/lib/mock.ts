@@ -2,7 +2,7 @@
 // browser (`npm run dev`) without the Rust backend or a camera.
 
 import type { Api } from './api';
-import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Models, Person, PetsStatus, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source, SyncChange, SyncResolved } from './types';
+import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Models, Person, PetsStatus, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source, SyncChange, SyncResolved, TrashItem } from './types';
 
 const FILMS = ['Classic Chrome', 'Classic Neg.', 'Provia', 'Velvia', 'Acros', 'Nostalgic Neg.', 'Reala Ace', 'Eterna', 'Astia', 'Pro Neg. Hi', 'Acros +R', 'Monochrome'];
 const FILM_WEIGHTS = [18, 16, 12, 9, 8, 7, 7, 5, 5, 4, 3, 2];
@@ -279,6 +279,9 @@ export function mockApi(): Api {
   };
   const hardware = { processors: 16, memoryGb: 31.8, gpu: 'NVIDIA GeForce RTX 4070 Laptop GPU', gpuMemoryGb: 8 };
   const models = (): Models => ({ hardware, recommended: 'best', level: settings.models === 'auto' ? 'best' : settings.models });
+  // A few photos already in the trash.
+  let trashed: Photo[] = photos.length > 80 ? photos.filter((_, i) => i % 97 === 50).slice(0, 7) : [];
+  photos = photos.filter((p) => !trashed.includes(p));
   // `?review` shows changes another PC made, waiting for a look.
   let gonePhotos: Photo[] = [];
   let review: SyncChange[] = [];
@@ -296,6 +299,8 @@ export function mockApi(): Api {
       before: marks(p, before),
       after: { ...marks(p, albums ?? before), ...after },
       twins: p.pairId != null ? [p.pairId] : [],
+      by: 'XPS-LAPTOP',
+      at: Date.now() / 1000 - 3 * 3600,
     });
     review = [
       changed(pick(3), { rating: 5, flag: 1 }),
@@ -317,6 +322,8 @@ export function mockApi(): Api {
         before: marks(p),
         after: null,
         twins: [],
+        by: i === 0 ? 'XPS-LAPTOP' : null,
+        at: i === 0 ? Date.now() / 1000 - 26 * 3600 : null,
       })),
     );
   }
@@ -611,6 +618,35 @@ export function mockApi(): Api {
       return id;
     },
     faceUrl: (id) => avatar(Math.floor(id / 1000) || id),
+    async listTrash() {
+      const items: TrashItem[] = trashed.map((p, n) => ({
+        n,
+        sourceId: 1,
+        name: p.name,
+        folder: p.folder.split(/[\\/]/).slice(-2).join('\\'),
+        kind: p.kind,
+        size: p.size,
+        at: n < 5 ? Date.now() / 1000 - (n + 1) * 5400 : null,
+        by: n < 5 ? (n % 2 ? 'STUDIO-PC' : 'XPS-LAPTOP') : null,
+      }));
+      return { items, bytes: items.reduce((s, i) => s + i.size, 0), recycleBin: false, offline: 0 };
+    },
+    async restoreTrash(ns) {
+      const back = ns.map((n) => trashed[n]).filter(Boolean);
+      trashed = trashed.filter((p) => !back.includes(p));
+      photos = [...photos, ...back];
+      emit('library-changed', null);
+      return [back.length, []];
+    },
+    async emptyTrash(ns) {
+      const gone = ns ? ns.map((n) => trashed[n]).filter(Boolean) : trashed;
+      trashed = trashed.filter((p) => !gone.includes(p));
+      return gone.length;
+    },
+    trashThumbUrl: (t) => {
+      const p = trashed[t.n];
+      return p ? sceneFor(p) : '';
+    },
     async syncReview() {
       return { changes: review, total: review.length };
     },

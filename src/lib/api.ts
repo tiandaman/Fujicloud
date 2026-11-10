@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, SyncChange, SyncResolved } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, SyncChange, SyncResolved, Trash, TrashItem } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -52,6 +52,13 @@ export interface Api {
   faceUrl(faceId: number): string;
   /** Copies of the same file, and of the same picture saved again. */
   findDuplicates(): Promise<DuplicateGroup[]>;
+  /** What's in the library folders' trash. */
+  listTrash(): Promise<Trash>;
+  /** Puts trashed photos back: how many, and the names of those that couldn't be. */
+  restoreTrash(ns: number[]): Promise<[number, string[]]>;
+  /** Deletes for good: these, or with none given everything in the trash. */
+  emptyTrash(ns?: number[]): Promise<number>;
+  trashThumbUrl(item: TrashItem): string;
   /** Changes other PCs made, waiting to be applied or rejected. */
   syncReview(): Promise<{ changes: SyncChange[]; total: number }>;
   /** With `everything`, takes every change waiting, the ones not listed too. */
@@ -146,6 +153,10 @@ function tauriApi(): Api {
     hideFace: (id) => invoke('hide_face', { id }),
     faceUrl: (id) => `${base}/f/${id}?v=${cacheVersion.n}`,
     findDuplicates: () => invoke('find_duplicates'),
+    listTrash: () => invoke('list_trash'),
+    restoreTrash: (ns) => invoke('restore_trash', { ns }),
+    emptyTrash: (ns) => invoke('empty_trash', { ns: ns ?? null }),
+    trashThumbUrl: (t) => `${base}/x/${t.n}?v=${encodeURIComponent(t.name)}.${t.size}`,
     syncReview: () => invoke('sync_review'),
     resolveSyncReview: (apply, reject, everything = false) => invoke('resolve_sync_review', { apply, reject, everything }),
     deletePhotos: (ids) => invoke('delete_photos', { ids }),

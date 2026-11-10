@@ -28,6 +28,8 @@
       // Known only once looked for: the extra copies, not counting keepers.
       count: () => (store.duplicates ? store.duplicates.reduce((n, g) => n + g.ids.length - 1, 0) : null),
     },
+    // Known once opened, and after deleting.
+    { c: { type: 'trash' }, label: 'Trash', icon: 'trash', count: () => store.trash?.items.length ?? null },
   ];
 
   function isActive(c: Collection) {

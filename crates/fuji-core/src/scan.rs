@@ -219,7 +219,10 @@ pub fn sync_sidecars(
             .collect()
     });
 
-    let mut apply = Vec::new();
+    use crate::db::Settle;
+    use crate::review::Marks;
+    let mut settle = Vec::new();
+    let mut found = Vec::new();
     let mut write_back = Vec::new();
     for r in due {
         let mtime = on_disk(r);
@@ -229,12 +232,24 @@ pub fn sync_sidecars(
         }
         if r.xmp_mtime.is_some() {
             let theirs = theirs.cloned().unwrap_or_default();
-            let changed = reviewing && crate::review::Marks::of(&theirs) != lib.marks(r.id)?;
-            let item = (r.id, theirs, mtime.unwrap_or(0));
-            if changed {
-                hold.push(item);
+            let in_file = Marks::of(&theirs);
+            let ours = lib.marks(r.id)?;
+            // What they changed since both last agreed, onto ours.
+            let merged = match &r.base {
+                Some(base) => Marks::merge3(base, &in_file, &ours),
+                None => in_file.clone(),
+            };
+            if merged != ours && reviewing {
+                hold.push((r.id, theirs, mtime.unwrap_or(0)));
             } else {
-                apply.push(item);
+                found.push((r.id, theirs));
+                settle.push(Settle {
+                    id: r.id,
+                    marks: Some(merged),
+                    mtime: mtime.unwrap_or(0),
+                    base: in_file,
+                    force: false,
+                });
             }
             continue;
         }
@@ -243,11 +258,22 @@ pub fn sync_sidecars(
         if theirs != Some(&merged) && !merged.is_empty() {
             write_back.push(r.id);
         }
-        apply.push((r.id, merged, mtime.unwrap_or(0)));
+        settle.push(Settle {
+            id: r.id,
+            marks: Some(Marks::of(&merged)),
+            mtime: mtime.unwrap_or(0),
+            base: theirs.map(Marks::of).unwrap_or_default(),
+            force: false,
+        });
+        found.push((r.id, merged));
     }
-    let applied = lib.apply_sidecars(&apply)?;
+    let applied = lib.settle(&settle)?;
     lib.hold_changes(&hold)?;
-    for (id, tags, _) in apply.iter().chain(&hold) {
+    for (id, tags) in found
+        .iter()
+        .map(|(id, tags)| (id, tags))
+        .chain(hold.iter().map(|(id, tags, _)| (id, tags)))
+    {
         import_found(lib, *id, tags);
     }
     lib.mark_unsaved(&write_back, true)?;
@@ -303,6 +329,7 @@ fn merge(mine: &Tags, theirs: Option<&Tags>) -> Tags {
         faces: mine.faces.clone().or_else(|| theirs.faces.clone()),
         pets: mine.pets.clone().or_else(|| theirs.pets.clone()),
         smart: mine.smart.clone().or_else(|| theirs.smart.clone()),
+        by: theirs.by.clone(),
     }
 }
 
@@ -371,58 +398,89 @@ fn save_one(
     ids: &[i64],
     saved: &mut Saved,
 ) -> Result<(), Error> {
-    let (marks_changed, seen) = lib.sidecar_state(ids)?;
+    use crate::db::Settle;
+    use crate::review::Marks;
+    let (marks_changed, seen, base) = lib.sidecar_state(ids)?;
     let on_disk = disk_mtime(sidecar)?;
-    // The marks to leave in the file when ours haven't changed.
-    let mut keep = None;
-    if let Some(now) = on_disk
-        && (!marks_changed || seen.is_none())
-    {
-        let theirs = xmp::read(sidecar)?;
-        if seen != Some(now) {
-            // News from another PC, as a scan would have found it.
-            for &id in ids {
-                let item = if seen.is_none() {
-                    (id, merge(&lib.tags(id)?, Some(&theirs)), now)
-                } else {
-                    (id, theirs.clone(), now)
-                };
-                let news = crate::review::Marks::of(&item.1) != lib.marks(id)?;
-                if news && seen.is_some() && lib.reviewing() {
-                    lib.hold_changes(std::slice::from_ref(&item))?;
-                    saved.held += 1;
-                } else {
-                    saved.synced +=
-                        lib.apply_sidecars(std::slice::from_ref(&item))? * news as usize;
-                }
-                import_found(lib, id, &theirs);
+    let theirs = match on_disk {
+        Some(_) => Some(xmp::read(sidecar)?),
+        None => None,
+    };
+    let tags = pair_tags(lib, ids)?;
+    let ours = Marks::of(&tags);
+    // The marks the file is to hold, and those this PC is to take.
+    let mut write = ours.clone();
+    let mut take = None;
+    let mut ours_written = marks_changed;
+    if let (Some(theirs), Some(now)) = (&theirs, on_disk) {
+        let in_file = Marks::of(theirs);
+        if seen.is_none() {
+            // Never synced: keep both sides.
+            write = Marks::of(&merge(&tags, Some(theirs)));
+            ours_written = write != in_file;
+        } else if marks_changed {
+            // What changed here, onto whatever another PC changed since.
+            if let Some(base) = &base {
+                write = Marks::merge3(base, &ours, &in_file);
+            }
+        } else {
+            // Only what the models found is new: the file's marks stay,
+            // and what another PC changed in them since is news.
+            write = in_file.clone();
+            if seen != Some(now) {
+                take = Some(match &base {
+                    Some(base) => Marks::merge3(base, &in_file, &ours),
+                    None => in_file,
+                });
             }
         }
-        keep = Some(if seen.is_none() {
-            merge(&lib.tags(ids[0])?, Some(&theirs))
-        } else {
-            theirs
-        });
+        if seen != Some(now) {
+            for &id in ids {
+                import_found(lib, id, theirs);
+            }
+        }
+        if marks_changed || seen.is_none() {
+            take = Some(write.clone());
+        }
     }
-    let mut tags = pair_tags(lib, ids)?;
-    if let Some(keep) = keep {
-        tags = Tags {
-            faces: tags.faces,
-            pets: tags.pets,
-            smart: tags.smart,
-            ..keep
-        };
-    }
-    xmp::write(file, kind, &tags)?;
+    let take = take.filter(|t| *t != ours);
+    // Another PC's changes are held for review rather than taken (a photo
+    // never synced is merged, which loses nothing).
+    let hold = take.is_some() && seen.is_some() && lib.reviewing();
+
+    let mut out = write.onto(pair_tags(lib, ids)?);
+    out.by = if ours_written {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        Some((lib.device.lock().clone(), now))
+    } else {
+        theirs.as_ref().and_then(|t| t.by.clone())
+    };
+    xmp::write(file, kind, &out)?;
     // Nothing to record and no sidecar to keep in step: 0.
     let after = disk_mtime(sidecar)?.unwrap_or(0);
-    if marks_changed {
-        // Changed here since: what was held is out of date.
-        lib.drop_held_changes(ids)?;
+    if hold {
+        // Asked about: until it's decided, the photo stays settled with the
+        // file as it was before.
+        let held: Vec<_> = ids.iter().map(|&id| (id, out.clone(), after)).collect();
+        lib.hold_changes(&held)?;
+        saved.held += ids.len();
     } else {
-        lib.move_held(ids, after)?;
+        lib.drop_held_changes(ids)?;
+        let items: Vec<Settle> = ids
+            .iter()
+            .map(|&id| Settle {
+                id,
+                marks: take.clone(),
+                mtime: after,
+                base: write.clone(),
+                force: true,
+            })
+            .collect();
+        saved.synced += lib.settle(&items)?;
     }
-    lib.sidecar_saved(ids, after)
+    lib.clear_unsaved(ids)
 }
 
 /// What a shared sidecar records: the pair's ratings and albums (the same
@@ -821,6 +879,79 @@ mod tests {
         save_sidecars(&b, &[b_img]).unwrap();
         let file = xmp::read(&dir.path().join("IMG_0002.xmp")).unwrap();
         assert_eq!((file.rating, file.flag), (5, 1));
+    }
+
+    /// Stars set on one laptop and an album added on another, before either
+    /// has seen the other's change, both survive; and a change says which
+    /// PC made it.
+    #[test]
+    fn changes_to_different_things_on_two_laptops_both_survive() {
+        let dir = shared_folder();
+        let (a, b) = (laptop(dir.path()), laptop(dir.path()));
+        a.set_device("Studio");
+        b.set_device("Laptop");
+        let (a_img, b_img) = (photo(&a, "IMG_0002.JPG").id, photo(&b, "IMG_0002.JPG").id);
+        // Both know the photo as picked.
+        a.set_flag(&[a_img], 1).unwrap();
+        save_sidecars(&a, &[a_img]).unwrap();
+        tick();
+        rescan(&b);
+
+        a.set_rating(&[a_img], 4).unwrap();
+        save_sidecars(&a, &[a_img]).unwrap();
+        tick();
+        // B hasn't looked since: it adds an album and takes the pick off.
+        let trip = b.create_album("Trip").unwrap();
+        b.add_to_album(trip, &[b_img]).unwrap();
+        b.set_flag(&[b_img], 0).unwrap();
+        let saved = save_sidecars(&b, &[b_img]).unwrap();
+        assert_eq!(
+            (saved.failed, saved.synced),
+            (0, 1),
+            "A's stars came in on the way"
+        );
+        let file = xmp::read(&dir.path().join("IMG_0002.xmp")).unwrap();
+        assert_eq!(
+            (file.rating, file.flag, file.albums.clone()),
+            (4, 0, vec!["Trip".to_owned()])
+        );
+        assert_eq!(file.by.as_ref().map(|b| b.0.as_str()), Some("Laptop"));
+        assert_eq!(photo(&b, "IMG_0002.JPG").rating, 4);
+        tick();
+        rescan(&a);
+        let p = photo(&a, "IMG_0002.JPG");
+        assert_eq!((p.rating, p.flag), (4, 0));
+        assert_eq!(a.albums().unwrap()[0].ids, vec![a_img]);
+
+        // Reviewing on A: B's next change is shown as just that change,
+        // with who made it; A's own stars, changed meanwhile, aren't part
+        // of it and survive taking it.
+        a.set_review(true);
+        b.set_favorite(&[b_img], true).unwrap();
+        tick();
+        save_sidecars(&b, &[b_img]).unwrap();
+        tick();
+        assert_eq!(rescan(&a).held, 1);
+        let held = a.held_changes().unwrap();
+        assert_eq!(held[0].by.as_deref(), Some("Laptop"));
+        assert!(held[0].at.is_some());
+        let after = held[0].after.clone().unwrap();
+        assert_eq!((after.rating, after.favorite), (4, true));
+        a.resolve_held(&[a_img], &[]).unwrap();
+        let p = photo(&a, "IMG_0002.JPG");
+        assert_eq!((p.rating, p.favorite), (4, true));
+        assert_eq!(rescan(&a).held, 0);
+
+        // Both changed the same thing: the later save wins.
+        a.set_rating(&[a_img], 1).unwrap();
+        save_sidecars(&a, &[a_img]).unwrap();
+        tick();
+        b.set_rating(&[b_img], 5).unwrap();
+        save_sidecars(&b, &[b_img]).unwrap();
+        assert_eq!(
+            xmp::read(&dir.path().join("IMG_0002.xmp")).unwrap().rating,
+            5
+        );
     }
 
     #[test]

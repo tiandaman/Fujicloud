@@ -28,6 +28,7 @@ import type {
   SyncStatus,
   ModelChoice,
   SyncChange,
+  Trash,
   Models,
 } from './types';
 
@@ -294,7 +295,7 @@ class Store {
       : c.type === 'recipe' ? (p) => p.recipeKey === c.key && p.flag !== -1
       : c.type === 'country' ? (p) => p.country === c.value && p.flag !== -1
       : c.type === 'ids' || c.type === 'duplicates' || c.type === 'person' ? (p) => ids!.has(p.id)
-      : c.type === 'people' || c.type === 'pets' ? () => false
+      : c.type === 'people' || c.type === 'pets' || c.type === 'trash' ? () => false
       : (p) => !!similar && (similar.has(p.id) || (p.pairId != null && similar.has(p.pairId)));
     return this.photos.filter(test);
   });
@@ -459,6 +460,7 @@ class Store {
       case 'favorites': return 'Favourites';
       case 'album': return this.albumById.get(c.id)?.name ?? 'Album';
       case 'duplicates': return 'Duplicates';
+      case 'trash': return 'Trash';
       case 'people': return 'People';
       case 'pets': return 'Pets';
       case 'person': {
@@ -829,6 +831,7 @@ class Store {
     try {
       const r = await api.deletePhotos(ids);
       const gone = new Set(r.ids);
+      if (this.trash) this.loadTrash();
       const list = this.viewerList ?? this.visible.map((p) => p.id);
       if (this.viewerId != null && gone.has(this.viewerId)) {
         const at = list.indexOf(this.viewerId);
@@ -1089,6 +1092,46 @@ class Store {
     } catch (e) {
       this.toast(String(e), 'error');
     }
+  }
+
+  /** What's in the trash (loaded when the Trash is opened, and after deleting). */
+  trash = $state.raw<Trash | null>(null);
+
+  async loadTrash() {
+    try {
+      this.trash = await api.listTrash();
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  async restoreTrash(ns: number[]) {
+    try {
+      const [n, failed] = await api.restoreTrash(ns);
+      if (n) this.toast(`${plural(n, 'photo')} put back`);
+      if (failed.length) this.toast(`Couldn't put back ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`, 'error');
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+    await this.loadTrash();
+  }
+
+  async emptyTrash(ns?: number[]) {
+    const n = ns?.length ?? this.trash?.items.length ?? 0;
+    if (!n) return;
+    const ok = await this.ask(
+      ns ? `Delete ${plural(n, 'photo')} for good?` : 'Empty the trash?',
+      `${ns ? (n === 1 ? 'It' : 'They') : plural(n, 'photo')} will be deleted from the library's drive${ns ? '' : ', with their RAW files and sidecars'}. This can't be undone.`,
+      ns ? 'Delete for good' : 'Empty trash',
+    );
+    if (!ok) return;
+    try {
+      const gone = await api.emptyTrash(ns);
+      this.toast(`${plural(gone, 'photo')} deleted for good`);
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+    await this.loadTrash();
   }
 
   async loadReview() {

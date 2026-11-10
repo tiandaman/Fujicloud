@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from '../api';
-  import { formatDay, plural } from '../format';
+  import { formatAgo, formatDay, plural } from '../format';
   import { store } from '../store.svelte';
   import type { Marks, SyncChange } from '../types';
   import Icon from './Icon.svelte';
@@ -62,6 +62,8 @@
     return out;
   }
 
+  /** "XPS-LAPTOP · 3 hours ago", where the change says. */
+  const who = (c: SyncChange) => [c.by, c.at ? formatAgo(c.at) : null].filter(Boolean).join(' · ');
   const where = (c: SyncChange) => [c.takenAt ? formatDay(c.takenAt) : null, c.folder.split(/[\\/]/).filter(Boolean).slice(-2).join(' › ')].filter(Boolean).join(' · ');
 </script>
 
@@ -100,7 +102,7 @@
           <img src={api.thumbUrlById(c.id)} alt="" loading="lazy" />
           <div class="what">
             <strong class="truncate">{c.name}</strong>
-            <span class="faint truncate">{where(c)}</span>
+            <span class="faint truncate">{where(c)}{who(c) ? ` · by ${who(c)}` : ''}</span>
             <span class="chips">
               <span class="chip remove">Deleted</span>
               {#if !c.restorable}<span class="chip note" title="It isn't in the library folder's .fujicloud-trash, so it was deleted for good">Can't be put back</span>{/if}
@@ -128,7 +130,7 @@
           <img src={api.thumbUrlById(c.id)} alt="" loading="lazy" />
           <div class="what">
             <strong class="truncate">{c.name}{c.twins.length ? (c.kind === 'raf' || c.kind === 'dng' ? ' + JPEG' : ' + RAW') : ''}</strong>
-            <span class="faint truncate">{where(c)}</span>
+            <span class="faint truncate">{where(c)}{who(c) ? ` · by ${who(c)}` : ''}</span>
             <span class="chips">
               {#each c.after ? differences(c.before, c.after) : [] as d, i (i)}
                 <span class="chip {d.tone ?? ''}">{d.text}</span>

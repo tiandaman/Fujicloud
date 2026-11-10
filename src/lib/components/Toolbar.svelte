@@ -86,7 +86,7 @@
   const filtered = $derived(store.minRating > 0 || store.kindsFiltered || !store.stack);
   const sortLabel = $derived(sorts.find(([k]) => k === store.sort)?.[1]);
   /** The People and Pets pages, which show faces rather than a grid of photos. */
-  const overview = $derived(store.collection.type === 'people' || store.collection.type === 'pets');
+  const overview = $derived(store.collection.type === 'people' || store.collection.type === 'pets' || store.collection.type === 'trash');
 
   export function focusSearch() {
     search?.focus();
@@ -116,6 +116,8 @@
         {named === 1 ? '1 person' : `${formatCount(named)} people`}
       {:else if store.collection.type === 'pets'}
         {plural(store.pets.filter((p) => p.name).length, 'pet')}
+      {:else if store.collection.type === 'trash'}
+        {store.trash ? plural(store.trash.items.length, 'photo') : ''}
       {:else}
         {store.selection.size ? `${formatCount(store.selection.size)} selected · ` : ''}{plural(store.visible.length, 'photo')}
       {/if}

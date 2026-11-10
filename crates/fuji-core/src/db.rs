@@ -102,6 +102,9 @@ const ADDED_USER_COLUMNS: &[(&str, &str)] = &[
     ("xmp_dirty", "INTEGER NOT NULL DEFAULT 0"),
     // Videos: length in seconds.
     ("duration", "REAL"),
+    // The marks the sidecar held at `xmp_mtime` (JSON): what both sides
+    // last agreed on, for telling who changed which since.
+    ("xmp_base", "TEXT"),
 ];
 
 const INDEXES: &str = r#"
@@ -246,6 +249,19 @@ pub struct SidecarRow {
     pub sidecar: PathBuf,
     pub xmp_mtime: Option<i64>,
     pub dirty: bool,
+    /// The marks the sidecar held when last settled with.
+    pub base: Option<crate::review::Marks>,
+}
+
+/// Settling a photo with its sidecar: the marks to take (if any), and the
+/// file's state (its modified time and the marks in it) to remember.
+pub(crate) struct Settle {
+    pub id: i64,
+    pub marks: Option<crate::review::Marks>,
+    pub mtime: i64,
+    pub base: crate::review::Marks,
+    /// Even over a change made here that isn't saved yet.
+    pub force: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +300,8 @@ pub struct Library {
     pub(crate) active_models: Mutex<[Option<String>; 2]>,
     /// Hold changes from other PCs for review (see [`crate::review`]).
     pub(crate) review: std::sync::atomic::AtomicBool,
+    /// This PC's name, recorded with the changes it makes.
+    pub(crate) device: Mutex<String>,
 }
 
 impl Library {
@@ -309,6 +327,7 @@ impl Library {
         conn.execute_batch(TABLES)?;
         conn.execute_batch(crate::people::TABLES)?;
         conn.execute_batch(crate::review::TABLES)?;
+        crate::review::migrate(&conn)?;
         crate::people::migrate(&conn)?;
         migrate(&conn)?;
         conn.execute_batch(INDEXES)?;
@@ -316,6 +335,7 @@ impl Library {
             conn: Mutex::new(conn),
             active_models: Mutex::new([None, None]),
             review: std::sync::atomic::AtomicBool::new(false),
+            device: Mutex::new(crate::device_name()),
         })
     }
 
@@ -860,7 +880,7 @@ impl Library {
     pub fn sidecars(&self, source_id: i64) -> Result<Vec<SidecarRow>, Error> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
-            "SELECT id, path, kind, xmp_mtime, xmp_dirty FROM photos WHERE source_id = ?1
+            "SELECT id, path, kind, xmp_mtime, xmp_dirty, xmp_base FROM photos WHERE source_id = ?1
              AND id NOT IN (SELECT photo_id FROM sync_review WHERE removed = 1)",
         )?;
         let rows = stmt.query_map([source_id], |r| {
@@ -873,46 +893,60 @@ impl Library {
                 kind,
                 xmp_mtime: r.get(3)?,
                 dirty: r.get::<_, i64>(4)? == 1,
+                base: r
+                    .get::<_, Option<String>>(5)?
+                    .and_then(|j| serde_json::from_str(&j).ok()),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Applies what other laptops saved in sidecars. Photos with unsaved
-    /// changes made here keep them; those get written out instead (but one
-    /// never synced takes what it's given: both sides merged).
-    pub fn apply_sidecars(&self, items: &[(i64, Tags, i64)]) -> Result<usize, Error> {
+    /// Settles photos with their sidecars: takes the marks given, and
+    /// remembers the file's state. A photo with an unsaved change made here
+    /// keeps it unless forced (but one never synced takes what it's given:
+    /// both sides merged). Returns how many took marks.
+    pub(crate) fn settle(&self, items: &[Settle]) -> Result<usize, Error> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let mut applied = 0;
         {
             let mut update = tx.prepare_cached(
-                "UPDATE photos SET rating = ?2, label = ?3, flag = ?4, favorite = ?5, xmp_mtime = ?6
-                 WHERE id = ?1 AND (xmp_dirty <> 1 OR xmp_mtime IS NULL)",
+                "UPDATE photos SET rating = ?2, label = ?3, flag = ?4, favorite = ?5,
+                        xmp_mtime = ?6, xmp_base = ?7
+                 WHERE id = ?1 AND (?8 OR xmp_dirty <> 1 OR xmp_mtime IS NULL)",
             )?;
+            let mut seen =
+                tx.prepare_cached("UPDATE photos SET xmp_mtime = ?2, xmp_base = ?3 WHERE id = ?1")?;
             let mut clear = tx.prepare_cached("DELETE FROM album_photos WHERE photo_id = ?1")?;
             let mut album = tx.prepare_cached("INSERT OR IGNORE INTO albums (name) VALUES (?1)")?;
             let mut join = tx.prepare_cached(
                 "INSERT OR IGNORE INTO album_photos (album_id, photo_id)
                  SELECT id, ?2 FROM albums WHERE name = ?1",
             )?;
-            for (id, tags, mtime) in items {
+            for item in items {
+                let base = serde_json::to_string(&item.base).unwrap_or_default();
+                let Some(marks) = &item.marks else {
+                    seen.execute(params![item.id, item.mtime, base])?;
+                    continue;
+                };
                 let changed = update.execute(params![
-                    id,
-                    tags.rating.clamp(0, 5),
-                    tags.label,
-                    tags.flag.clamp(-1, 1),
-                    tags.favorite as i64,
-                    mtime
+                    item.id,
+                    marks.rating.clamp(0, 5),
+                    marks.label,
+                    marks.flag.clamp(-1, 1),
+                    marks.favorite as i64,
+                    item.mtime,
+                    base,
+                    item.force
                 ])?;
                 if changed == 0 {
                     continue;
                 }
                 applied += 1;
-                clear.execute([id])?;
-                for name in &tags.albums {
+                clear.execute([item.id])?;
+                for name in &marks.albums {
                     album.execute([name.trim()])?;
-                    join.execute(params![name.trim(), id])?;
+                    join.execute(params![name.trim(), item.id])?;
                 }
             }
         }
@@ -920,18 +954,13 @@ impl Library {
         Ok(applied)
     }
 
-    /// Records that these photos' sidecars are saved, as of `mtime`.
-    pub fn sidecar_saved(&self, ids: &[i64], mtime: i64) -> Result<(), Error> {
-        let mut conn = self.conn.lock();
-        let tx = conn.transaction()?;
-        {
-            let mut stmt =
-                tx.prepare_cached("UPDATE photos SET xmp_dirty = 0, xmp_mtime = ?2 WHERE id = ?1")?;
-            for id in ids {
-                stmt.execute(params![id, mtime])?;
-            }
+    /// These photos' sidecars are saved (nothing more is owed).
+    pub(crate) fn clear_unsaved(&self, ids: &[i64]) -> Result<(), Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached("UPDATE photos SET xmp_dirty = 0 WHERE id = ?1")?;
+        for id in ids {
+            stmt.execute([id])?;
         }
-        tx.commit()?;
         Ok(())
     }
 
@@ -964,27 +993,37 @@ impl Library {
     }
 
     /// Whether any of these photos' marks were changed here since their
-    /// sidecar was saved, and when the first one's sidecar was last seen.
-    pub(crate) fn sidecar_state(&self, ids: &[i64]) -> Result<(bool, Option<i64>), Error> {
+    /// sidecar was saved; and when the first one's sidecar was last settled
+    /// with, and the marks it held then.
+    pub(crate) fn sidecar_state(
+        &self,
+        ids: &[i64],
+    ) -> Result<(bool, Option<i64>, Option<crate::review::Marks>), Error> {
         let conn = self.conn.lock();
         let mut stmt =
-            conn.prepare_cached("SELECT xmp_dirty, xmp_mtime FROM photos WHERE id = ?1")?;
+            conn.prepare_cached("SELECT xmp_dirty, xmp_mtime, xmp_base FROM photos WHERE id = ?1")?;
         let mut marks = false;
         let mut seen = None;
+        let mut base = None;
         for (i, id) in ids.iter().enumerate() {
-            if let Some((dirty, mtime)) = stmt
+            if let Some((dirty, mtime, json)) = stmt
                 .query_row([id], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, Option<i64>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
                 })
                 .optional()?
             {
                 marks |= dirty == 1;
                 if i == 0 {
                     seen = mtime;
+                    base = json.and_then(|j| serde_json::from_str(&j).ok());
                 }
             }
         }
-        Ok((marks, seen))
+        Ok((marks, seen, base))
     }
 
     /// Where a photo's file is and which source it belongs to.

@@ -279,6 +279,7 @@ export type Collection =
   | { type: 'favorites' }
   | { type: 'album'; id: number }
   | { type: 'duplicates' }
+  | { type: 'trash' }
   | { type: 'people' }
   | { type: 'pets' }
   | { type: 'person'; id: number }
@@ -351,6 +352,33 @@ export interface SyncChange {
   after: Marks | null;
   /** The other half of a RAW+JPEG pair, decided along with it. */
   twins: number[];
+  /** Which PC made the change, and when (Unix seconds), where known. */
+  by: string | null;
+  at: number | null;
+}
+
+/** A photo in a library folder's trash. */
+export interface TrashItem {
+  /** Its place in the listing. */
+  n: number;
+  sourceId: number;
+  name: string;
+  /** The folder it was in, within its library folder. */
+  folder: string;
+  kind: Kind;
+  size: number;
+  /** When it was deleted (Unix seconds) and by which PC, if this app did. */
+  at: number | null;
+  by: string | null;
+}
+
+export interface Trash {
+  items: TrashItem[];
+  bytes: number;
+  /** Some library folders use the Windows Recycle Bin instead. */
+  recycleBin: boolean;
+  /** Library folders that can't be reached right now. */
+  offline: number;
 }
 
 export interface SyncResolved {

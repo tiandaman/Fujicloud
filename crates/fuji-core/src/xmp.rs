@@ -27,12 +27,18 @@ pub struct Tags {
     /// Its smart search description: the model's name, and the vector as
     /// stored (quantized).
     pub smart: Option<(String, Vec<u8>)>,
+    /// Which PC last changed the marks (stars, pick, label, favourite,
+    /// albums), and when (Unix seconds).
+    pub by: Option<(String, i64)>,
 }
 
 impl Tags {
     /// Nothing worth creating a sidecar for.
     pub fn is_empty(&self) -> bool {
-        *self == Tags::default()
+        Tags {
+            by: None,
+            ..self.clone()
+        } == Tags::default()
     }
 }
 
@@ -217,6 +223,10 @@ pub fn parse(xml: &str) -> Tags {
         faces: get_property(xml, "fujicloud:Faces").and_then(found_from_text),
         pets: get_property(xml, "fujicloud:Pets").and_then(found_from_text),
         smart: get_property(xml, "fujicloud:Smart").and_then(smart_from_text),
+        by: get_property(xml, "fujicloud:By")
+            .map(unescape)
+            .filter(|b| !b.trim().is_empty())
+            .zip(get_property(xml, "fujicloud:At").and_then(|v| v.trim().parse().ok())),
     }
 }
 
@@ -256,6 +266,10 @@ pub fn update(xml: &str, tags: &Tags) -> Option<String> {
         "fujicloud:Albums",
         (!albums.is_empty()).then_some(albums.as_str()),
     );
+    if let Some((by, at)) = &tags.by {
+        set_property(&mut xml, "fujicloud:By", Some(&escape(by)));
+        set_property(&mut xml, "fujicloud:At", Some(&at.to_string()));
+    }
     // Only ever added or replaced: a PC that hasn't looked at the photo
     // saving its rating mustn't drop what another found.
     if let Some(found) = &tags.faces {

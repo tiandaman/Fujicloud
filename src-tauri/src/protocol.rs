@@ -137,7 +137,7 @@ pub fn forget_failures() {
 
 pub fn lane_for(request: &Request<Vec<u8>>) -> Lane {
     match request.uri().path().as_bytes().get(1) {
-        Some(b't' | b'f') => Lane::Normal,
+        Some(b't' | b'f' | b'x') => Lane::Normal,
         _ => Lane::High,
     }
 }
@@ -158,6 +158,34 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
                 log::warn!("{path}: {e}");
                 status(StatusCode::SERVICE_UNAVAILABLE)
             }
+        };
+    }
+    // A photo in the trash, by its place in the last listing: the
+    // thumbnail it had in the library if that's still cached, else made
+    // from the file where it is now.
+    if kind == "x" {
+        let item = state.trash.lock().get(id as usize).map(|(_, t)| t.clone());
+        let found = item
+            .as_ref()
+            .and_then(|t| fuji_core::scan::found_file(&t.path));
+        let (Some(item), Some(found)) = (item, found) else {
+            return status(StatusCode::NOT_FOUND);
+        };
+        let source = |path| thumbs::Source {
+            path,
+            kind: found.kind,
+            size: found.size,
+            mtime: found.mtime,
+        };
+        return match state
+            .cache
+            .get(&source(&item.from), Size::Thumb)
+            .ok_or(())
+            .or_else(|()| state.cache.ensure(&source(&item.path), Size::Thumb))
+            .and_then(|p| Ok(std::fs::read(p)?))
+        {
+            Ok(bytes) => image(bytes, "image/jpeg", false),
+            Err(_) => status(StatusCode::UNPROCESSABLE_ENTITY),
         };
     }
     let Ok((file, file_kind, size, mtime)) = state.lib.file_of(id) else {

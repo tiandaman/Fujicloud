@@ -5,6 +5,7 @@
   import Confirm from './lib/components/Confirm.svelte';
   import ExportDialog from './lib/components/ExportDialog.svelte';
   import SyncReview from './lib/components/SyncReview.svelte';
+  import TrashView from './lib/components/TrashView.svelte';
   import Grid from './lib/components/Grid.svelte';
   import InfoPanel from './lib/components/InfoPanel.svelte';
   import MapView from './lib/components/MapView.svelte';
@@ -101,6 +102,8 @@
         <Welcome />
       {:else if store.collection.type === 'map'}
         <MapView />
+      {:else if store.collection.type === 'trash'}
+        <TrashView />
       {:else if store.collection.type === 'people' || store.collection.type === 'pets'}
         {#key store.collection.type}
           <PeopleView kind={store.collection.type === 'pets' ? 'pet' : 'person'} />

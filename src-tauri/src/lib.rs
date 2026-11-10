@@ -43,6 +43,9 @@ pub struct AppState {
     pub pets: pets::Pets,
     /// The processors, memory and graphics card found at start.
     pub hardware: Hardware,
+    /// What the trash held when last listed (source, photo): `/x/<n>`
+    /// serves the nth one's thumbnail.
+    pub trash: Mutex<Vec<(i64, discard::Trashed)>>,
 }
 
 impl AppState {
@@ -1170,6 +1173,168 @@ async fn similar_photos(state: Shared<'_>, id: i64) -> CmdResult<Vec<Hit>> {
         .map(hits)
 }
 
+// ---- trash ------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashItem {
+    /// Its place in the listing: `/x/<n>` is its thumbnail.
+    n: usize,
+    source_id: i64,
+    #[serde(flatten)]
+    item: discard::Trashed,
+    /// The folder it was in, within its library folder.
+    folder: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Trash {
+    items: Vec<TrashItem>,
+    bytes: u64,
+    /// Some library folders are on this PC's own drives, where deleted
+    /// photos go to the Windows Recycle Bin instead.
+    recycle_bin: bool,
+    /// Library folders that can't be reached right now aren't listed.
+    offline: usize,
+}
+
+fn trash_listing(state: &AppState) -> CmdResult<Trash> {
+    let mut found = Vec::new();
+    let (mut recycle_bin, mut offline) = (false, 0);
+    for source in state.lib.sources().map_err(err)? {
+        let root = Path::new(&source.path);
+        if state.reach.is_offline(source.id) {
+            offline += 1;
+        } else if recycles(root) && !discard::trash_dir(root).is_dir() {
+            recycle_bin = true;
+        } else {
+            found.extend(
+                discard::list_trash(root)
+                    .into_iter()
+                    .map(|t| (source.id, source.path.clone(), t)),
+            );
+        }
+    }
+    found.sort_by(|a, b| b.2.at.cmp(&a.2.at).then_with(|| a.2.path.cmp(&b.2.path)));
+    let items: Vec<TrashItem> = found
+        .iter()
+        .enumerate()
+        .map(|(n, (source_id, root, item))| TrashItem {
+            n,
+            source_id: *source_id,
+            folder: item
+                .from
+                .parent()
+                .and_then(|d| d.strip_prefix(root).ok())
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            item: item.clone(),
+        })
+        .collect();
+    *state.trash.lock() = found.into_iter().map(|(id, _, t)| (id, t)).collect();
+    Ok(Trash {
+        bytes: items.iter().map(|i| i.item.size).sum(),
+        items,
+        recycle_bin,
+        offline,
+    })
+}
+
+/// What's in the library folders' trash.
+#[tauri::command]
+async fn list_trash(state: Shared<'_>) -> CmdResult<Trash> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || trash_listing(&state))
+        .await
+        .map_err(err)?
+}
+
+/// The listed trash entries at these places.
+fn trashed(state: &AppState, ns: &[usize]) -> Vec<(i64, discard::Trashed)> {
+    let listed = state.trash.lock();
+    ns.iter().filter_map(|n| listed.get(*n).cloned()).collect()
+}
+
+/// Puts trashed photos back where they were, and into the library again.
+/// Returns how many, and the names of those that couldn't be.
+#[tauri::command]
+async fn restore_trash(
+    app: AppHandle,
+    state: Shared<'_>,
+    ns: Vec<usize>,
+) -> CmdResult<(usize, Vec<String>)> {
+    let state = state.inner().clone();
+    let worker = state.clone();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker;
+        let sources = state.lib.sources().map_err(err)?;
+        let mut back: std::collections::HashMap<i64, Vec<PathBuf>> = Default::default();
+        let mut failed = Vec::new();
+        for (source_id, item) in trashed(&state, &ns) {
+            let Some(source) = sources.iter().find(|s| s.id == source_id) else {
+                continue;
+            };
+            match discard::restore(Path::new(&source.path), &item.path) {
+                Ok(dest) => back.entry(source_id).or_default().push(dest),
+                Err(e) => {
+                    log::warn!("couldn't restore {}: {e}", item.path.display());
+                    failed.push(item.name);
+                }
+            }
+        }
+        let mut restored = 0;
+        for (source_id, paths) in back {
+            restored += paths.len();
+            if let Err(e) = scan::index_files(&state.lib, source_id, &paths) {
+                log::warn!("indexing restored photos: {e}");
+            }
+        }
+        log::info!(
+            "restored {restored} photos from the trash; {} failed",
+            failed.len()
+        );
+        CmdResult::Ok((restored, failed))
+    })
+    .await
+    .map_err(err)??;
+    let _ = app.emit("library-changed", ());
+    // Their sidecars carry their stars, albums and what was found: the scan
+    // reads them.
+    spawn_scan(app, state);
+    Ok(done)
+}
+
+/// Deletes trashed photos for good: those at `ns`, or with none given the
+/// whole trash of every library folder that's reachable.
+#[tauri::command]
+async fn empty_trash(state: Shared<'_>, ns: Option<Vec<usize>>) -> CmdResult<usize> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let sources = state.lib.sources().map_err(err)?;
+        let mut gone = 0;
+        match ns {
+            Some(ns) => {
+                for (source_id, item) in trashed(&state, &ns) {
+                    if let Some(source) = sources.iter().find(|s| s.id == source_id) {
+                        gone += discard::empty(Path::new(&source.path), Some(&[item.path]))
+                            .map_err(err)?;
+                    }
+                }
+            }
+            None => {
+                for source in sources.iter().filter(|s| !state.reach.is_offline(s.id)) {
+                    gone += discard::empty(Path::new(&source.path), None).map_err(err)?;
+                }
+            }
+        }
+        log::info!("{gone} photos deleted from the trash for good");
+        Ok(gone)
+    })
+    .await
+    .map_err(err)?
+}
+
 // ---- changes from other PCs -----------------------------------------------------
 
 #[derive(Serialize)]
@@ -1388,6 +1553,7 @@ pub fn run() {
                 faces: faces::Faces::default(),
                 pets: pets::Pets::default(),
                 hardware: Hardware::detect(),
+                trash: Mutex::default(),
             });
             log::info!(
                 "{:?}: model size {:?}",
@@ -1483,6 +1649,9 @@ pub fn run() {
             move_to_person,
             delete_person,
             set_models,
+            list_trash,
+            restore_trash,
+            empty_trash,
             sync_review,
             resolve_sync_review,
             regroup_people,
