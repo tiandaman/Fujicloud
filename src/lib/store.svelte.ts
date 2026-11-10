@@ -1,6 +1,7 @@
 import { api } from './api';
 import { formatDay, formatMonth, plural } from './format';
 import { countryName, placeName, recipeSummary, recipeTitle } from './recipe';
+import { parseQuery, type Known } from './query';
 import { cacheVersion } from './version.svelte';
 import type {
   Album,
@@ -210,7 +211,7 @@ class Store {
 
       // Typed searches also run through smart search, debounced.
       $effect(() => {
-        const q = this.query.trim();
+        const q = this.search.text;
         const usable = this.smartReady;
         if (!usable || q.length < 3) {
           this.smartHits = null;
@@ -243,7 +244,7 @@ class Store {
   smartReady = $derived(!!this.smart?.enabled && (this.smart.phase === 'ready' || this.smart.phase === 'indexing') && this.smart.indexed > 0);
 
   /** True while results are ordered by relevance rather than the sort menu. */
-  ranked = $derived(this.collection.type === 'similar' || (!!this.smartHits && this.smartHits.query === this.query.trim()));
+  ranked = $derived.by(() => this.collection.type === 'similar' || (!!this.smartHits && this.smartHits.query === this.search.text));
 
   /** True for a RAW or Live Photo movie shown as part of its twin's tile. */
   folded(p: Photo, kinds?: Set<Kind>): boolean {
@@ -301,9 +302,31 @@ class Store {
     return this.photos.filter(test);
   });
 
+  /** Places photos were taken, by name, for the search box. */
+  #places = $derived.by(() => {
+    const out = new Map<string, Known['places'][number]>();
+    for (const p of this.photos) {
+      if (p.town) out.set(`t ${p.town}`, { name: p.town, field: 'town', value: p.town });
+      if (p.region) out.set(`r ${p.region}`, { name: p.region, field: 'region', value: p.region });
+      if (p.country) out.set(`c ${p.country}`, { name: countryName(p.country), field: 'country', value: p.country });
+    }
+    return [...out.values()];
+  });
+
+  /** The search box, understood: filters for what it names, and the description left. */
+  search = $derived.by(() =>
+    parseQuery(this.query, {
+      people: this.allPeople.filter((p) => p.name && !p.hidden).map((p) => ({ name: p.name!, photoIds: p.photoIds })),
+      albums: this.albums,
+      places: this.#places,
+      now: Date.now() / 1000,
+    }),
+  );
+
   visible = $derived.by(() => {
     const kinds = new Set(this.kinds);
-    const q = this.query.trim().toLowerCase();
+    const { filters, text } = this.search;
+    const q = text.toLowerCase();
     const smart = this.smartHits && this.smartHits.query.toLowerCase() === q ? this.smartHits.scores : null;
     const similar = this.collection.type === 'similar' ? this.similarHits?.scores : null;
     const scoreOf = (scores: Map<number, number>, p: Photo) => scores.get(p.id) ?? (p.pairId != null ? scores.get(p.pairId) : undefined);
@@ -314,6 +337,7 @@ class Store {
       if (p.rating < this.minRating) return false;
       // A RAW (or a Live Photo's movie) whose twin is shown is folded into that tile.
       if (this.folded(p, kinds)) return false;
+      if (!filters.every((f) => f.test(p))) return false;
       if (q) {
         const recipe = p.recipeKey ? this.recipeByKey.get(p.recipeKey)?.name : null;
         const hay = `${p.name} ${p.camera ?? ''} ${p.lens ?? ''} ${p.filmSim ?? ''} ${recipe ?? ''} ${p.folder} ${placeName(p) ?? ''}`.toLowerCase();
@@ -352,7 +376,7 @@ class Store {
     const list = this.visible;
     const g = this.group;
     if (this.ranked) {
-      const title = this.collection.type === 'similar' ? 'Most similar first' : `Best matches for “${this.query.trim()}”`;
+      const title = this.collection.type === 'similar' ? 'Most similar first' : `Best matches for “${this.search.text}”`;
       return [{ key: 'ranked', title, subtitle: plural(list.length, 'photo'), items: list }];
     }
     if (this.collection.type === 'duplicates') return this.#duplicateSections(list);
@@ -1247,7 +1271,7 @@ class Store {
     try {
       const hits = await api.searchSmart(query);
       // Ignore results for a query the user has already typed past.
-      if (query === this.query.trim()) this.smartHits = { query, scores: toScores(hits) };
+      if (query === this.search.text) this.smartHits = { query, scores: toScores(hits) };
     } catch (e) {
       this.toast(String(e), 'error');
     } finally {

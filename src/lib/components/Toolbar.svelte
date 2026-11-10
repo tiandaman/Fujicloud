@@ -157,7 +157,7 @@
       bind:this={search}
       class="field"
       type="search"
-      placeholder={store.smartReady ? 'Describe a photo, e.g. “sunset over the sea”' : 'Search name, lens, film, place…'}
+      placeholder={store.smartReady ? 'Describe it, e.g. “Mochi at the beach 2024”' : 'Search: a name, place, year, “4 stars”…'}
       spellcheck="false"
       bind:value={store.query}
       oninput={() => {
@@ -171,6 +171,13 @@
         }
       }}
     />
+    {#if store.search.filters.length}
+      <!-- What the search was taken to mean: quotes keep a word as description. -->
+      <div class="understood" title="Put a word in “quotes” to search for it as written">
+        {#each store.search.filters as f (f.label)}<span class="chip">{f.label}</span>{/each}
+        {#if store.search.text}<span class="chip text">“{store.search.text}”</span>{/if}
+      </div>
+    {/if}
     {#if !store.smart?.enabled}
       <button
         class="enable"
@@ -314,6 +321,33 @@
     gap: 5px;
     font-size: 12px;
     white-space: nowrap;
+  }
+  .understood {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    max-width: 420px;
+    padding: 5px 6px;
+    border-radius: 9px;
+    background: #26262a;
+    box-shadow: var(--shadow-lg);
+    pointer-events: none;
+  }
+  .understood .chip {
+    padding: 1px 8px;
+    border-radius: 99px;
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--text);
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+  .understood .chip.text {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-2);
   }
   .search {
     position: relative;
