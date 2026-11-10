@@ -90,6 +90,11 @@ impl Pets {
     }
 
     /// Lets photos that couldn't be read be tried again.
+    /// Photos that couldn't be read this session.
+    pub fn failures(&self) -> usize {
+        self.failed.lock().len()
+    }
+
     pub fn forget_failures(&self) {
         self.failed.lock().clear();
     }

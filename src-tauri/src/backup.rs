@@ -18,6 +18,8 @@ use crate::AppState;
 const EVERY: Duration = Duration::from_secs(4 * 3600);
 /// Imports arrive in bursts; wait for the burst to end.
 const SETTLE: Duration = Duration::from_secs(60);
+/// The backup is read back and compared with the library this often.
+const CHECK_EVERY: Duration = Duration::from_secs(30 * 24 * 3600);
 /// The first pass after the app starts, once the scan has had a go.
 const FIRST: Duration = Duration::from_secs(120);
 
@@ -33,6 +35,24 @@ pub struct Status {
     pub total: usize,
     /// Why the last pass didn't finish cleanly.
     pub error: Option<String>,
+    /// Checking the backup against the library (reading both copies of
+    /// every photo): under way, and how far along.
+    pub checking: bool,
+    pub check_done: usize,
+    pub check_total: usize,
+    /// Unix seconds when the last complete check finished.
+    pub last_checked: Option<i64>,
+    /// What the check (the one under way, else the last) found: photos
+    /// whose copies differ, ones that couldn't be read, how many were the
+    /// same and how many aren't backed up yet.
+    pub damaged: Vec<String>,
+    pub unreadable: Vec<String>,
+    pub check_same: usize,
+    pub check_waiting: usize,
+    /// How far a check that was interrupted had got (the last photo read),
+    /// so the next one carries on from there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_cursor: Option<String>,
 }
 
 pub struct Backup {
@@ -50,6 +70,12 @@ impl Backup {
             status: Mutex::new(Status {
                 last_backed_up: saved.last_backed_up,
                 error: saved.error,
+                last_checked: saved.last_checked,
+                damaged: saved.damaged,
+                unreadable: saved.unreadable,
+                check_same: saved.check_same,
+                check_waiting: saved.check_waiting,
+                check_cursor: saved.check_cursor,
                 ..Status::default()
             }),
             file,
@@ -118,9 +144,147 @@ pub fn start(app: AppHandle, state: Arc<AppState>) {
                 }
                 pass(&app, &state);
                 due = Instant::now() + EVERY;
+                // Once a month, read everything back: a copy can rot on a
+                // failing drive without its size or date changing.
+                let (checked, backed_up) = {
+                    let s = state.backup.status.lock();
+                    (s.last_checked, s.last_backed_up)
+                };
+                let month_ago = chrono::Utc::now().timestamp() - CHECK_EVERY.as_secs() as i64;
+                if backed_up.is_some() && checked.is_none_or(|t| t < month_ago) {
+                    check(app.clone(), state.clone());
+                }
             }
         })
         .expect("spawn backup thread");
+}
+
+/// Starts checking the backup against the library, unless one is running.
+/// It carries on from where an interrupted check stopped.
+pub fn check(app: AppHandle, state: Arc<AppState>) {
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+    if RUNNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("fuji-backup-check".into())
+        .spawn(move || {
+            check_pass(&app, &state);
+            RUNNING.store(false, Ordering::Release);
+        });
+    if spawned.is_err() {
+        RUNNING.store(false, Ordering::Release);
+    }
+}
+
+fn check_pass(app: &AppHandle, state: &AppState) {
+    let Some(dest) = target(state) else {
+        return;
+    };
+    let backup = &state.backup;
+    if !crate::reach::reachable(&dest) {
+        backup.update(app, state, |s| {
+            s.error = Some(format!(
+                "The backup folder {} can't be reached, so it couldn't be checked. Is the drive plugged in?",
+                dest.display()
+            ));
+        });
+        return;
+    }
+    let mut jobs = Vec::new();
+    let mut skipped = 0;
+    for source in state.lib.sources().unwrap_or_default() {
+        let root = Path::new(&source.path);
+        if root.starts_with(&dest) || dest.starts_with(root) {
+            continue;
+        }
+        if state.reach.is_offline(source.id) {
+            skipped += 1;
+            continue;
+        }
+        jobs.extend(backup::photos(root, &dest.join(backup::folder_for(root))));
+    }
+    // Carry on after the last photo an interrupted check read.
+    let cursor = backup.status.lock().check_cursor.clone().map(PathBuf::from);
+    let from = cursor
+        .and_then(|c| jobs.iter().position(|j| j.src > c))
+        .unwrap_or(0);
+    let mut found = backup::Check::default();
+    if from > 0 {
+        let s = backup.status.lock();
+        found.same = s.check_same;
+        found.waiting = s.check_waiting;
+        found.different = s.damaged.iter().map(PathBuf::from).collect();
+        found.unreadable = s
+            .unreadable
+            .iter()
+            .map(|p| (PathBuf::from(p), String::new()))
+            .collect();
+    }
+    let total = jobs.len();
+    log::info!(
+        "checking the backup in {}: {total} photos, from number {from}",
+        dest.display()
+    );
+    backup.update(app, state, |s| {
+        (s.checking, s.check_done, s.check_total) = (true, from, total);
+    });
+    let still_wanted = || target(state).as_deref() == Some(dest.as_path());
+    let names = |paths: &mut dyn Iterator<Item = &PathBuf>| -> Vec<String> {
+        paths.map(|p| p.to_string_lossy().into_owned()).collect()
+    };
+    let mut done = from;
+    // In stretches, so progress and how far it's got are kept as it goes.
+    for stretch in jobs[from..].chunks(50) {
+        let got = backup::verify(stretch, &mut found, &|_| {}, &still_wanted);
+        done += got;
+        backup.update(app, state, |s| {
+            s.check_done = done;
+            s.check_same = found.same;
+            s.check_waiting = found.waiting;
+            s.damaged = names(&mut found.different.iter());
+            s.unreadable = names(&mut found.unreadable.iter().map(|(p, _)| p));
+            s.check_cursor = stretch
+                .get(got.saturating_sub(1))
+                .filter(|_| got > 0)
+                .map(|j| j.src.to_string_lossy().into_owned())
+                .or(s.check_cursor.take());
+        });
+        backup.save();
+        if got < stretch.len() {
+            break;
+        }
+    }
+    for (file, why) in &found.unreadable {
+        log::warn!("backup check: couldn't read {}: {why}", file.display());
+    }
+    for file in &found.different {
+        log::warn!(
+            "backup check: {} differs from its backup copy",
+            file.display()
+        );
+    }
+    let finished = done == total && still_wanted() && skipped == 0;
+    log::info!(
+        "backup check {}: {} the same, {} different, {} unreadable, {} not backed up yet",
+        if finished { "finished" } else { "stopped" },
+        found.same,
+        found.different.len(),
+        found.unreadable.len(),
+        found.waiting
+    );
+    backup.update(app, state, |s| {
+        s.checking = false;
+        if done == total {
+            // Done with this round (even if a folder was out of reach).
+            s.check_cursor = None;
+        }
+        if finished {
+            s.last_checked = Some(chrono::Utc::now().timestamp());
+        }
+    });
+    backup.save();
 }
 
 fn pass(app: &AppHandle, state: &AppState) {

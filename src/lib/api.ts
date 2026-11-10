@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, SyncChange, SyncResolved, Trash, TrashItem } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Health, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, SyncChange, SyncResolved, Trash, TrashItem } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -81,6 +81,12 @@ export interface Api {
   saveSettings(settings: Settings): Promise<void>;
   backupStatus(): Promise<BackupStatus>;
   backupNow(): Promise<void>;
+  /** Reads every photo and its backup copy back and compares them (in the background). */
+  checkBackup(): Promise<void>;
+  /** How the library is doing; with `deep`, the database is read back too. */
+  libraryHealth(deep: boolean): Promise<Health>;
+  /** Tries again what was owed or failed: sidecars, thumbnails, analysis. */
+  retryFailed(): Promise<void>;
   /** Inbox folders found on this PC (PC AutoSave, iCloud Photos). */
   suggestInboxes(): Promise<string[]>;
   cacheInfo(): Promise<CacheInfo>;
@@ -182,6 +188,9 @@ function tauriApi(): Api {
     suggestInboxes: () => invoke('suggest_inboxes'),
     backupStatus: () => invoke('backup_status'),
     backupNow: () => invoke('backup_now'),
+    checkBackup: () => invoke('check_backup'),
+    libraryHealth: (deep) => invoke('library_health', { deep }),
+    retryFailed: () => invoke('retry_failed'),
     cacheInfo: () => invoke('cache_info'),
     rebuildThumbnails: () => invoke('rebuild_thumbnails'),
     openLogFolder: () => invoke('open_log_folder'),

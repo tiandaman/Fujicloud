@@ -250,6 +250,27 @@ impl Library {
         Ok(())
     }
 
+    /// Whether the library's database reads back sound: none if so, else
+    /// what SQLite found wrong. (Reads the whole database: a moment.)
+    pub fn quick_check(&self) -> Result<Option<String>, Error> {
+        let conn = self.conn.lock();
+        let found: Vec<String> = conn
+            .prepare("PRAGMA quick_check(5)")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok((found != ["ok"]).then(|| found.join("; ")))
+    }
+
+    /// How many photos there are, and how many sidecars are owed a save.
+    pub fn counts(&self) -> Result<(usize, usize), Error> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row(
+            "SELECT count(*), coalesce(sum(xmp_dirty <> 0), 0) FROM photos",
+            [],
+            |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)? as usize)),
+        )?)
+    }
+
     /// How many changes are waiting.
     pub fn held_count(&self) -> Result<usize, Error> {
         let conn = self.conn.lock();

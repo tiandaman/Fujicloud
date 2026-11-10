@@ -5,6 +5,7 @@
   import Confirm from './lib/components/Confirm.svelte';
   import ExportDialog from './lib/components/ExportDialog.svelte';
   import SyncReview from './lib/components/SyncReview.svelte';
+  import Health from './lib/components/Health.svelte';
   import TrashView from './lib/components/TrashView.svelte';
   import Grid from './lib/components/Grid.svelte';
   import InfoPanel from './lib/components/InfoPanel.svelte';
@@ -138,6 +139,9 @@
 {/if}
 {#if store.reviewOpen && store.review.length}
   <SyncReview />
+{/if}
+{#if store.healthOpen}
+  <Health />
 {/if}
 {#if store.confirmation}
   <Confirm />

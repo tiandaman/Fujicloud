@@ -222,6 +222,43 @@ export interface BackupStatus {
   total: number;
   /** Why the last pass didn't finish cleanly. */
   error: string | null;
+  /** Reading every photo and its backup copy back, and comparing them. */
+  checking: boolean;
+  checkDone: number;
+  checkTotal: number;
+  /** Unix seconds when the last complete check finished. */
+  lastChecked: number | null;
+  /** Photos whose two copies differ, and ones that couldn't be read. */
+  damaged: string[];
+  unreadable: string[];
+  checkSame: number;
+  /** Not in the backup yet (the next backup copies them). */
+  checkWaiting: number;
+}
+
+/** An analysis that's on: photos still to look at, and ones it couldn't read. */
+export interface Pending {
+  todo: number;
+  unreadable: number;
+}
+
+export interface Health {
+  photos: number;
+  /** What's wrong with the database, if it was checked (`databaseChecked`). */
+  databaseProblem: string | null;
+  databaseChecked: boolean;
+  sidecarsOwed: number;
+  sidecarsOn: boolean;
+  /** Changes from other PCs waiting for a look. */
+  held: number;
+  /** Library folders that can't be reached right now. */
+  offline: string[];
+  /** Photos that couldn't be shown this session. */
+  unshown: number;
+  smart: Pending | null;
+  faces: Pending | null;
+  pets: Pending | null;
+  backup: BackupStatus;
 }
 
 export interface ScanProgress {

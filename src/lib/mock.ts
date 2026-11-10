@@ -334,6 +334,14 @@ export function mockApi(): Api {
     done: 0,
     total: 0,
     error: offline ? "Shield · Samsung T7 can't be reached, so it wasn't backed up" : null,
+    checking: false,
+    checkDone: 0,
+    checkTotal: 0,
+    lastChecked: Date.now() / 1000 - 12 * 86400,
+    damaged: new URLSearchParams(location.search).has('review') ? ['\\\\SHIELD\\Samsung_T7\\Photos\\2026\\2026-10-13\\DSCF9981.RAF'] : [],
+    unreadable: [],
+    checkSame: photos.length,
+    checkWaiting: 0,
   };
   const recipeNames = new Map<string, string>([[recipeKey(RECIPES[0]), 'Kodachrome 64-ish']]);
   // People: a few named, a few groups waiting for a name.
@@ -719,6 +727,36 @@ export function mockApi(): Api {
       settings = s;
     },
     backupStatus: async () => backup,
+    async checkBackup() {
+      const total = photos.length;
+      backup = { ...backup, checking: true, checkDone: 0, checkTotal: total, damaged: [] };
+      emit('backup', backup);
+      for (let done = 0; done <= total; done += Math.ceil(total / 12)) {
+        await delay(250);
+        backup = { ...backup, checkDone: Math.min(done, total) };
+        emit('backup', backup);
+      }
+      backup = { ...backup, checking: false, checkDone: total, checkSame: total, lastChecked: Date.now() / 1000 };
+      emit('backup', backup);
+    },
+    async libraryHealth(deep) {
+      const sick = new URLSearchParams(location.search).has('review');
+      return {
+        photos: photos.length,
+        databaseProblem: null,
+        databaseChecked: deep,
+        sidecarsOwed: sick ? 14 : 0,
+        sidecarsOn: settings.writeXmp,
+        held: review.length,
+        offline: offline ? ['Shield · Samsung T7'] : [],
+        unshown: sick ? 3 : 0,
+        smart: settings.smartSearch ? { todo: 0, unreadable: 0 } : null,
+        faces: settings.faces ? { todo: sick ? 212 : 0, unreadable: sick ? 3 : 0 } : null,
+        pets: settings.pets ? { todo: 0, unreadable: 0 } : null,
+        backup,
+      };
+    },
+    retryFailed: async () => {},
     async backupNow() {
       backup = { ...backup, running: true, done: 0, total: 40, error: null };
       emit('backup', backup);

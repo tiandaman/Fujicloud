@@ -122,6 +122,68 @@ pub fn run(jobs: &[Job], progress: &dyn Fn(usize, usize), keep_going: &dyn Fn() 
     report
 }
 
+/// What checking the backup against the library found.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Check {
+    /// Photos read in both places and found the same.
+    pub same: usize,
+    /// Photos whose two copies differ though their sizes match: one of
+    /// them is damaged (a failing drive, a copy cut short).
+    pub different: Vec<PathBuf>,
+    /// Photos that couldn't be read, in the library or in the backup.
+    pub unreadable: Vec<(PathBuf, String)>,
+    /// Photos not in the backup yet, or changed since (the next backup
+    /// copies them).
+    pub waiting: usize,
+}
+
+/// The photos under `source` (not sidecars, which change all the time), in
+/// a fixed order, with where each one's copy is under `dest`.
+pub fn photos(source: &Path, dest: &Path) -> Vec<Job> {
+    let mut jobs: Vec<Job> = scan::walk(source)
+        .into_iter()
+        .filter_map(|f| {
+            let rel = f.path.strip_prefix(source).ok()?.to_path_buf();
+            Some(Job {
+                dest: dest.join(rel),
+                src: f.path,
+                size: f.size,
+            })
+        })
+        .collect();
+    jobs.sort_by(|a, b| a.src.cmp(&b.src));
+    jobs
+}
+
+/// Reads both copies of each photo in full and compares them, adding to
+/// `check`. `progress` gets how many are done; `keep_going` is asked
+/// between photos. Returns how many of `jobs` were got through.
+pub fn verify(
+    jobs: &[Job],
+    check: &mut Check,
+    progress: &dyn Fn(usize),
+    keep_going: &dyn Fn() -> bool,
+) -> usize {
+    for (i, job) in jobs.iter().enumerate() {
+        if !keep_going() {
+            return i;
+        }
+        match fs::metadata(&job.dest) {
+            Ok(md) if md.len() == job.size => {
+                match (ingest::checksum(&job.src), ingest::checksum(&job.dest)) {
+                    (Ok(a), Ok(b)) if a == b => check.same += 1,
+                    (Ok(_), Ok(_)) => check.different.push(job.src.clone()),
+                    (Err(e), _) => check.unreadable.push((job.src.clone(), e.to_string())),
+                    (_, Err(e)) => check.unreadable.push((job.dest.clone(), e.to_string())),
+                }
+            }
+            _ => check.waiting += 1,
+        }
+        progress(i + 1);
+    }
+    jobs.len()
+}
+
 /// Brings `dest/<folder_for(source)>` up to date with `source`.
 pub fn mirror(
     source: &Path,
@@ -203,5 +265,40 @@ mod tests {
             folder_for(Path::new(r"\\SHIELD\Samsung_T7")),
             "SHIELD_Samsung_T7"
         );
+    }
+
+    /// Checking reads both copies: a copy that changed without its size
+    /// changing (a failing drive) is found; one not backed up yet isn't an
+    /// error.
+    #[test]
+    fn checking_finds_a_damaged_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("Photos");
+        let drive = dir.path().join("Backup");
+        for n in 1..=4 {
+            write(
+                &lib.join(format!("2026/DSCF000{n}.JPG")),
+                format!("photo {n}").as_bytes(),
+            );
+        }
+        write(&lib.join("2026/DSCF0001.xmp"), b"<x/>");
+        mirror(&lib, &drive, &|_, _| {}, &|| true).unwrap();
+        let copy = drive.join("Photos");
+        // One copy rots, one is lost, one photo is new since.
+        fs::write(copy.join("2026/DSCF0002.JPG"), b"photo X").unwrap();
+        fs::remove_file(copy.join("2026/DSCF0003.JPG")).unwrap();
+        write(&lib.join("2026/DSCF0005.JPG"), b"photo 5");
+
+        let jobs = photos(&lib, &copy);
+        assert_eq!(jobs.len(), 5, "sidecars aren't checked");
+        let mut check = Check::default();
+        assert_eq!(verify(&jobs, &mut check, &|_| {}, &|| true), 5);
+        assert_eq!((check.same, check.waiting), (2, 2));
+        assert_eq!(check.different, vec![lib.join("2026/DSCF0002.JPG")]);
+        assert!(check.unreadable.is_empty());
+        // Stopped part-way, it says how far it got.
+        let n = std::cell::Cell::new(0);
+        let got = verify(&jobs, &mut Check::default(), &|d| n.set(d), &|| n.get() < 2);
+        assert_eq!(got, 2);
     }
 }

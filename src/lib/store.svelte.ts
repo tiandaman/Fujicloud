@@ -28,6 +28,7 @@ import type {
   SyncStatus,
   ModelChoice,
   SyncChange,
+  Health,
   Trash,
   Models,
 } from './types';
@@ -505,6 +506,7 @@ class Store {
     await this.refresh();
     this.ready = true;
     this.loadReview();
+    this.loadHealth();
 
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     await api.listen('library-changed', () => {
@@ -521,6 +523,7 @@ class Store {
     await api.listen('scan-done', () => {
       this.scan = null;
       lastScan = Date.now();
+      this.loadHealth();
     });
     window.addEventListener('focus', () => {
       if (!this.scan && this.sources.length && Date.now() - lastScan > 15 * 60_000) {
@@ -1091,6 +1094,34 @@ class Store {
       );
     } catch (e) {
       this.toast(String(e), 'error');
+    }
+  }
+
+  /** How the library is doing (looked up at start, after scans, and when opened). */
+  health = $state.raw<Health | null>(null);
+  healthOpen = $state(false);
+  /** Things that want a look: shown as a count beside "Library health". */
+  healthIssues = $derived.by(() => {
+    const h = this.health;
+    if (!h) return 0;
+    const b = this.backup ?? h.backup;
+    return (
+      +!!h.databaseProblem +
+      +(h.sidecarsOn && h.sidecarsOwed > 0 && !h.offline.length) +
+      +(h.held > 0) +
+      +(h.offline.length > 0) +
+      +(h.unshown > 0) +
+      +[h.smart, h.faces, h.pets].some((a) => a && a.unreadable > 0) +
+      +(b.damaged.length + b.unreadable.length > 0) +
+      +(!!b.target && !!b.error)
+    );
+  });
+
+  async loadHealth(deep = false) {
+    try {
+      this.health = await api.libraryHealth(deep);
+    } catch (e) {
+      console.warn('library health', e);
     }
   }
 

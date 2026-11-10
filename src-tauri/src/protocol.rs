@@ -130,6 +130,13 @@ fn remember_failure(id: i64, mtime: i64) {
     FAILED.lock().get_or_insert_default().insert((id, mtime));
 }
 
+/// How many photos couldn't be shown this session.
+pub fn failures() -> usize {
+    FAILED.lock().as_ref().map_or(0, |f| {
+        f.iter().map(|(id, _)| id).collect::<HashSet<_>>().len()
+    })
+}
+
 /// Gives every rendition another chance (after "Rebuild thumbnails").
 pub fn forget_failures() {
     *FAILED.lock() = None;

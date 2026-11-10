@@ -368,6 +368,11 @@
         <span class="go">Review</span>
       </button>
     {/if}
+    <button class="backup-line" class:warn={store.healthIssues > 0} title="Is everything saved, backed up, reachable and looked at?" onclick={() => (store.healthOpen = true)}>
+      <Icon name="check" size={13} />
+      <span class="truncate">Library health</span>
+      <span class="go">{store.healthIssues ? `${store.healthIssues} to look at` : 'All good'}</span>
+    </button>
     {#if store.backup?.target}
       <button
         class="backup-line"

@@ -1173,6 +1173,125 @@ async fn similar_photos(state: Shared<'_>, id: i64) -> CmdResult<Vec<Hit>> {
         .map(hits)
 }
 
+// ---- library health ---------------------------------------------------------------
+
+/// One analysis: how many photos are still to be looked at, and how many
+/// couldn't be read.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Pending {
+    todo: usize,
+    unreadable: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Health {
+    photos: usize,
+    /// What's wrong with the database, if anything (only looked for when
+    /// asked to: it reads the whole of it).
+    database_problem: Option<String>,
+    database_checked: bool,
+    /// Sidecars owed a save, and whether sidecars are being written at all.
+    sidecars_owed: usize,
+    sidecars_on: bool,
+    /// Changes from other PCs waiting for a look.
+    held: usize,
+    /// Library folders that can't be reached right now.
+    offline: Vec<String>,
+    /// Photos that couldn't be shown this session (damaged, or a kind of
+    /// file that can't be read).
+    unshown: usize,
+    /// For each analysis that's on.
+    smart: Option<Pending>,
+    faces: Option<Pending>,
+    pets: Option<Pending>,
+    backup: backup::Status,
+}
+
+/// How the library is doing. With `deep`, the database is read back too.
+#[tauri::command]
+async fn library_health(state: Shared<'_>, deep: bool) -> CmdResult<Health> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let lib = &state.lib;
+        let settings = state.settings.read().clone();
+        let (photos, sidecars_owed) = lib.counts().map_err(err)?;
+        let level = state.level();
+        let pending = |todo: Result<Vec<i64>, fuji_core::Error>, unreadable: usize| {
+            todo.map(|t| Pending {
+                todo: t.len().saturating_sub(unreadable),
+                unreadable,
+            })
+            .ok()
+        };
+        Ok(Health {
+            photos,
+            database_problem: if deep {
+                lib.quick_check().map_err(err)?
+            } else {
+                None
+            },
+            database_checked: deep,
+            sidecars_owed,
+            sidecars_on: settings.write_xmp,
+            held: lib.held_count().map_err(err)?,
+            offline: lib
+                .sources()
+                .map_err(err)?
+                .into_iter()
+                .filter(|s| state.reach.is_offline(s.id))
+                .map(|s| s.label)
+                .collect(),
+            unshown: protocol::failures(),
+            smart: settings
+                .smart_search
+                .then(|| {
+                    pending(
+                        lib.missing_embeddings(smart::model(&state).id),
+                        state.smart.failures(),
+                    )
+                })
+                .flatten(),
+            faces: settings
+                .faces
+                .then(|| {
+                    pending(
+                        lib.faces_todo(faces::model_id(level)),
+                        state.faces.failures(),
+                    )
+                })
+                .flatten(),
+            pets: settings
+                .pets
+                .then(|| {
+                    pending(
+                        lib.pets_todo(fuji_core::animals::MODEL_ID),
+                        state.pets.failures(),
+                    )
+                })
+                .flatten(),
+            backup: state.backup.status(&state),
+        })
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Tries again what was owed or failed: sidecars waiting to be saved, and
+/// photos that couldn't be read for a thumbnail or by the models.
+#[tauri::command]
+fn retry_failed(app: AppHandle, state: Shared) {
+    sidecars::flush(&state);
+    protocol::forget_failures();
+    state.smart.forget_failures();
+    state.faces.forget_failures();
+    state.pets.forget_failures();
+    smart::spawn(app.clone(), state.inner().clone());
+    faces::spawn(app.clone(), state.inner().clone());
+    pets::spawn(app, state.inner().clone());
+}
+
 // ---- trash ------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -1419,6 +1538,12 @@ fn backup_now() {
     backup::now();
 }
 
+/// Reads every photo in the library and its backup copy, and compares them.
+#[tauri::command]
+fn check_backup(app: AppHandle, state: Shared) {
+    backup::check(app, state.inner().clone());
+}
+
 #[tauri::command]
 fn suggest_inboxes() -> Vec<String> {
     settings::suggested_inboxes()
@@ -1649,6 +1774,9 @@ pub fn run() {
             move_to_person,
             delete_person,
             set_models,
+            check_backup,
+            library_health,
+            retry_failed,
             list_trash,
             restore_trash,
             empty_trash,
