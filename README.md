@@ -79,7 +79,10 @@ thousands of images.
   each photo with what would change (★2 → ★5, Pick → Reject, added to an album, deleted)
   and lets you take it or keep yours, photo by photo. A deletion you turn down puts the
   file back from the library folder's `.fujicloud-trash`. A RAW+JPEG pair is one change.
-  Switch it off in Settings to take everything as it comes.
+  Switch it off in Settings to take everything as it comes. Other PCs' changes are
+  looked for at start, on *Rescan*, and when you come back to the window after a
+  while. Saving what the models found, or a name, never writes this PC's stars or
+  albums over another's: the file is checked first, and its marks are left as they are.
 - **Camera and phone sync over your network:** new shots that land in an inbox folder
   (the camera's PC AutoSave folder, iCloud for Windows' *iCloud Photos* folder, or any
   other) are copied to the Shield's SSD, filed as `YYYY/YYYY-MM-DD/`, several files at
@@ -286,8 +289,8 @@ use example photos from [face_recognition](https://github.com/ageitgey/face_reco
 and [LFW](https://vis-www.cs.umass.edu/lfw/), downloaded at test time.
 Pets are found with [YOLOX](https://github.com/opencv/opencv_zoo/tree/main/models/object_detection_yolox)
 (Apache 2.0), also from OpenCV's model zoo, and told apart with Meta's
-[DINOv2](https://github.com/facebookresearch/dinov2) (Apache 2.0, via the
-[Xenova ONNX export](https://huggingface.co/Xenova/dinov2-base)); the pet tests use
+[DINOv3](https://github.com/facebookresearch/dinov3) (under Meta's DINOv3 License, via the
+[onnx-community ONNX export](https://huggingface.co/onnx-community/dinov3-vitb16-pretrain-lvd1689m-ONNX)); the pet tests use
 [ImageNet sample images](https://github.com/EliSchwartz/imagenet-sample-images) and
 [Oxford-IIIT Pet](https://www.robots.ox.ac.uk/~vgg/data/pets/) (CC BY-SA 4.0) photos,
 downloaded at test time.
