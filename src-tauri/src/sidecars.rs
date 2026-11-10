@@ -6,12 +6,13 @@ use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 
 use fuji_core::scan;
+use tauri::Emitter;
 
 use crate::AppState;
 
 static QUEUE: OnceLock<mpsc::Sender<Vec<i64>>> = OnceLock::new();
 
-pub fn start(state: Arc<AppState>) {
+pub fn start(app: tauri::AppHandle, state: Arc<AppState>) {
     let (tx, rx) = mpsc::channel::<Vec<i64>>();
     if QUEUE.set(tx).is_err() {
         return;
@@ -30,8 +31,28 @@ pub fn start(state: Arc<AppState>) {
                     continue;
                 }
                 match fuji_core::guard(|| scan::save_sidecars(&state.lib, &ids)) {
-                    Ok(0) => {}
-                    Ok(n) => log::info!("{n} sidecars will be saved when the library is reachable"),
+                    Ok(saved) => {
+                        if saved.failed > 0 {
+                            log::info!(
+                                "{} sidecars will be saved when the library is reachable",
+                                saved.failed
+                            );
+                        }
+                        // Another PC's changes, come across while saving.
+                        if saved.synced + saved.held > 0 {
+                            log::info!(
+                                "while saving sidecars: {} photos took another PC's marks, {} held for review",
+                                saved.synced,
+                                saved.held
+                            );
+                            let _ = app.emit("library-changed", ());
+                        }
+                        if saved.held > 0
+                            && let Ok(n) = state.lib.held_count()
+                        {
+                            let _ = app.emit("sync-review", n);
+                        }
+                    }
                     Err(e) => log::warn!("sidecars: {e}"),
                 }
             }

@@ -188,7 +188,9 @@ pub fn sync_sidecars(
     let on_disk = |r: &crate::db::SidecarRow| seen.get(&sidecar_key(&r.sidecar)).copied();
     let due: Vec<_> = rows
         .iter()
-        .filter(|r| !r.dirty)
+        // Changed here and not yet saved: ours is written instead. (But a
+        // photo never synced is merged, keeping both sides.)
+        .filter(|r| !r.dirty || r.xmp_mtime.is_none())
         .filter(|r| match (r.xmp_mtime, on_disk(r)) {
             (None, _) => true,
             (Some(known), Some(now)) => known != now,
@@ -245,28 +247,32 @@ pub fn sync_sidecars(
     }
     let applied = lib.apply_sidecars(&apply)?;
     lib.hold_changes(&hold)?;
-    // What another PC's models found, and the names given there.
     for (id, tags, _) in apply.iter().chain(&hold) {
-        let imported = (|| -> Result<(), Error> {
-            for (subject, found) in [
-                (crate::people::Subject::Person, &tags.faces),
-                (crate::people::Subject::Pet, &tags.pets),
-            ] {
-                if let Some(found) = found {
-                    lib.import_found(*id, subject, found)?;
-                }
-            }
-            if let Some((model, vector)) = &tags.smart {
-                lib.import_embedding(*id, model, vector)?;
-            }
-            Ok(())
-        })();
-        if let Err(e) = imported {
-            log::warn!("analysis from the sidecar of photo {id}: {e}");
-        }
+        import_found(lib, *id, tags);
     }
-    lib.sidecar_saved(&write_back, None)?;
+    lib.mark_unsaved(&write_back, true)?;
     Ok((applied, hold.len()))
+}
+
+/// Takes in what another PC's models found, and the names given there.
+fn import_found(lib: &Library, id: i64, tags: &Tags) {
+    let imported = (|| -> Result<(), Error> {
+        for (subject, found) in [
+            (crate::people::Subject::Person, &tags.faces),
+            (crate::people::Subject::Pet, &tags.pets),
+        ] {
+            if let Some(found) = found {
+                lib.import_found(id, subject, found)?;
+            }
+        }
+        if let Some((model, vector)) = &tags.smart {
+            lib.import_embedding(id, model, vector)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = imported {
+        log::warn!("analysis from the sidecar of photo {id}: {e}");
+    }
 }
 
 /// Keeps everything either side knows.
@@ -304,10 +310,28 @@ fn sidecar_key(path: &Path) -> String {
     path.to_string_lossy().to_lowercase()
 }
 
+/// What saving sidecars did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Saved {
+    /// Sidecars that couldn't be written (the share is off, say); they
+    /// stay owed and are retried later.
+    pub failed: usize,
+    /// Photos whose marks another PC had changed, found while saving and
+    /// taken in.
+    pub synced: usize,
+    /// Those held for review instead.
+    pub held: usize,
+}
+
 /// Writes these photos' sidecars (with their pair halves) from the database.
-/// A sidecar that can't be written (the share is off, say) stays marked and
-/// is retried later. Returns how many sidecars couldn't be saved.
-pub fn save_sidecars(lib: &Library, ids: &[i64]) -> Result<usize, Error> {
+///
+/// Another PC may have changed a sidecar since this one last looked, so the
+/// file is checked first. Marks changed here ([`Library::mark_unsaved`]) are
+/// written over it: the last to change a photo wins. Otherwise only what
+/// the models found is new, and the marks in the file are never touched:
+/// they're kept as they are, and if they're news, taken in (or held for
+/// review) as a scan would.
+pub fn save_sidecars(lib: &Library, ids: &[i64]) -> Result<Saved, Error> {
     let mut groups: HashMap<PathBuf, (PathBuf, Kind, Vec<i64>)> = HashMap::new();
     for id in lib.with_pairs(ids)? {
         let Ok(file) = lib.file_info(id) else {
@@ -320,29 +344,85 @@ pub fn save_sidecars(lib: &Library, ids: &[i64]) -> Result<usize, Error> {
             .2
             .push(id);
     }
-    let mut failed = 0;
+    let mut saved = Saved::default();
     for (sidecar, (file, kind, ids)) in groups {
-        let saved = pair_tags(lib, &ids)
-            .map_err(std::io::Error::other)
-            .and_then(|tags| {
-                xmp::write(&file, kind, &tags)?;
-                match std::fs::metadata(&sidecar) {
-                    Ok(md) => Ok(mtime_ms(&md)),
-                    // Nothing to record and no sidecar to keep in step.
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-                    Err(e) => Err(e),
-                }
-            });
-        match saved {
-            Ok(mtime) => lib.sidecar_saved(&ids, Some(mtime))?,
-            Err(e) => {
-                log::warn!("sidecar {}: {e}", sidecar.display());
-                lib.sidecar_saved(&ids, None)?;
-                failed += 1;
-            }
+        if let Err(e) = save_one(lib, &sidecar, &file, kind, &ids, &mut saved) {
+            log::warn!("sidecar {}: {e}", sidecar.display());
+            lib.mark_unsaved(&ids, false)?;
+            saved.failed += 1;
         }
     }
-    Ok(failed)
+    Ok(saved)
+}
+
+fn disk_mtime(path: &Path) -> std::io::Result<Option<i64>> {
+    match std::fs::metadata(path) {
+        Ok(md) => Ok(Some(mtime_ms(&md))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn save_one(
+    lib: &Library,
+    sidecar: &Path,
+    file: &Path,
+    kind: Kind,
+    ids: &[i64],
+    saved: &mut Saved,
+) -> Result<(), Error> {
+    let (marks_changed, seen) = lib.sidecar_state(ids)?;
+    let on_disk = disk_mtime(sidecar)?;
+    // The marks to leave in the file when ours haven't changed.
+    let mut keep = None;
+    if let Some(now) = on_disk
+        && (!marks_changed || seen.is_none())
+    {
+        let theirs = xmp::read(sidecar)?;
+        if seen != Some(now) {
+            // News from another PC, as a scan would have found it.
+            for &id in ids {
+                let item = if seen.is_none() {
+                    (id, merge(&lib.tags(id)?, Some(&theirs)), now)
+                } else {
+                    (id, theirs.clone(), now)
+                };
+                let news = crate::review::Marks::of(&item.1) != lib.marks(id)?;
+                if news && seen.is_some() && lib.reviewing() {
+                    lib.hold_changes(std::slice::from_ref(&item))?;
+                    saved.held += 1;
+                } else {
+                    saved.synced +=
+                        lib.apply_sidecars(std::slice::from_ref(&item))? * news as usize;
+                }
+                import_found(lib, id, &theirs);
+            }
+        }
+        keep = Some(if seen.is_none() {
+            merge(&lib.tags(ids[0])?, Some(&theirs))
+        } else {
+            theirs
+        });
+    }
+    let mut tags = pair_tags(lib, ids)?;
+    if let Some(keep) = keep {
+        tags = Tags {
+            faces: tags.faces,
+            pets: tags.pets,
+            smart: tags.smart,
+            ..keep
+        };
+    }
+    xmp::write(file, kind, &tags)?;
+    // Nothing to record and no sidecar to keep in step: 0.
+    let after = disk_mtime(sidecar)?.unwrap_or(0);
+    if marks_changed {
+        // Changed here since: what was held is out of date.
+        lib.drop_held_changes(ids)?;
+    } else {
+        lib.move_held(ids, after)?;
+    }
+    lib.sidecar_saved(ids, after)
 }
 
 /// What a shared sidecar records: the pair's ratings and albums (the same
@@ -589,6 +669,8 @@ mod tests {
         b.set_review(true);
         let b_img = photo(&b, "IMG_0002.JPG").id;
         b.set_rating(&[b_img], 2).unwrap();
+        save_sidecars(&b, &[b_img]).unwrap();
+        tick();
 
         // Laptop A rates the pair, puts IMG_0002 in an album, and deletes
         // the pair's RAW into the library folder's trash.
@@ -598,7 +680,7 @@ mod tests {
         a.set_rating(&[img], 4).unwrap();
         let album = a.create_album("Halifax").unwrap();
         a.add_to_album(album, &[img]).unwrap();
-        assert_eq!(save_sidecars(&a, &[jpg, img]).unwrap(), 0);
+        assert_eq!(save_sidecars(&a, &[jpg, img]).unwrap().failed, 0);
         let raf = dir.path().join("DSCF0001.RAF");
         crate::discard::to_trash_folder(dir.path(), &raf).unwrap();
         tick();
@@ -679,6 +761,68 @@ mod tests {
         assert!(b.photo(gone[0].id).is_err());
     }
 
+    /// Saving what the models found (or a name) never undoes what another
+    /// laptop set meanwhile: its marks are left in the file and taken in,
+    /// or held for review, instead of being overwritten by old ones.
+    #[test]
+    fn saving_what_was_found_keeps_another_laptops_marks() {
+        let dir = shared_folder();
+        let (a, b) = (laptop(dir.path()), laptop(dir.path()));
+        let (a_img, b_img) = (photo(&a, "IMG_0002.JPG").id, photo(&b, "IMG_0002.JPG").id);
+        b.set_rating(&[b_img], 1).unwrap();
+        save_sidecars(&b, &[b_img]).unwrap();
+        tick();
+        rescan(&a);
+        assert_eq!(photo(&a, "IMG_0002.JPG").rating, 1);
+
+        // A rates it 5; B, which hasn't looked since, saves what it found.
+        a.set_rating(&[a_img], 5).unwrap();
+        tick();
+        save_sidecars(&a, &[a_img]).unwrap();
+        tick();
+        b.store_embeddings("m", &[(b_img, vec![7u8; 4])]).unwrap();
+        let saved = save_sidecars(&b, &[b_img]).unwrap();
+        assert_eq!((saved.failed, saved.synced, saved.held), (0, 1, 0));
+        assert_eq!(photo(&b, "IMG_0002.JPG").rating, 5, "A's stars came in");
+        let file = xmp::read(&dir.path().join("IMG_0002.xmp")).unwrap();
+        assert_eq!(file.rating, 5, "and are still in the file");
+        assert_eq!(file.smart, Some(("m".into(), vec![7u8; 4])));
+        assert_eq!(rescan(&b).synced, 0, "nothing more to take in");
+
+        // Reviewing: A's next change is held, not overwritten, when B saves
+        // a name; kept as it is here, it stays in the file for A, and B
+        // isn't asked again.
+        b.set_review(true);
+        a.set_rating(&[a_img], 2).unwrap();
+        tick();
+        save_sidecars(&a, &[a_img]).unwrap();
+        tick();
+        b.store_embeddings("m", &[(b_img, vec![8u8; 4])]).unwrap();
+        let saved = save_sidecars(&b, &[b_img]).unwrap();
+        assert_eq!((saved.synced, saved.held), (0, 1));
+        assert_eq!(photo(&b, "IMG_0002.JPG").rating, 5);
+        assert_eq!(
+            xmp::read(&dir.path().join("IMG_0002.xmp")).unwrap().rating,
+            2
+        );
+        assert_eq!(b.held_changes().unwrap().len(), 1);
+        b.resolve_held(&[], &[b_img]).unwrap();
+        assert_eq!(rescan(&b).held, 0, "decided once");
+        // What B finds later still doesn't push B's stars over A's.
+        b.store_embeddings("m", &[(b_img, vec![9u8; 4])]).unwrap();
+        save_sidecars(&b, &[b_img]).unwrap();
+        assert_eq!(
+            xmp::read(&dir.path().join("IMG_0002.xmp")).unwrap().rating,
+            2
+        );
+        assert_eq!(photo(&b, "IMG_0002.JPG").rating, 5);
+        // But a change B makes itself does.
+        b.set_flag(&[b_img], 1).unwrap();
+        save_sidecars(&b, &[b_img]).unwrap();
+        let file = xmp::read(&dir.path().join("IMG_0002.xmp")).unwrap();
+        assert_eq!((file.rating, file.flag), (5, 1));
+    }
+
     #[test]
     fn laptops_share_ratings_picks_favourites_and_albums() {
         let dir = shared_folder();
@@ -690,7 +834,7 @@ mod tests {
         a.set_favorite(&[jpg], true).unwrap();
         let album = a.create_album("Halifax").unwrap();
         a.add_to_album(album, &[jpg]).unwrap();
-        assert_eq!(save_sidecars(&a, &[jpg]).unwrap(), 0);
+        assert_eq!(save_sidecars(&a, &[jpg]).unwrap().failed, 0);
         tick();
 
         assert_eq!(rescan(&b).synced, 2, "both halves of the RAW+JPEG pair");
@@ -746,7 +890,7 @@ mod tests {
         // the library lists first.
         let raf = photo(&a, "DSCF0001.RAF").id;
         assert!(pair_tags(&a, &[raf, jpg]).unwrap().faces.is_some());
-        assert_eq!(save_sidecars(&a, &[jpg, img]).unwrap(), 0);
+        assert_eq!(save_sidecars(&a, &[jpg, img]).unwrap().failed, 0);
         tick();
 
         rescan(&b);
@@ -824,7 +968,7 @@ mod tests {
         let img = photo(&a, "IMG_0002.JPG").id;
 
         b.set_rating(&[img], 5).unwrap();
-        b.sidecar_saved(&[img], None).unwrap(); // couldn't reach the share
+        b.mark_unsaved(&[img], true).unwrap(); // couldn't reach the share
         tick();
         a.set_rating(&[img], 1).unwrap();
         save_sidecars(&a, &[img]).unwrap();

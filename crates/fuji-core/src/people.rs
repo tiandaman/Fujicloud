@@ -690,6 +690,12 @@ impl Library {
         static GROUPING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
         let _one = GROUPING.lock();
         let mut people: HashMap<i64, Centroid> = HashMap::new();
+        // Named pets go by the pictures someone named or confirmed, as
+        // [`Library::learn_named`] does: guesses don't count towards what a
+        // pet looks like, so a look-alike can't drift in (and the two never
+        // disagree about where a picture belongs).
+        let mut sure: HashMap<i64, Centroid> = HashMap::new();
+        let mut named: HashSet<i64> = HashSet::new();
         let mut loose = Vec::new();
         let same;
         {
@@ -700,7 +706,9 @@ impl Library {
             let (model, length) = current_model(&conn, subject, self.active_model(subject))?;
             same = subject.same(model.as_deref());
             let mut stmt = conn.prepare(&format!(
-                "SELECT f.id, f.person_id, f.not_person, f.embedding FROM faces f
+                "SELECT f.id, f.person_id, f.not_person, f.embedding, f.confirmed,
+                        p.name IS NOT NULL
+                 FROM faces f LEFT JOIN people p ON p.id = f.person_id
                  LEFT JOIN {} s ON s.photo_id = f.photo_id
                  WHERE f.kind = ?1 AND length(f.embedding) = ?2 AND (?3 IS NULL OR s.model = ?3)
                  ORDER BY f.id",
@@ -710,10 +718,20 @@ impl Library {
             while let Some(r) = rows.next()? {
                 let embedding = subject.comparable(unpack(&r.get::<_, Vec<u8>>(3)?));
                 match r.get::<_, Option<i64>>(1)? {
-                    Some(person) => people
-                        .entry(person)
-                        .and_modify(|c| c.add(&embedding))
-                        .or_insert_with(|| Centroid::new(&embedding)),
+                    Some(person) => {
+                        if r.get::<_, Option<bool>>(5)?.unwrap_or(false) {
+                            named.insert(person);
+                            if subject == Subject::Pet && r.get::<_, i64>(4)? != 0 {
+                                sure.entry(person)
+                                    .and_modify(|c| c.add(&embedding))
+                                    .or_insert_with(|| Centroid::new(&embedding));
+                            }
+                        }
+                        people
+                            .entry(person)
+                            .and_modify(|c| c.add(&embedding))
+                            .or_insert_with(|| Centroid::new(&embedding))
+                    }
                     None => {
                         loose.push(Loose {
                             id: r.get(0)?,
@@ -726,6 +744,8 @@ impl Library {
             }
         }
 
+        let fixed: HashSet<i64> = sure.keys().copied().collect();
+        people.extend(sure);
         let mut filed: Vec<(i64, i64)> = Vec::new();
         // Faces of someone already known.
         let mut rest = Vec::new();
@@ -733,16 +753,27 @@ impl Library {
         // Too close to call between two: asked about, so kept in sight.
         let mut undecided = Vec::new();
         for face in loose {
-            let (best, second) = best_two(
+            let (best, _) = best_two(
                 people
                     .iter()
                     .filter(|(id, _)| Some(**id) != face.not_person)
                     .map(|(id, c)| (*id, c.similarity(&face.embedding))),
             );
+            // Between two named pets it must be clear which. (An unnamed
+            // group nearly as like is most often the same pet found twice.)
+            let rival = match best {
+                Some((person, _)) if margin > 0.0 && named.contains(&person) => people
+                    .iter()
+                    .filter(|(id, _)| **id != person && named.contains(id))
+                    .map(|(_, c)| c.similarity(&face.embedding))
+                    .fold(f32::NEG_INFINITY, f32::max),
+                _ => f32::NEG_INFINITY,
+            };
             match best {
-                // Nearly as like another: too close to call, so asked.
-                Some((person, sim)) if sim >= same && sim - second >= margin => {
-                    people.get_mut(&person).unwrap().add(&face.embedding);
+                Some((person, sim)) if sim >= same && sim - rival >= margin => {
+                    if !fixed.contains(&person) {
+                        people.get_mut(&person).unwrap().add(&face.embedding);
+                    }
                     filed.push((face.id, person));
                 }
                 Some((_, sim)) if sim >= same => {

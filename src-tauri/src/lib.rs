@@ -1400,7 +1400,7 @@ pub fn run() {
                 );
             }
             app.manage(state.clone());
-            sidecars::start(state.clone());
+            sidecars::start(app.handle().clone(), state.clone());
             sidecars::flush(&state);
             let handle = app.handle().clone();
             if let Err(e) = restart_sync(&handle, &state) {

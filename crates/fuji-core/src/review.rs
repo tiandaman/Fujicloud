@@ -178,6 +178,20 @@ impl Library {
         Ok(())
     }
 
+    /// A sidecar holding a held change was saved again with the same marks
+    /// (only what the models found was added): the change is as of the new
+    /// file, so deciding it doesn't make the next scan ask again.
+    pub(crate) fn move_held(&self, ids: &[i64], mtime: i64) -> Result<(), Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "UPDATE sync_review SET xmp_mtime = ?2 WHERE photo_id = ?1 AND removed = 0",
+        )?;
+        for id in ids {
+            stmt.execute(params![id, mtime])?;
+        }
+        Ok(())
+    }
+
     /// How many changes are waiting.
     pub fn held_count(&self) -> Result<usize, Error> {
         let conn = self.conn.lock();

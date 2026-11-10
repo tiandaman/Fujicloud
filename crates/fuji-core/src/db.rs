@@ -623,7 +623,7 @@ impl Library {
         let mut touched = Vec::new();
         {
             let mut update = tx.prepare(&format!(
-                "UPDATE photos SET {set} WHERE pair_key = (SELECT pair_key FROM photos WHERE id = ?1)"
+                "UPDATE photos SET {set}, xmp_dirty = 1 WHERE pair_key = (SELECT pair_key FROM photos WHERE id = ?1)"
             ))?;
             let mut select = tx.prepare_cached(
                 "SELECT id, path, kind, rating, label FROM photos
@@ -723,7 +723,9 @@ impl Library {
             "UPDATE albums SET name = ?2 WHERE id = ?1",
             params![id, name.trim()],
         )?;
-        self.album_members(id)
+        let members = self.album_members(id)?;
+        self.mark_unsaved(&members, true)?;
+        Ok(members)
     }
 
     /// Returns the photos that were in it, whose sidecars need updating.
@@ -732,6 +734,7 @@ impl Library {
         self.conn
             .lock()
             .execute("DELETE FROM albums WHERE id = ?1", [id])?;
+        self.mark_unsaved(&members, true)?;
         Ok(members)
     }
 
@@ -749,6 +752,8 @@ impl Library {
             }
         }
         tx.commit()?;
+        drop(conn);
+        self.mark_unsaved(&ids, true)?;
         Ok(ids)
     }
 
@@ -764,6 +769,8 @@ impl Library {
             }
         }
         tx.commit()?;
+        drop(conn);
+        self.mark_unsaved(&ids, true)?;
         Ok(ids)
     }
 
@@ -865,14 +872,15 @@ impl Library {
                 path,
                 kind,
                 xmp_mtime: r.get(3)?,
-                dirty: r.get::<_, i64>(4)? != 0,
+                dirty: r.get::<_, i64>(4)? == 1,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Applies what other laptops saved in sidecars. Photos with unsaved
-    /// changes made here keep them; those get written out instead.
+    /// changes made here keep them; those get written out instead (but one
+    /// never synced takes what it's given: both sides merged).
     pub fn apply_sidecars(&self, items: &[(i64, Tags, i64)]) -> Result<usize, Error> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
@@ -880,7 +888,7 @@ impl Library {
         {
             let mut update = tx.prepare_cached(
                 "UPDATE photos SET rating = ?2, label = ?3, flag = ?4, favorite = ?5, xmp_mtime = ?6
-                 WHERE id = ?1 AND xmp_dirty = 0",
+                 WHERE id = ?1 AND (xmp_dirty <> 1 OR xmp_mtime IS NULL)",
             )?;
             let mut clear = tx.prepare_cached("DELETE FROM album_photos WHERE photo_id = ?1")?;
             let mut album = tx.prepare_cached("INSERT OR IGNORE INTO albums (name) VALUES (?1)")?;
@@ -912,31 +920,71 @@ impl Library {
         Ok(applied)
     }
 
-    /// Records a sidecar write: `Some(mtime)` saved, `None` still pending.
-    pub fn sidecar_saved(&self, ids: &[i64], mtime: Option<i64>) -> Result<(), Error> {
-        if mtime.is_some() {
-            self.drop_held_changes(ids)?;
-        }
+    /// Records that these photos' sidecars are saved, as of `mtime`.
+    pub fn sidecar_saved(&self, ids: &[i64], mtime: i64) -> Result<(), Error> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
-            let mut stmt = tx.prepare_cached(
-                "UPDATE photos SET xmp_dirty = ?2, xmp_mtime = coalesce(?3, xmp_mtime) WHERE id = ?1",
-            )?;
+            let mut stmt =
+                tx.prepare_cached("UPDATE photos SET xmp_dirty = 0, xmp_mtime = ?2 WHERE id = ?1")?;
             for id in ids {
-                stmt.execute(params![id, mtime.is_none() as i64, mtime])?;
+                stmt.execute(params![id, mtime])?;
             }
         }
         tx.commit()?;
         Ok(())
     }
 
-    /// Photos changed here whose sidecars couldn't be saved yet.
+    /// Records that these photos' sidecars are owed a save. With `marks`,
+    /// the stars, pick, label, favourite or albums were changed here, and
+    /// win over what the sidecar says; without, only what the models found
+    /// is new, and the sidecar's marks are left as they are.
+    pub fn mark_unsaved(&self, ids: &[i64], marks: bool) -> Result<(), Error> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE photos SET xmp_dirty = CASE WHEN ?2 OR xmp_dirty = 1 THEN 1 ELSE 2 END
+                 WHERE id = ?1",
+            )?;
+            for id in ids {
+                stmt.execute(params![id, marks])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Photos whose sidecars are owed a save (the share was off, say).
     pub fn unsaved_sidecars(&self) -> Result<Vec<i64>, Error> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare_cached("SELECT id FROM photos WHERE xmp_dirty = 1")?;
+        let mut stmt = conn.prepare_cached("SELECT id FROM photos WHERE xmp_dirty <> 0")?;
         let rows = stmt.query_map([], |r| r.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Whether any of these photos' marks were changed here since their
+    /// sidecar was saved, and when the first one's sidecar was last seen.
+    pub(crate) fn sidecar_state(&self, ids: &[i64]) -> Result<(bool, Option<i64>), Error> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare_cached("SELECT xmp_dirty, xmp_mtime FROM photos WHERE id = ?1")?;
+        let mut marks = false;
+        let mut seen = None;
+        for (i, id) in ids.iter().enumerate() {
+            if let Some((dirty, mtime)) = stmt
+                .query_row([id], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
+                })
+                .optional()?
+            {
+                marks |= dirty == 1;
+                if i == 0 {
+                    seen = mtime;
+                }
+            }
+        }
+        Ok((marks, seen))
     }
 
     /// Where a photo's file is and which source it belongs to.
