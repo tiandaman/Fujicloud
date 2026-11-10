@@ -29,6 +29,7 @@ import type {
   SyncStatus,
   ModelChoice,
   SyncChange,
+  TextStatus,
   Health,
   Trash,
   Models,
@@ -174,6 +175,9 @@ class Store {
   hiddenPets = $derived(this.allPeople.filter((p) => p.hidden && p.kind === 'pet'));
   faces = $state.raw<FacesStatus | null>(null);
   petStatus = $state.raw<PetsStatus | null>(null);
+  textStatus = $state.raw<TextStatus | null>(null);
+  /** Photos with the search's words written in them. */
+  textHits = $state.raw<{ query: string; ids: Set<number> } | null>(null);
   /** This PC's hardware and the size of model its analyses use. */
   models = $state.raw<Models | null>(null);
   personById = $derived(new Map(this.allPeople.map((p) => [p.id, p])));
@@ -207,6 +211,24 @@ class Store {
         } catch {
           // Storage can be unavailable; preferences just won't persist.
         }
+      });
+
+      // And through the text read in photos.
+      $effect(() => {
+        const q = this.search.text;
+        if (!this.textStatus?.enabled || q.length < 2) {
+          this.textHits = null;
+          return;
+        }
+        const t = setTimeout(async () => {
+          try {
+            const ids = await api.searchText(q);
+            if (q === this.search.text) this.textHits = { query: q, ids: new Set(ids) };
+          } catch (e) {
+            console.warn('text search', e);
+          }
+        }, 200);
+        return () => clearTimeout(t);
       });
 
       // Typed searches also run through smart search, debounced.
@@ -329,6 +351,7 @@ class Store {
     const q = text.toLowerCase();
     const smart = this.smartHits && this.smartHits.query.toLowerCase() === q ? this.smartHits.scores : null;
     const similar = this.collection.type === 'similar' ? this.similarHits?.scores : null;
+    const written = this.textHits && this.textHits.query.toLowerCase() === q ? this.textHits.ids : null;
     const scoreOf = (scores: Map<number, number>, p: Photo) => scores.get(p.id) ?? (p.pairId != null ? scores.get(p.pairId) : undefined);
     const textMatch = new Set<number>();
 
@@ -341,7 +364,8 @@ class Store {
       if (q) {
         const recipe = p.recipeKey ? this.recipeByKey.get(p.recipeKey)?.name : null;
         const hay = `${p.name} ${p.camera ?? ''} ${p.lens ?? ''} ${p.filmSim ?? ''} ${recipe ?? ''} ${p.folder} ${placeName(p) ?? ''}`.toLowerCase();
-        const exact = q.split(/\s+/).every((t) => hay.includes(t));
+        // Named so, or with those words written in the picture.
+        const exact = q.split(/\s+/).every((t) => hay.includes(t)) || !!written?.has(p.id) || (p.pairId != null && !!written?.has(p.pairId));
         if (exact) textMatch.add(p.id);
         else if (!smart || scoreOf(smart, p) === undefined) return false;
       }
@@ -525,6 +549,7 @@ class Store {
     this.backup = boot.backup;
     this.faces = boot.faces;
     this.petStatus = boot.pets;
+    this.textStatus = boot.texts;
     this.models = boot.models;
     this.version = boot.version;
     await this.refresh();
@@ -588,6 +613,11 @@ class Store {
     await api.listen<PetsStatus>('pets', (f) => {
       this.petStatus = f;
       if (f.phase === 'error' && f.error) this.toast(f.error, 'error');
+    });
+    await api.listen<TextStatus>('texts', (t) => {
+      const was = this.textStatus;
+      this.textStatus = t;
+      if (t.phase === 'error' && t.error && was?.phase !== 'error') this.toast(t.error, 'error');
     });
     await api.listen<BackupStatus>('backup', (b) => {
       const before = this.backup;
@@ -941,6 +971,16 @@ class Store {
     }
   }
 
+  async setReadText(enabled: boolean) {
+    try {
+      this.textStatus = await api.setReadText(enabled);
+      if (this.settings) this.settings = { ...this.settings, readText: enabled };
+      if (!enabled) this.textHits = null;
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
   async setPets(enabled: boolean) {
     try {
       this.petStatus = await api.setPets(enabled);
@@ -1135,7 +1175,7 @@ class Store {
       +(h.held > 0) +
       +(h.offline.length > 0) +
       +(h.unshown > 0) +
-      +[h.smart, h.faces, h.pets].some((a) => a && a.unreadable > 0) +
+      +[h.smart, h.faces, h.pets, h.text].some((a) => a && a.unreadable > 0) +
       +(b.damaged.length + b.unreadable.length > 0) +
       +(!!b.target && !!b.error)
     );

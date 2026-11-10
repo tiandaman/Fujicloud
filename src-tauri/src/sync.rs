@@ -257,6 +257,7 @@ fn run(
             crate::smart::spawn(app.clone(), state.clone());
             crate::faces::spawn(app.clone(), state.clone());
             crate::pets::spawn(app.clone(), state.clone());
+            crate::texts::spawn(app.clone(), state.clone());
             crate::backup::soon();
         }
         status.copying = 0;

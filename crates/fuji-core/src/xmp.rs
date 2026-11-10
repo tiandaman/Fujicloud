@@ -27,6 +27,8 @@ pub struct Tags {
     /// Its smart search description: the model's name, and the vector as
     /// stored (quantized).
     pub smart: Option<(String, Vec<u8>)>,
+    /// The text read in it: the model's name, and the lines.
+    pub text: Option<(String, String)>,
     /// Which PC last changed the marks (stars, pick, label, favourite,
     /// albums), and when (Unix seconds).
     pub by: Option<(String, i64)>,
@@ -223,6 +225,13 @@ pub fn parse(xml: &str) -> Tags {
         faces: get_property(xml, "fujicloud:Faces").and_then(found_from_text),
         pets: get_property(xml, "fujicloud:Pets").and_then(found_from_text),
         smart: get_property(xml, "fujicloud:Smart").and_then(smart_from_text),
+        text: get_property(xml, "fujicloud:TextModel")
+            .map(unescape)
+            .filter(|m| !m.is_empty())
+            .zip(
+                get_property(xml, "fujicloud:Text")
+                    .map(|t| unescape(t).replace("%0A", "\n").replace("%25", "%")),
+            ),
         by: get_property(xml, "fujicloud:By")
             .map(unescape)
             .filter(|b| !b.trim().is_empty())
@@ -280,6 +289,12 @@ pub fn update(xml: &str, tags: &Tags) -> Option<String> {
     }
     if let Some(smart) = &tags.smart {
         set_property(&mut xml, "fujicloud:Smart", Some(&smart_to_text(smart)));
+    }
+    if let Some((model, text)) = &tags.text {
+        set_property(&mut xml, "fujicloud:TextModel", Some(&escape(model)));
+        // One attribute: line ends are kept as %0A.
+        let lines = text.replace('%', "%25").replace(['\r', '\n'], "%0A");
+        set_property(&mut xml, "fujicloud:Text", Some(&escape(&lines)));
     }
     for (prefix, ns) in [("xmp", XMP_NS), ("fujicloud", OUR_NS)] {
         let used = xml.contains(&format!("{prefix}:"));

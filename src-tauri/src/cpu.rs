@@ -13,6 +13,7 @@ pub enum Analysis {
     SmartSearch,
     Faces,
     Pets,
+    Text,
 }
 
 /// How many threads an analysis's models run on.
@@ -20,6 +21,6 @@ pub fn threads(analysis: Analysis) -> usize {
     let n = std::thread::available_parallelism().map_or(2, |n| n.get());
     match analysis {
         Analysis::Faces => (n / 2).max(1),
-        Analysis::SmartSearch | Analysis::Pets => (n / 4).max(1),
+        Analysis::SmartSearch | Analysis::Pets | Analysis::Text => (n / 4).max(1),
     }
 }

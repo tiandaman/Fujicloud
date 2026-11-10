@@ -44,6 +44,8 @@ pub struct Settings {
     pub faces: bool,
     /// Find cats and dogs and tell them apart (downloads two small models).
     pub pets: bool,
+    /// Read the text in photos so it can be searched (downloads a small model).
+    pub read_text: bool,
     /// How big a model each analysis uses: left to the PC, or chosen.
     pub models: fuji_core::hardware::Choice,
     /// Bumped by "Rebuild thumbnails" so the window stops reusing the old
@@ -67,6 +69,7 @@ impl Default for Settings {
             smart_gpu: true,
             faces: false,
             pets: false,
+            read_text: false,
             models: fuji_core::hardware::Choice::Auto,
             cache_version: 0,
         }

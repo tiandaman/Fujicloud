@@ -104,7 +104,7 @@
         {@render row('warn', `${plural(h.unshown, 'photo')} couldn’t be shown`, 'Damaged, or a kind of file that can’t be opened.', { label: 'Try again', run: retry })}
       {/if}
 
-      {#each [analysis('Smart search', h.smart), analysis('People', h.faces), analysis('Pets', h.pets)] as a (a.text)}
+      {#each [analysis('Smart search', h.smart), analysis('People', h.faces), analysis('Pets', h.pets), analysis('Text in photos', h.text)] as a (a.text)}
         {@render row(a.tone, a.text, a.detail, a.tone === 'warn' ? { label: 'Try again', run: retry } : undefined)}
       {/each}
 

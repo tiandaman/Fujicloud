@@ -327,6 +327,7 @@ impl Library {
         conn.execute_batch(TABLES)?;
         conn.execute_batch(crate::people::TABLES)?;
         conn.execute_batch(crate::review::TABLES)?;
+        conn.execute_batch(crate::written::TABLES)?;
         crate::review::migrate(&conn)?;
         crate::people::migrate(&conn)?;
         migrate(&conn)?;
@@ -872,6 +873,7 @@ impl Library {
         // What the models found, so other PCs needn't look again.
         tags.faces = self.found(id, crate::people::Subject::Person)?;
         tags.pets = self.found(id, crate::people::Subject::Pet)?;
+        tags.text = self.text_of(id)?;
         Ok(tags)
     }
 

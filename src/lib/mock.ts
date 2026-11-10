@@ -2,7 +2,7 @@
 // browser (`npm run dev`) without the Rust backend or a camera.
 
 import type { Api } from './api';
-import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Models, Person, PetsStatus, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source, SyncChange, SyncResolved, TrashItem } from './types';
+import type { Album, BackupStatus, Bootstrap, Detail, FaceInPhoto, FacesStatus, Hit, Kind, Label, Models, Person, PetsStatus, Photo, Recipe, RecipeRow, Settings, SmartStatus, Source, TextStatus, SyncChange, SyncResolved, TrashItem } from './types';
 
 const FILMS = ['Classic Chrome', 'Classic Neg.', 'Provia', 'Velvia', 'Acros', 'Nostalgic Neg.', 'Reala Ace', 'Eterna', 'Astia', 'Pro Neg. Hi', 'Acros +R', 'Monochrome'];
 const FILM_WEIGHTS = [18, 16, 12, 9, 8, 7, 7, 5, 5, 4, 3, 2];
@@ -274,6 +274,7 @@ export function mockApi(): Api {
     smartGpu: true,
     faces: true,
     pets: true,
+    readText: true,
     models: 'auto',
     cacheVersion: 0,
   };
@@ -387,6 +388,9 @@ export function mockApi(): Api {
     );
   people = people.map((p) => ({ ...p, faces: p.photoIds.length }));
   let pets: PetsStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 352, scanned: photos.length, error: null };
+  let texts: TextStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 21, read: photos.length, withText: Math.round(photos.length / 9), error: null };
+  // What's "written" in the preview's photos: a sign in every ninth.
+  const SIGNS = ['halifax harbour', 'open 9am 5pm', 'ramen 950', 'platform 4', 'no entry', 'coffee'];
   const hiddenFaces = new Set<number>();
   let faces: FacesStatus = { enabled: true, phase: 'ready', done: 0, total: 0, downloadMb: 183, scanned: photos.length, error: null };
   const avatar = (seed: number) => {
@@ -449,7 +453,7 @@ export function mockApi(): Api {
 
   return {
     native: false,
-    bootstrap: async (): Promise<Bootstrap> => ({ version: '0.2.0', sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup, faces, pets, models: models() }),
+    bootstrap: async (): Promise<Bootstrap> => ({ version: '0.2.0', sources, settings, effects: false, editor: 'C:\\Program Files\\Adobe\\Adobe Photoshop 2026\\Photoshop.exe', smart, backup, faces, pets, texts, models: models() }),
     listPhotos: async () => photos,
     listSources: async () => sources,
     async photoDetail(id) {
@@ -531,6 +535,16 @@ export function mockApi(): Api {
       settings = { ...settings, pets: enabled };
       pets = { ...pets, enabled, phase: enabled ? 'ready' : 'off' };
       return pets;
+    },
+    async setReadText(enabled) {
+      settings = { ...settings, readText: enabled };
+      texts = { ...texts, enabled, phase: enabled ? 'ready' : 'off' };
+      return texts;
+    },
+    async searchText(query) {
+      const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+      if (!words.length || !texts.enabled) return [];
+      return photos.filter((p) => p.id % 9 === 0 && words.every((w) => SIGNS[(p.id / 9) % SIGNS.length].includes(w))).map((p) => p.id);
     },
     listPeople: async () => people,
     async facesIn(photoId) {
@@ -753,6 +767,7 @@ export function mockApi(): Api {
         smart: settings.smartSearch ? { todo: 0, unreadable: 0 } : null,
         faces: settings.faces ? { todo: sick ? 212 : 0, unreadable: sick ? 3 : 0 } : null,
         pets: settings.pets ? { todo: 0, unreadable: 0 } : null,
+        text: settings.readText ? { todo: 0, unreadable: 0 } : null,
         backup,
       };
     },

@@ -408,6 +408,30 @@
     </section>
 
     <section>
+      <h3><Icon name="search" size={16} /> Text in photos</h3>
+      <p class="hint">
+        Reads the writing in your photos (signs, menus, labels, tickets, screenshots) so typing a word finds them. It runs entirely on this PC,
+        using PaddleOCR's small PP-OCRv5 models (downloaded once, {store.textStatus?.downloadMb ?? 21} MB): English and other plain-alphabet text,
+        Chinese and Japanese. It reads level writing best; small print is read from photos you've opened, which are kept larger.
+      </p>
+      <label class="row toggle">
+        <div>
+          <span>Read text in photos</span>
+          <small class="faint">
+            {#if !store.textStatus?.enabled}Off
+            {:else if store.textStatus.phase === 'downloading'}Downloading models… {store.textStatus.total
+                ? `${formatBytes(store.textStatus.done)} of ${formatBytes(store.textStatus.total)}`
+                : 'connecting'}
+            {:else if store.textStatus.phase === 'indexing'}Reading… {formatCount(store.textStatus.done)} of {formatCount(store.textStatus.total)}
+            {:else if store.textStatus.phase === 'error'}Problem: {store.textStatus.error}
+            {:else}Ready · {formatCount(store.textStatus.read)} photos read · {formatCount(store.textStatus.withText)} with something written{/if}
+          </small>
+        </div>
+        <input type="checkbox" class="switch" checked={!!store.textStatus?.enabled} onchange={(e) => store.setReadText(e.currentTarget.checked)} />
+      </label>
+    </section>
+
+    <section>
       <h3><Icon name="photos" size={16} /> Thumbnail cache</h3>
       <div class="row">
         <div class="grow">
@@ -439,7 +463,7 @@
     <section class="credits">
       <p class="faint">
         Place names © <a href="https://www.geonames.org" target="_blank" rel="noreferrer">GeoNames</a> (CC BY 4.0). Map © OpenStreetMap
-        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP and SigLIP 2 models; People uses InsightFace's SCRFD and ArcFace models (for non-commercial use); Pets uses OpenCV's YOLOX and Meta's DINOv3 models. Movies Windows can't play are converted with FFmpeg (gyan.dev's build, downloaded when first needed).
+        contributors, tiles by OpenFreeMap; borders from Natural Earth. Smart search uses Google's SigLIP and SigLIP 2 models; People uses InsightFace's SCRFD and ArcFace models (for non-commercial use); text is read with PaddleOCR's PP-OCRv5 (Apache 2.0); Pets uses OpenCV's YOLOX and Meta's DINOv3 models. Movies Windows can't play are converted with FFmpeg (gyan.dev's build, downloaded when first needed).
       </p>
     </section>
 

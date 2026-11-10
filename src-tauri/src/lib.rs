@@ -9,6 +9,7 @@ mod settings;
 mod sidecars;
 mod smart;
 mod sync;
+mod texts;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -41,6 +42,7 @@ pub struct AppState {
     pub backup: backup::Backup,
     pub faces: faces::Faces,
     pub pets: pets::Pets,
+    pub texts: texts::Texts,
     /// The processors, memory and graphics card found at start.
     pub hardware: Hardware,
     /// What the trash held when last listed (source, photo): `/x/<n>`
@@ -94,6 +96,7 @@ struct Bootstrap {
     backup: backup::Status,
     faces: faces::Status,
     pets: pets::Status,
+    texts: texts::Status,
     models: Models,
 }
 
@@ -136,6 +139,7 @@ fn bootstrap(app: AppHandle, state: Shared) -> CmdResult<Bootstrap> {
         backup: state.backup.status(&state),
         faces: state.faces.status(&state),
         pets: state.pets.status(&state),
+        texts: state.texts.status(&state),
         models: models(&state),
     })
 }
@@ -282,6 +286,7 @@ pub(crate) fn spawn_scan(app: AppHandle, state: Arc<AppState>) {
         smart::spawn(app.clone(), state.clone());
         faces::spawn(app.clone(), state.clone());
         pets::spawn(app.clone(), state.clone());
+        texts::spawn(app.clone(), state.clone());
         spawn_warm(app, state);
     });
 }
@@ -912,6 +917,33 @@ fn set_pets(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<pets::Sta
     Ok(state.pets.status(&state))
 }
 
+#[tauri::command(async)]
+fn text_status(state: Shared) -> texts::Status {
+    state.texts.status(&state)
+}
+
+/// Reading the text in photos, on or off.
+#[tauri::command]
+fn set_read_text(app: AppHandle, state: Shared, enabled: bool) -> CmdResult<texts::Status> {
+    {
+        let mut settings = state.settings.write();
+        settings.read_text = enabled;
+        settings.save(&state.settings_path).map_err(err)?;
+    }
+    if enabled {
+        texts::spawn(app, state.inner().clone());
+    } else {
+        state.texts.disable(&app, &state);
+    }
+    Ok(state.texts.status(&state))
+}
+
+/// Photos with every word of `query` written in them.
+#[tauri::command(async)]
+fn search_text(state: Shared, query: String) -> CmdResult<Vec<i64>> {
+    state.lib.search_text(&query).map_err(err)
+}
+
 #[tauri::command]
 async fn list_people(state: Shared<'_>) -> CmdResult<Vec<PersonRow>> {
     state.lib.people().map_err(err)
@@ -1081,6 +1113,8 @@ async fn reidentify(
         }
         Subject::Pet => {
             state.pets.forget_failures();
+            state.texts.forget_failures();
+            texts::spawn(app.clone(), state.inner().clone());
             pets::spawn(app, state.inner().clone());
         }
     }
@@ -1206,6 +1240,7 @@ struct Health {
     smart: Option<Pending>,
     faces: Option<Pending>,
     pets: Option<Pending>,
+    text: Option<Pending>,
     backup: backup::Status,
 }
 
@@ -1268,6 +1303,15 @@ async fn library_health(state: Shared<'_>, deep: bool) -> CmdResult<Health> {
                     pending(
                         lib.pets_todo(fuji_core::animals::MODEL_ID),
                         state.pets.failures(),
+                    )
+                })
+                .flatten(),
+            text: settings
+                .read_text
+                .then(|| {
+                    pending(
+                        lib.text_todo(fuji_core::text::MODEL_ID),
+                        state.texts.failures(),
                     )
                 })
                 .flatten(),
@@ -1514,6 +1558,7 @@ fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdRe
         settings.smart_gpu = now.smart_gpu;
         settings.faces = now.faces;
         settings.pets = now.pets;
+        settings.read_text = now.read_text;
         settings.cache_version = now.cache_version;
     }
     settings.migrate();
@@ -1677,6 +1722,7 @@ pub fn run() {
                 backup: backup::Backup::new(data.join("backup.json")),
                 faces: faces::Faces::default(),
                 pets: pets::Pets::default(),
+                texts: texts::Texts::default(),
                 hardware: Hardware::detect(),
                 trash: Mutex::default(),
             });
@@ -1719,6 +1765,7 @@ pub fn run() {
             smart::spawn(handle.clone(), state.clone());
             faces::spawn(handle.clone(), state.clone());
             pets::spawn(handle.clone(), state.clone());
+            texts::spawn(handle.clone(), state.clone());
             reach::spawn(handle.clone(), state.clone());
             backup::start(handle.clone(), state.clone());
             spawn_scan(handle, state);
@@ -1788,6 +1835,9 @@ pub fn run() {
             hide_people,
             hide_face,
             pets_status,
+            text_status,
+            set_read_text,
+            search_text,
             set_pets,
             search_smart,
             similar_photos,

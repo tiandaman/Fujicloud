@@ -139,6 +139,8 @@ export interface Settings {
   smartGpu: boolean;
   faces: boolean;
   pets: boolean;
+  /** Read the text in photos so it can be searched. */
+  readText: boolean;
   /** How big a model each analysis uses: left to the PC, or chosen. */
   models: ModelChoice;
   cacheVersion: number;
@@ -166,6 +168,7 @@ export interface Bootstrap {
   backup: BackupStatus;
   faces: FacesStatus;
   pets: PetsStatus;
+  texts: TextStatus;
   models: Models;
 }
 
@@ -210,6 +213,20 @@ export interface FacesStatus {
 
 export interface PetsStatus extends Omit<FacesStatus, 'phase'> {
   phase: 'off' | 'downloading' | 'indexing' | 'ready' | 'error';
+}
+
+/** Reading the text in photos. */
+export interface TextStatus {
+  enabled: boolean;
+  phase: 'off' | 'downloading' | 'indexing' | 'ready' | 'error';
+  /** Bytes while downloading, photos while reading. */
+  done: number;
+  total: number;
+  downloadMb: number;
+  /** Photos read so far, and how many had something written in them. */
+  read: number;
+  withText: number;
+  error: string | null;
 }
 
 export interface BackupStatus {
@@ -258,6 +275,7 @@ export interface Health {
   smart: Pending | null;
   faces: Pending | null;
   pets: Pending | null;
+  text: Pending | null;
   backup: BackupStatus;
 }
 

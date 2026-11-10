@@ -38,8 +38,11 @@ pub mod raf;
 pub mod review;
 pub mod scan;
 pub mod search;
+#[cfg(feature = "smart-search")]
+pub mod text;
 pub mod thumbs;
 pub mod video;
+pub mod written;
 pub mod xmp;
 
 use std::path::Path;

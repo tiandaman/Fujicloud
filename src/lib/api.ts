@@ -1,5 +1,5 @@
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Health, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, SyncChange, SyncResolved, Trash, TrashItem } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Health, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, TextStatus, SyncChange, SyncResolved, Trash, TrashItem } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -27,6 +27,9 @@ export interface Api {
   setFaces(enabled: boolean): Promise<FacesStatus>;
   petsStatus(): Promise<PetsStatus>;
   setPets(enabled: boolean): Promise<PetsStatus>;
+  setReadText(enabled: boolean): Promise<TextStatus>;
+  /** Photos with every word of the query written in them. */
+  searchText(query: string): Promise<number[]>;
   listPeople(): Promise<Person[]>;
   facesIn(photoId: number): Promise<FaceInPhoto[]>;
   /** Names a person or group; a name already in use merges them. Returns who they are now. */
@@ -144,6 +147,8 @@ function tauriApi(): Api {
     setFaces: (enabled) => invoke('set_faces', { enabled }),
     petsStatus: () => invoke('pets_status'),
     setPets: (enabled) => invoke('set_pets', { enabled }),
+    setReadText: (enabled) => invoke('set_read_text', { enabled }),
+    searchText: (query) => invoke('search_text', { query }),
     listPeople: () => invoke('list_people'),
     facesIn: (id) => invoke('faces_in', { id }),
     namePerson: (id, name) => invoke('name_person', { id, name }),

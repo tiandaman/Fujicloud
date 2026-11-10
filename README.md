@@ -79,6 +79,9 @@ thousands of images.
   each photo with what would change (★2 → ★5, Pick → Reject, added to an album, deleted)
   and lets you take it or keep yours, photo by photo. A deletion you turn down puts the
   file back from the library folder's `.fujicloud-trash`. A RAW+JPEG pair is one change.
+  It says which PC made each change and when. Changes to different things merge:
+  stars set on one PC and an album added on another both survive, and only where both
+  changed the same thing does the later one win.
   Switch it off in Settings to take everything as it comes. Other PCs' changes are
   looked for at start, on *Rescan*, and when you come back to the window after a
   while. Saving what the models found, or a name, never writes this PC's stars or
@@ -151,6 +154,25 @@ thousands of images.
   AgeDB faces of 60 people, Best keeps 88% of a person's faces together against 82%,
   with no strangers merged either way. PCs sharing a library through sidecars can run
   different sizes: each analyses with its own models.
+- **One search box for everything:** "Mochi at the beach in 2024, 4 stars or more" is a
+  pet, a year, a rating and a description. Names of people and pets, towns and
+  countries, albums, years and months ("july 2024", "last year"), stars, picks,
+  favourites, RAW, videos and "red label" become filters (shown as chips under the
+  box); the rest is the description. Put a word in "quotes" to keep it as description.
+- **Search the writing in photos:** turn on *Settings → Text in photos* and signs,
+  menus, labels, tickets and screenshots are read on this PC (PaddleOCR's PP-OCRv5
+  mobile models, 21 MB, once), so typing "harbour" finds the photo of the sign. On 120
+  street photos from Total-Text it found 85% of the words written level at about
+  1,000 px (71% from a 512 px thumbnail), a little over half of slanted ones and a
+  quarter of curved ones. Photos you've opened are read from the larger preview.
+- **Trash:** photos deleted from the library's drive wait in *Trash* (in
+  `.fujicloud-trash` on that drive) with who deleted them and when; put them back
+  where they were, with their stars, albums and names, or empty it.
+- **Library health:** one screen for whether the index is sound, every folder is
+  reachable, changes are saved and backed up, other PCs' changes are waiting, and what
+  each analysis still has to do, each with its button. The backup is read back and
+  compared with the library once a month (or on *Check now*), so a copy gone bad on a
+  failing drive is found.
 - **Export and share:** right-click → *Export…* (`Ctrl+Shift+E`) for JPEGs sized for the
   web (2048 px) or Instagram (1080 px wide), full-size JPEGs or the original files.
   Exports are upright sRGB, keep the date and camera, and leave the location out unless
@@ -287,6 +309,10 @@ ArcFace, from [Immich's copy](https://huggingface.co/immich-app/buffalo_l) (and 
 pretrained models are for non-commercial use, such as a personal library); the face tests
 use example photos from [face_recognition](https://github.com/ageitgey/face_recognition)
 and [LFW](https://vis-www.cs.umass.edu/lfw/), downloaded at test time.
+Text in photos is read with [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)'s
+PP-OCRv5 mobile models (Apache 2.0, the
+[official ONNX exports](https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec_onnx)); it was
+measured on [Total-Text](https://github.com/cs-chan/Total-Text-Dataset).
 Pets are found with [YOLOX](https://github.com/opencv/opencv_zoo/tree/main/models/object_detection_yolox)
 (Apache 2.0), also from OpenCV's model zoo, and told apart with Meta's
 [DINOv3](https://github.com/facebookresearch/dinov3) (under Meta's DINOv3 License, via the

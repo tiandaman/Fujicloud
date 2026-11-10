@@ -294,6 +294,9 @@ fn import_found(lib: &Library, id: i64, tags: &Tags) {
         if let Some((model, vector)) = &tags.smart {
             lib.import_embedding(id, model, vector)?;
         }
+        if let Some((model, text)) = &tags.text {
+            lib.import_text(id, model, text)?;
+        }
         Ok(())
     })();
     if let Err(e) = imported {
@@ -329,6 +332,7 @@ fn merge(mine: &Tags, theirs: Option<&Tags>) -> Tags {
         faces: mine.faces.clone().or_else(|| theirs.faces.clone()),
         pets: mine.pets.clone().or_else(|| theirs.pets.clone()),
         smart: mine.smart.clone().or_else(|| theirs.smart.clone()),
+        text: mine.text.clone().or_else(|| theirs.text.clone()),
         by: theirs.by.clone(),
     }
 }
@@ -489,13 +493,18 @@ fn save_one(
 fn pair_tags(lib: &Library, ids: &[i64]) -> Result<Tags, Error> {
     let mut tags = lib.tags(ids[0])?;
     for &id in &ids[1..] {
-        if tags.faces.is_some() && tags.pets.is_some() && tags.smart.is_some() {
+        if tags.faces.is_some()
+            && tags.pets.is_some()
+            && tags.smart.is_some()
+            && tags.text.is_some()
+        {
             break;
         }
         let other = lib.tags(id)?;
         tags.faces = tags.faces.or(other.faces);
         tags.pets = tags.pets.or(other.pets);
         tags.smart = tags.smart.or(other.smart);
+        tags.text = tags.text.or(other.text);
     }
     Ok(tags)
 }
