@@ -220,18 +220,18 @@ pub fn transcode(
     Ok(())
 }
 
-/// The longest edge of a movie converted for the window: 1080p, which
-/// even a modest PC converts several times faster than it plays.
-const STREAM_EDGE: u32 = 1920;
+/// The longest edge of a movie converted for the window: 4K, so an
+/// iPhone's 4K movies keep every pixel.
+const STREAM_EDGE: u32 = 3840;
 
 /// Starts re-encoding a movie as H.264/AAC that can be played *while* it's
 /// being made: fragmented MP4 on the program's standard output, a fragment
 /// a second, so the first pictures are there in about a second. Turned
-/// upright, HDR tone-mapped, at most 1080p. `hardware` lets the graphics
+/// upright, HDR tone-mapped, at most 4K. `hardware` lets the graphics
 /// card do the decoding where it can.
 pub fn stream(ffmpeg: &Path, src: &Path, hardware: bool) -> Result<std::process::Child, Error> {
     let info = probe(ffmpeg, src)?;
-    // Shrunk first: tone-mapping a 4K picture is four times the work.
+    // Anything bigger than 4K is shrunk first, before the tone-mapping.
     let mut filters = vec![format!(
         "scale=w={STREAM_EDGE}:h={STREAM_EDGE}:force_original_aspect_ratio=decrease:force_divisible_by=2"
     )];

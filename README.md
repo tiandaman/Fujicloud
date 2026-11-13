@@ -118,7 +118,7 @@ thousands of images.
   place, ProRAW `.DNG` and PNG screenshots. iPhone **HEVC** movies play at once even on
   a PC that can't decode them: FFmpeg (30 MB, fetched once, ahead of time) converts
   the movie on this PC while the viewer plays what's made so far, about a second
-  behind, and the converted copy (1080p) is kept so next time it just plays.
+  behind, and the converted copy (up to 4K) is kept so next time it just plays.
 - **Photoshop files in the grid:** layered PSD/PSB and TIFF files get thumbnails and
   previews from their flattened image (8- or 16-bit, compressed or not). Colour is
   managed, so Adobe RGB and ProPhoto edits look the same as they do in Photoshop
