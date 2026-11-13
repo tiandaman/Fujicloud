@@ -1282,6 +1282,41 @@ async fn regroup_people(app: AppHandle, state: Shared<'_>, kind: Subject) -> Cmd
     Ok(loosened)
 }
 
+/// "Match them for me": files unnamed pets' pictures under the named pet
+/// each is most like, more readily than usual (or, with `bold` off, goes
+/// back to asking when in doubt). Stays that way for new photos. Returns
+/// how many pictures moved.
+#[tauri::command]
+async fn match_pets(app: AppHandle, state: Shared<'_>, bold: bool) -> CmdResult<usize> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let mut settings = state.settings.write();
+            settings.pets_bold = bold;
+            settings.save(&state.settings_path).map_err(err)?;
+        }
+        state.lib.set_bold_pets(bold);
+        let named = |people: &[PersonRow]| -> Vec<i64> {
+            people
+                .iter()
+                .filter(|p| p.kind == Subject::Pet && p.name.is_some())
+                .flat_map(|p| p.photo_ids.iter().copied())
+                .collect()
+        };
+        let mut photos = named(&state.lib.people().map_err(err)?);
+        let moved = state.lib.learn_named(Subject::Pet).map_err(err)?;
+        let _ = app.emit("people-changed", ());
+        // Photos whose names changed tell other PCs.
+        photos.extend(named(&state.lib.people().map_err(err)?));
+        photos.sort_unstable();
+        photos.dedup();
+        sidecars::save(&photos);
+        Ok(moved)
+    })
+    .await
+    .map_err(err)?
+}
+
 /// Sends every photo through face (or pet) recognition again. With
 /// `forget_names`, every group and name of that kind goes too.
 #[tauri::command]
@@ -1780,6 +1815,7 @@ fn save_settings(app: AppHandle, state: Shared, mut settings: Settings) -> CmdRe
     settings.migrate();
     settings.save(&state.settings_path).map_err(err)?;
     state.lib.set_review(settings.review_sync);
+    state.lib.set_bold_pets(settings.pets_bold);
     let new_backup = settings.backup_to != state.settings.read().backup_to;
     *state.settings.write() = settings;
     if new_backup {
@@ -1961,6 +1997,7 @@ pub fn run() {
             );
             use_models(&state);
             state.lib.set_review(state.settings.read().review_sync);
+            state.lib.set_bold_pets(state.settings.read().pets_bold);
 
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
@@ -2029,6 +2066,7 @@ pub fn run() {
             rebuild_thumbnails,
             delete_photos,
             find_duplicates,
+            match_pets,
             find_junk,
             keep_junk,
             prepare_movie,

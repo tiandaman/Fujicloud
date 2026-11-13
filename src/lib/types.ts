@@ -133,6 +133,8 @@ export interface Settings {
   writeXmp: boolean;
   /** Ask before taking changes made on another PC. */
   reviewSync: boolean;
+  /** File pets under the named pet they're most like more readily. */
+  petsBold: boolean;
   editorPath: string | null;
   editRaw: boolean;
   smartSearch: boolean;

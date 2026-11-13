@@ -45,6 +45,14 @@
       (e.target as HTMLElement).closest('input, textarea, select')
     )
       return;
+    // Esc steps back one screen, once there's nothing nearer to let go of
+    // (an open photo, a dialog, a selection: each closes itself).
+    if (e.key === 'Escape') {
+      if (store.viewerId != null || store.healthOpen || store.reviewOpen || store.albumPicker || store.selection.size || store.escHeld || store.dropping) return;
+      store.back();
+      e.preventDefault();
+      return;
+    }
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl) {
       if (e.key === 'z' && !e.shiftKey) store.undo();
@@ -62,7 +70,7 @@
     }
     if (e.altKey) {
       // Alt+← steps back out of a person's photos, like a browser.
-      if (e.key === 'ArrowLeft' && store.collection.type === 'person') {
+      if (e.key === 'ArrowLeft') {
         store.back();
         e.preventDefault();
       }

@@ -47,6 +47,15 @@ pub const SAME_PET: f32 = 0.70;
 /// from videos it cost nothing.
 pub const LOOK_ALIKE_MARGIN: f32 = 0.03;
 
+/// The likeness at which a pet's picture is filed under a named pet when
+/// asked to match boldly ("Match them for me"), with no margin over the
+/// next most like. On cats from videos, in households of two to four with
+/// two photos of each named: 98% of their other pictures were filed (89%
+/// at [`SAME_PET`]) and 1 in 1,000 under the wrong one of them, but 1 to 3
+/// in 100 pictures of other people's cats were filed too (1 in 1,000
+/// otherwise). Those are put right with "Not this pet".
+pub const BOLD_PET: f32 = 0.55;
+
 /// Who a group of faces belongs to: a person, or a pet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1284,7 +1293,7 @@ impl Library {
                 [kind],
             )?;
             let (model, length) = current_model(&tx, subject, self.active_model(subject))?;
-            let same = subject.same(model.as_deref());
+            let same = self.limits(subject, model.as_deref()).0;
             // Per named person: what the confirmed faces look like, and the rest.
             let mut confirmed: HashMap<i64, Centroid> = HashMap::new();
             let mut filed: Vec<(i64, i64, Vec<f32>)> = Vec::new();
@@ -1343,6 +1352,23 @@ impl Library {
         Ok(doubtful)
     }
 
+    /// Whether pets are filed under a named one more readily (see
+    /// [`BOLD_PET`]).
+    pub fn set_bold_pets(&self, on: bool) {
+        self.bold_pets
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The likeness, and the margin over the next most like, at which a
+    /// picture is filed under someone named.
+    fn limits(&self, subject: Subject, model: Option<&str>) -> (f32, f32) {
+        if subject == Subject::Pet && self.bold_pets.load(std::sync::atomic::Ordering::Relaxed) {
+            (BOLD_PET, 0.0)
+        } else {
+            (subject.same(model), subject.margin())
+        }
+    }
+
     /// Learns from what's been named and corrected: every picture nobody
     /// confirmed is compared with what each named pet (or person) looks like
     /// in the pictures someone did name or confirm, and filed under the one
@@ -1356,8 +1382,7 @@ impl Library {
         let moved = {
             let mut conn = self.conn.lock();
             let (model, length) = current_model(&conn, subject, self.active_model(subject))?;
-            let same = subject.same(model.as_deref());
-            let margin = subject.margin();
+            let (same, margin) = self.limits(subject, model.as_deref());
             let mut named: HashMap<i64, Centroid> = HashMap::new();
             let mut guessed: Vec<Guessed> = Vec::new();
             {
@@ -1817,6 +1842,16 @@ mod tests {
         );
         // Learning again leaves both cats as they are.
         assert_eq!(lib.learn_named(Subject::Pet).unwrap(), 0);
+
+        // "Match them for me": the one too close to call goes to whichever
+        // it's most like, and back to being asked about when that's undone.
+        lib.set_bold_pets(true);
+        assert_eq!(lib.learn_named(Subject::Pet).unwrap(), 1);
+        assert!(under("Mochi").contains(&p[7]) != under("Pixel").contains(&p[7]));
+        assert_eq!(under("Mochi").len() + under("Pixel").len(), 8);
+        lib.set_bold_pets(false);
+        assert_eq!(lib.learn_named(Subject::Pet).unwrap(), 1);
+        assert!(!under("Mochi").contains(&p[7]) && !under("Pixel").contains(&p[7]));
     }
 
     /// One PC finds and names faces; another takes them from the sidecar

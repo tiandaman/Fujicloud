@@ -1099,9 +1099,19 @@ class Store {
     }
   }
 
-  /** Back from a person's photos to everyone. */
+  /** Back one screen: to where you were before this one. */
   back() {
-    if (this.collection.type === 'person' && this.viewerId == null) this.setCollection(this.overviewOf(this.collection.id));
+    if (this.viewerId != null) return;
+    for (;;) {
+      const to = this.#history.pop();
+      if (!to) break;
+      // Somewhere that's since gone (an album deleted, a person merged away).
+      if ((to.type === 'person' && !this.personById.has(to.id)) || (to.type === 'album' && !this.albumById.has(to.id))) continue;
+      this.setCollection(to, true);
+      return;
+    }
+    if (this.collection.type === 'person') this.setCollection(this.overviewOf(this.collection.id), true);
+    else if (this.collection.type !== 'all') this.setCollection({ type: 'all' }, true);
   }
 
   /** Strangers out of the way; their new photos stay hidden too. */
@@ -1159,6 +1169,26 @@ class Store {
   }
 
   /** Sends every photo through face (or pet) recognition again, keeping names or forgetting them. */
+  /** "Match them for me": pets filed under the named one each is most like, boldly (or carefully again). */
+  async matchPets(bold: boolean) {
+    try {
+      const moved = await api.matchPets(bold);
+      if (this.settings) this.settings = { ...this.settings, petsBold: bold };
+      await this.loadPeople();
+      this.toast(
+        bold
+          ? moved
+            ? `Filed ${plural(moved, 'photo')} under the pets they look most like. Wrong one? "Not this pet" puts it right, and teaches it.`
+            : 'Nothing more to match: the rest look like none of your named pets.'
+          : `Asking again when unsure.${moved ? ` ${plural(moved, 'photo')} went back to be named.` : ''}`,
+        'info',
+        bold && moved ? { label: 'Undo', run: () => this.matchPets(false) } : undefined,
+      );
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
   async reidentify(kind: Subject, forgetNames: boolean) {
     const pets = kind === 'pet';
     if (forgetNames) {
@@ -1392,7 +1422,16 @@ class Store {
     this.group = group;
   }
 
-  setCollection(c: Collection) {
+  /** Where you've been, for going back (Esc, the mouse's back button). */
+  #history: Collection[] = [];
+  /** Something on the page that Esc lets go of first (faces picked to merge). */
+  escHeld = false;
+
+  setCollection(c: Collection, back = false) {
+    if (!back && JSON.stringify(c) !== JSON.stringify(this.collection)) {
+      this.#history.push(this.collection);
+      if (this.#history.length > 60) this.#history.shift();
+    }
     this.collection = c;
     this.selection = new Set();
     // The library may have changed since last time: look again.

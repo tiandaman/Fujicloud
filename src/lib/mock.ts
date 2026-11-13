@@ -268,6 +268,7 @@ export function mockApi(): Api {
     parallelCopies: 4,
     writeXmp: true,
     reviewSync: true,
+    petsBold: false,
     editorPath: null,
     editRaw: true,
     smartSearch: false,
@@ -618,6 +619,11 @@ export function mockApi(): Api {
     },
     async deletePerson(id) {
       people = people.map((p) => (p.id === id ? { ...p, name: null } : p));
+    },
+    async matchPets(bold) {
+      settings = { ...settings, petsBold: bold };
+      await delay(500);
+      return bold ? 37 : 12;
     },
     async regroupPeople(kind) {
       await delay(500);

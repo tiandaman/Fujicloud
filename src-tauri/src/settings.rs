@@ -32,6 +32,10 @@ pub struct Settings {
     /// Ask before taking changes made on another PC (marks changed in
     /// sidecars, photos deleted there) rather than applying them.
     pub review_sync: bool,
+    /// File pets under the named pet they're most like more readily: more
+    /// filed without asking, a few more wrongly.
+    #[serde(default)]
+    pub pets_bold: bool,
     /// Explicit editor path; Photoshop is auto-detected when unset.
     pub editor_path: Option<PathBuf>,
     /// Open the RAF (via Camera Raw) instead of the JPEG for RAW+JPEG pairs.
@@ -63,6 +67,7 @@ impl Default for Settings {
             parallel_copies: 4,
             write_xmp: true,
             review_sync: true,
+            pets_bold: false,
             editor_path: None,
             edit_raw: true,
             smart_search: false,

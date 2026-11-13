@@ -47,6 +47,8 @@ export interface Api {
   deletePerson(id: number): Promise<void>;
   /** Groups the unnamed again around who's named, and takes out of each named one what doesn't look like the photos you confirmed. Returns how many were taken out. */
   regroupPeople(kind: Subject): Promise<number>;
+  /** "Match them for me": files pets under the named one each is most like, boldly or (off) carefully. Returns how many pictures moved. */
+  matchPets(bold: boolean): Promise<number>;
   /** Sends every photo through face (or pet) recognition again; `forgetNames` also forgets every group and name. */
   reidentify(kind: Subject, forgetNames: boolean): Promise<void>;
   /** Hides strangers, or brings them back. */
@@ -184,6 +186,7 @@ function tauriApi(): Api {
     deletePerson: (id) => invoke('delete_person', { id }),
     mergePeople: (from, into) => invoke('merge_people', { from, into }),
     regroupPeople: (kind) => invoke('regroup_people', { kind }),
+    matchPets: (bold) => invoke('match_pets', { bold }),
     reidentify: (kind, forgetNames) => invoke('reidentify', { kind, forgetNames }),
     hidePeople: (ids, hidden) => invoke('hide_people', { ids, hidden }),
     hideFace: (id) => invoke('hide_face', { id }),

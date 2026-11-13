@@ -7,6 +7,7 @@
   import ActionBar, { type BarAction } from './ActionBar.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import Icon from './Icon.svelte';
+  import IdentifySheet from './IdentifySheet.svelte';
 
   let { kind = 'person' }: { kind?: Subject } = $props();
   const pets = $derived(kind === 'pet');
@@ -32,12 +33,29 @@
   let renaming = $state<number | null>(null);
   let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
+  /** The group being named in the little sheet. */
+  let identify = $state<number | null>(null);
+  let matching = $state(false);
+  // Esc lets go of what's picked, or the sheet, before it steps back a screen.
+  $effect(() => {
+    store.escHeld = picked.length > 0 || identify != null || renaming != null;
+    return () => (store.escHeld = false);
+  });
+
+  async function matchForMe(bold: boolean) {
+    matching = true;
+    await store.matchPets(bold);
+    matching = false;
+  }
+
   function open(p: Person, e?: MouseEvent) {
     if (e && (e.ctrlKey || e.metaKey || picked.length)) {
       toggle(p);
       return;
     }
-    store.setCollection({ type: 'person', id: p.id });
+    // Someone still to name opens in a little sheet, to name there and then.
+    if (!p.name && !p.hidden) identify = p.id;
+    else store.setCollection({ type: 'person', id: p.id });
   }
 
   function toggle(p: Person) {
@@ -167,7 +185,7 @@
       class="face"
       style:width="{size}px"
       style:height="{size}px"
-      title={picked.length ? 'Select to merge' : 'Show photos (Ctrl+click to select)'}
+      title={picked.length ? 'Select to merge' : p.name || p.hidden ? 'Show photos (Ctrl+click to select)' : 'Look and name (Ctrl+click to select)'}
       onclick={(e) => open(p, e)}
     >
       <img src={api.faceUrl(p.cover)} alt="" draggable="false" />
@@ -280,6 +298,24 @@
               <Icon name="sync" size={13} />
               {regrouping ? 'Grouping…' : `Regroup around named ${pets ? 'pets' : 'people'}`}
             </button>
+            {#if pets}
+              {#if store.settings?.petsBold}
+                <button class="btn subtle regroup" disabled={matching} title="Go back to asking about photos that aren't clearly one of your named pets" onclick={() => matchForMe(false)}>
+                  <Icon name="check" size={13} />
+                  {matching ? 'Sorting…' : 'Matching for you · ask me instead'}
+                </button>
+              {:else}
+                <button
+                  class="btn primary regroup"
+                  disabled={matching}
+                  title="Too many to name? File each of these under the named pet it looks most like, and new photos too. A few will be wrong: “Not this pet” puts them right."
+                  onclick={() => matchForMe(true)}
+                >
+                  <Icon name="sparkle" size={13} />
+                  {matching ? 'Matching…' : 'Match them for me'}
+                </button>
+              {/if}
+            {/if}
           {/if}
         </div>
         <p class="hint">
@@ -355,9 +391,13 @@
   <ActionBar count={picked.length} noun={picked.length === 1 ? (pets ? 'pet' : 'person') : pets ? 'pets' : 'people'} {actions} oncancel={() => (picked = [])} />
 {/if}
 
+{#if identify != null}
+  <IdentifySheet bind:id={identify} {kind} queue={unnamed} onclose={() => (identify = null)} />
+{/if}
+
 <svelte:window
   onkeydown={(e) => {
-    if (e.key === 'Escape' && picked.length && !store.mergePicker && !store.confirmation) picked = [];
+    if (e.key === 'Escape' && picked.length && identify == null && !store.mergePicker && !store.confirmation) picked = [];
   }}
 />
 

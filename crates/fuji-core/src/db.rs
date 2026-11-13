@@ -325,6 +325,8 @@ pub struct Library {
     pub(crate) active_models: Mutex<[Option<String>; 2]>,
     /// Hold changes from other PCs for review (see [`crate::review`]).
     pub(crate) review: std::sync::atomic::AtomicBool,
+    /// Pets are filed under a named one more readily (see `people::BOLD_PET`).
+    pub(crate) bold_pets: std::sync::atomic::AtomicBool,
     /// This PC's name, recorded with the changes it makes.
     pub(crate) device: Mutex<String>,
 }
@@ -363,6 +365,7 @@ impl Library {
             conn: Mutex::new(conn),
             active_models: Mutex::new([None, None]),
             review: std::sync::atomic::AtomicBool::new(false),
+            bold_pets: std::sync::atomic::AtomicBool::new(false),
             device: Mutex::new(crate::device_name()),
         })
     }

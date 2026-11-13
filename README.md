@@ -55,6 +55,14 @@ thousands of images.
   photos of each named: 2.9% filed under the wrong pet rather than 5.4%, and after one
   round of fixing those and naming five more, 0.9% rather than 3.1%. (A classifier
   trained on the names did worse with this few to learn from, so isn't used.)
+  Clicking a pet still to name opens a small sheet over the page: its photos to scroll
+  through, a name to type or one of your pets' names to tap, then straight on to the
+  next. Each animal in a photo is found and named on its own, and marked in the
+  sheet when a photo has several. *Match them for me* files every unnamed picture
+  under the named pet it looks most like, and keeps doing so for new photos: on test
+  cats 98% of a household's own pictures were filed (89% normally) with 1 in 1,000
+  under the wrong pet, but 1 to 3 in 100 pictures of other people's cats came along
+  too, so it's off until asked for and undone with one click.
 - **Find duplicates:** *Duplicates* in the sidebar finds byte-for-byte copies (the same
   shot imported twice) and, with smart search on, the same picture saved again (resized
   for the web, re-saved, converted). Those must be at least 99.5% the same, picture to
@@ -119,6 +127,9 @@ thousands of images.
   a PC that can't decode them: FFmpeg (30 MB, fetched once, ahead of time) converts
   the movie on this PC while the viewer plays what's made so far, about a second
   behind, and the converted copy (up to 4K) is kept so next time it just plays.
+- **Esc goes back:** it closes whatever is open (a photo, a dialog, a selection), and
+  then steps back to the screen you were on before. The mouse's back button and Alt+←
+  do the same.
 - **Clean up:** finds photos that are probably useless, on this PC: black frames, blank
   ones, blown-out ones and blurred ones. Each photo's thumbnail is measured (none of
   1,000 ordinary test photos was flagged), and with smart search on its model is asked
