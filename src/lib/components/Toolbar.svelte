@@ -144,6 +144,18 @@
         </button>
       {/if}
     {/if}
+    {#if store.collection.type === 'cleanup'}
+      {#if store.findingJunk}
+        <span class="faint">Looking{store.junkProgress && store.junkProgress.total ? ` · ${store.junkProgress.done.toLocaleString()} of ${store.junkProgress.total.toLocaleString()}` : '…'}</span>
+      {:else if store.visible.length}
+        <button class="btn small" title="None of these is useless: don't offer them again" onclick={() => store.keepJunk(store.junkShown)}>
+          <Icon name="check" size={13} /> <span class="label">Keep all</span>
+        </button>
+        <button class="btn danger small" title="Move every photo shown here to the trash" onclick={() => store.deletePhotos(store.junkShown)}>
+          <Icon name="trash" size={13} /> <span class="label">Move all {store.visible.length} to trash…</span>
+        </button>
+      {/if}
+    {/if}
     {#if store.collection.type === 'rejected' && store.visible.length}
       <button class="btn danger small" title="Move every rejected photo to the Recycle Bin" onclick={() => store.deleteRejected()}>
         <Icon name="trash" size={13} /> <span class="label">Delete all rejected…</span>

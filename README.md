@@ -119,6 +119,13 @@ thousands of images.
   a PC that can't decode them: FFmpeg (30 MB, fetched once, ahead of time) converts
   the movie on this PC while the viewer plays what's made so far, about a second
   behind, and the converted copy (up to 4K) is kept so next time it just plays.
+- **Clean up:** finds photos that are probably useless, on this PC: black frames, blank
+  ones, blown-out ones and blurred ones. Each photo's thumbnail is measured (none of
+  1,000 ordinary test photos was flagged), and with smart search on its model is asked
+  too, which catches milder blur and camera shake (under 1 in 100 ordinary photos
+  flagged, so those are listed as *Probably blurry*). Nothing is deleted on its
+  say-so: look through them, then move one, several, a whole group or all of them to
+  the trash, or *Keep* the ones that aren't useless so they aren't offered again.
 - **Photoshop files in the grid:** layered PSD/PSB and TIFF files get thumbnails and
   previews from their flattened image (8- or 16-bit, compressed or not). Colour is
   managed, so Adobe RGB and ProPhoto edits look the same as they do in Photoshop

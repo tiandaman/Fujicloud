@@ -31,6 +31,7 @@ pub mod geo;
 pub mod hardware;
 pub mod hdr;
 pub mod ingest;
+pub mod junk;
 pub mod meta;
 pub mod pathdate;
 pub mod people;

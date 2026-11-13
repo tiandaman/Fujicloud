@@ -353,6 +353,7 @@ impl Library {
         conn.execute_batch(crate::people::TABLES)?;
         conn.execute_batch(crate::review::TABLES)?;
         conn.execute_batch(crate::written::TABLES)?;
+        conn.execute_batch(crate::junk::TABLES)?;
         crate::review::migrate(&conn)?;
         crate::written::migrate(&conn)?;
         crate::people::migrate(&conn)?;

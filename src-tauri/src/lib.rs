@@ -480,6 +480,98 @@ struct Deleted {
     failed: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Junk {
+    id: i64,
+    /// `black`, `blank`, `blown`, `blurry` (no sharp edge anywhere), or
+    /// `soft` (the smart search model finds it blurry).
+    reason: &'static str,
+}
+
+#[derive(Clone, Serialize)]
+struct JunkProgress {
+    done: usize,
+    total: usize,
+}
+
+/// Finds the photos that are probably useless: black, blank, blown-out or
+/// blurred. Photos not looked at before are measured now, from their
+/// thumbnails (emits `junk-progress`); nothing is changed.
+#[tauri::command]
+async fn find_junk(app: AppHandle, state: Shared<'_>) -> CmdResult<Vec<Junk>> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use fuji_core::junk;
+        use rayon::prelude::*;
+        // One at a time: a second ask waits for the first's work.
+        static ONE: Mutex<()> = Mutex::new(());
+        let _one = ONE.lock();
+        let todo = state.lib.junk_todo().map_err(err)?;
+        let total = todo.len();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(cpu::threads(cpu::Analysis::Faces).max(1))
+            .build()
+            .map_err(err)?;
+        let mut done = 0;
+        for stretch in todo.chunks(200) {
+            let found: Vec<(i64, Option<junk::Reason>)> = pool.install(|| {
+                stretch
+                    .par_iter()
+                    .filter_map(|&id| match smart::thumbnail(&state, id) {
+                        smart::Thumb::Ready(jpeg) => Some((
+                            id,
+                            thumbs::decode_rendition(&jpeg, 512)
+                                .ok()
+                                .and_then(|image| junk::measure(&image))
+                                .and_then(|m| junk::verdict(&m)),
+                        )),
+                        // Looked at once its folder is back.
+                        smart::Thumb::Offline => None,
+                        smart::Thumb::Failed => Some((id, None)),
+                    })
+                    .collect()
+            });
+            state.lib.store_junk(&found).map_err(err)?;
+            done += stretch.len();
+            let _ = app.emit("junk-progress", JunkProgress { done, total });
+        }
+        let mut out: Vec<Junk> = state
+            .lib
+            .junk()
+            .map_err(err)?
+            .into_iter()
+            .map(|(id, reason)| Junk {
+                id,
+                reason: reason.name(),
+            })
+            .collect();
+        // And those the smart search model finds blurry, of the rest.
+        let kept = state.lib.junk_kept().map_err(err)?;
+        let have: std::collections::HashSet<i64> = out.iter().map(|j| j.id).collect();
+        out.extend(
+            state
+                .smart
+                .blurry(&state)
+                .into_iter()
+                .filter(|id| !kept.contains(id) && !have.contains(id))
+                .map(|id| Junk { id, reason: "soft" }),
+        );
+        Ok(out)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// These photos aren't useless: don't offer them again.
+#[tauri::command]
+async fn keep_junk(state: Shared<'_>, ids: Vec<i64>) -> CmdResult<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.lib.keep_junk(&ids).map_err(err))
+        .await
+        .map_err(err)?
+}
+
 /// Moves photos (and their twins and sidecars) to the Recycle Bin, or for
 /// network drives to `.fujicloud-trash` in their library folder.
 #[tauri::command]
@@ -1937,6 +2029,8 @@ pub fn run() {
             rebuild_thumbnails,
             delete_photos,
             find_duplicates,
+            find_junk,
+            keep_junk,
             prepare_movie,
             play_movie,
             movie_chunk,

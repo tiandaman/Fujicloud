@@ -328,6 +328,7 @@ export function mockApi(): Api {
       })),
     );
   }
+  const keptJunk = new Set<number>();
   let backup: BackupStatus = {
     target: settings.backupTo,
     lastBackedUp: Date.now() / 1000 - 2.2 * 3600,
@@ -700,6 +701,18 @@ export function mockApi(): Api {
       }
       emit('library-changed', null);
       return done;
+    },
+    async findJunk() {
+      const shown = photos.filter((p) => p.kind !== 'video' && p.flag !== -1 && !keptJunk.has(p.id));
+      for (let i = 1; i <= 5; i++) {
+        await delay(120);
+        emit('junk-progress', { done: i * 500, total: 2500 });
+      }
+      const reasons = ['black', 'blurry', 'soft', 'blurry', 'blown', 'soft', 'blank', 'soft'] as const;
+      return shown.filter((_, i) => i % 61 === 7).slice(0, 40).map((p, i) => ({ id: p.id, reason: reasons[i % reasons.length] }));
+    },
+    async keepJunk(ids) {
+      ids.forEach((id) => keptJunk.add(id));
     },
     async findDuplicates() {
       await delay(500);

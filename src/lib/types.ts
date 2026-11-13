@@ -347,6 +347,7 @@ export type Collection =
   | { type: 'favorites' }
   | { type: 'album'; id: number }
   | { type: 'duplicates' }
+  | { type: 'cleanup' }
   | { type: 'trash' }
   | { type: 'people' }
   | { type: 'pets' }
@@ -385,6 +386,15 @@ export interface Section {
   items: Photo[];
   /** A button in the section's header. */
   action?: { label: string; run: () => void };
+  /** A second, quieter one. */
+  second?: { label: string; run: () => void };
+}
+
+/** A photo that's probably useless, and why. */
+export interface Junk {
+  id: number;
+  /** `soft`: the smart search model finds it blurry; the rest are measured. */
+  reason: 'black' | 'blank' | 'blown' | 'blurry' | 'soft';
 }
 
 /** Photos that are copies of each other, the one to keep first. */

@@ -207,6 +207,38 @@ impl Smart {
         Ok(self.index(state)?.search(&q, 600, 0.05))
     }
 
+    /// Photos the model finds blurry (see [`fuji_core::junk::BLURRY`]),
+    /// from what it has already made of them. None if it isn't to hand or
+    /// hasn't been measured for this.
+    pub fn blurry(&self, state: &AppState) -> Vec<i64> {
+        use fuji_core::junk;
+        let Some(margin) = junk::blurry_margin(model(state).id) else {
+            return Vec::new();
+        };
+        let Some(index) = self.vectors(state) else {
+            return Vec::new();
+        };
+        let phrases = self.engine(state).and_then(|engine| {
+            let of = |text| engine.embed_text(text).map_err(|e| e.to_string());
+            Ok((of(junk::BLURRY.0)?, of(junk::BLURRY.1)?))
+        });
+        let (blurry, sharp) = match phrases {
+            Ok(p) => p,
+            Err(e) => {
+                log::info!("clean up: not asking the smart search model ({e})");
+                return Vec::new();
+            }
+        };
+        // Nearer one phrase than the other: one pass with their difference.
+        let towards: Vec<f32> = blurry.iter().zip(&sharp).map(|(a, b)| a - b).collect();
+        index
+            .search(&towards, index.len(), f32::INFINITY)
+            .into_iter()
+            .take_while(|(_, score)| *score > margin)
+            .map(|(id, _)| id)
+            .collect()
+    }
+
     /// Every analysed photo's vector, for finding near-identical shots.
     /// Works from what's stored even while smart search is switched off.
     pub fn vectors(&self, state: &AppState) -> Option<Arc<Index>> {

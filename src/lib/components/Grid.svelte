@@ -255,7 +255,9 @@
     });
     const pair = store.comparisonOf(ids);
     const who = person?.name ?? (person?.kind === 'pet' ? 'this pet' : 'this person');
+    const keep: BarAction[] = store.collection.type === 'cleanup' ? [{ icon: 'check', label: 'Keep', title: 'Not useless: don’t offer again', run: () => store.keepJunk(ids) }] : [];
     return [
+      ...keep,
       { icon: 'flag', label: all((p) => p.flag === 1) ? 'Unpick' : 'Pick', title: 'Pick (P)', run: () => store.flag(all((p) => p.flag === 1) ? 0 : 1, ids) },
       { icon: 'x', label: all((p) => p.flag === -1) ? 'Unreject' : 'Reject', title: 'Reject (X)', run: () => store.flag(all((p) => p.flag === -1) ? 0 : -1, ids) },
       { icon: 'heart', label: all((p) => p.favorite) ? 'Unfavourite' : 'Favourite', title: 'Favourite (.)', run: () => store.favorite(ids) },
@@ -460,6 +462,9 @@
               {all ? 'Deselect' : 'Select'}
             </button>
           {/if}
+          {#if row.section!.second}
+            <button class="section-action" onclick={row.section!.second.run}>{row.section!.second.label}</button>
+          {/if}
           {#if row.section!.action}
             <button class="section-action" onclick={row.section!.action.run}>{row.section!.action.label}</button>
           {/if}
@@ -564,9 +569,17 @@
 
   {#if layout.flat.length === 0 && store.ready}
     <div class="empty">
-      <Icon name={store.collection.type === 'duplicates' ? 'similar' : 'photos'} size={40} stroke={1.2} />
+      <Icon name={store.collection.type === 'duplicates' ? 'similar' : store.collection.type === 'cleanup' ? 'sparkle' : 'photos'} size={40} stroke={1.2} />
       <h3>
-        {store.collection.type === 'duplicates' ? (store.findingDuplicates ? 'Looking for duplicates…' : 'No duplicates') : 'No photos here'}
+        {store.collection.type === 'duplicates'
+          ? store.findingDuplicates
+            ? 'Looking for duplicates…'
+            : 'No duplicates'
+          : store.collection.type === 'cleanup'
+            ? store.findingJunk
+              ? 'Looking for useless photos…'
+              : 'Nothing to clean up'
+            : 'No photos here'}
       </h3>
       <p>
         {#if store.collection.type === 'duplicates'}
@@ -575,6 +588,12 @@
             : store.smartReady
               ? 'No copies of the same file, and no copies of the same picture.'
               : 'No copies of the same file. Turn on smart search to find copies of the same picture saved again too.'}
+        {:else if store.collection.type === 'cleanup'}
+          {store.findingJunk
+            ? `Measuring each photo on this PC${store.junkProgress?.total ? `: ${store.junkProgress.done.toLocaleString()} of ${store.junkProgress.total.toLocaleString()}` : ''}. Only the first time takes a while.`
+            : store.smartReady
+              ? 'No black, blank, blown-out or blurred photos found.'
+              : 'No black, blank, blown-out or very blurry photos found. With smart search on, milder blur and camera shake are found too.'}
         {:else if store.query}Nothing matches “{store.query}”.
         {:else if store.minRating || store.kindsFiltered}Try loosening the filters in the toolbar.
         {:else}Photos you add will show up here.{/if}

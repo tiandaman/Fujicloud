@@ -3,7 +3,7 @@ import { formatDay, formatMonth, plural } from './format';
 import { countryName, placeName, recipeSummary, recipeTitle } from './recipe';
 import { parseQuery, type Known } from './query';
 import { cacheVersion } from './version.svelte';
-import type {
+import type { Junk,
   Album,
   BackupStatus,
   Collection,
@@ -135,6 +135,10 @@ class Store {
   /** Duplicate groups, once looked for. */
   duplicates = $state.raw<DuplicateGroup[] | null>(null);
   findingDuplicates = $state(false);
+  /** Photos that are probably useless, once looked for (see Clean up). */
+  junk = $state.raw<Junk[] | null>(null);
+  findingJunk = $state(false);
+  junkProgress = $state<{ done: number; total: number } | null>(null);
   /** The photo to keep in each duplicate group. */
   keepers = $derived(new Set((this.duplicates ?? []).map((g) => g.ids[0])));
   /** The export sheet, for these photos. */
@@ -307,6 +311,7 @@ class Store {
       c.type === 'ids' ? new Set(c.ids)
       : c.type === 'album' ? new Set(this.albumById.get(c.id)?.ids ?? [])
       : c.type === 'duplicates' ? new Set((this.duplicates ?? []).flatMap((g) => g.ids))
+      : c.type === 'cleanup' ? new Set((this.junk ?? []).map((j) => j.id))
       : c.type === 'person' ? new Set(this.personById.get(c.id)?.photoIds ?? [])
       : null;
     const test: (p: Photo) => boolean =
@@ -323,7 +328,7 @@ class Store {
       : c.type === 'lens' ? (p) => p.lens === c.value
       : c.type === 'recipe' ? (p) => p.recipeKey === c.key && kept(p)
       : c.type === 'country' ? (p) => p.country === c.value && kept(p)
-      : c.type === 'ids' || c.type === 'duplicates' || c.type === 'person' ? (p) => ids!.has(p.id)
+      : c.type === 'ids' || c.type === 'duplicates' || c.type === 'cleanup' || c.type === 'person' ? (p) => ids!.has(p.id)
       : c.type === 'people' || c.type === 'pets' || c.type === 'trash' ? () => false
       : (p) => !!similar && (similar.has(p.id) || (p.pairId != null && similar.has(p.pairId)));
     return this.photos.filter(test);
@@ -409,6 +414,7 @@ class Store {
       return [{ key: 'ranked', title, subtitle: plural(list.length, 'photo'), items: list }];
     }
     if (this.collection.type === 'duplicates') return this.#duplicateSections(list);
+    if (this.collection.type === 'cleanup') return this.#junkSections(list);
     if (g === 'none') return [{ key: 'all', title: '', subtitle: '', items: list }];
     const keyOf = (p: Photo): [string, string] => {
       const t = p.takenAt ?? 0;
@@ -514,6 +520,7 @@ class Store {
       case 'favorites': return 'Favourites';
       case 'album': return this.albumById.get(c.id)?.name ?? 'Album';
       case 'duplicates': return 'Duplicates';
+      case 'cleanup': return 'Clean up';
       case 'trash': return 'Trash';
       case 'people': return 'People';
       case 'pets': return 'Pets';
@@ -568,6 +575,7 @@ class Store {
       setTimeout(() => api.fetchConverter().catch(() => {}), 5000);
     }
 
+    await api.listen<{ done: number; total: number }>('junk-progress', (p) => (this.junkProgress = p));
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     await api.listen('library-changed', () => {
       clearTimeout(refreshTimer);
@@ -1389,6 +1397,7 @@ class Store {
     this.selection = new Set();
     // The library may have changed since last time: look again.
     if (c.type === 'duplicates') this.findDuplicates();
+    if (c.type === 'cleanup') this.findJunk();
   }
 
   async findDuplicates() {
@@ -1401,6 +1410,66 @@ class Store {
     } finally {
       this.findingDuplicates = false;
     }
+  }
+
+  async findJunk() {
+    if (this.findingJunk) return;
+    this.findingJunk = true;
+    this.junkProgress = null;
+    try {
+      this.junk = await api.findJunk();
+    } catch (e) {
+      this.toast(String(e), 'error');
+    } finally {
+      this.findingJunk = false;
+      this.junkProgress = null;
+    }
+  }
+
+  /** These aren't useless after all: they aren't offered again. */
+  async keepJunk(ids: number[]) {
+    if (!ids.length) return;
+    const kept = new Set(ids);
+    try {
+      await api.keepJunk(ids);
+      this.junk = (this.junk ?? []).filter((j) => !kept.has(j.id));
+      this.selection = new Set([...this.selection].filter((id) => !kept.has(id)));
+      this.toast(`Keeping ${plural(ids.length, 'photo')}`);
+    } catch (e) {
+      this.toast(String(e), 'error');
+    }
+  }
+
+  /** Every photo Clean up is showing. */
+  get junkShown(): number[] {
+    return this.collection.type === 'cleanup' ? this.visible.map((p) => p.id) : [];
+  }
+
+  /** One section per reason a photo looks useless, the surest first. */
+  #junkSections(list: Photo[]): Section[] {
+    const why = new Map((this.junk ?? []).map((j) => [j.id, j.reason]));
+    const kinds: [Junk['reason'], string, string][] = [
+      ['black', 'Black', 'Nothing but darkness: the lens cap, a pocket'],
+      ['blank', 'Blank', 'One flat tone with nothing in it'],
+      ['blown', 'Blown out', 'Mostly burnt-out white'],
+      ['blurry', 'Very blurry', 'No sharp edge anywhere in the picture'],
+      ['soft', 'Probably blurry', 'Out of focus or shaken, going by the smart search model: look before deleting'],
+    ];
+    return kinds.flatMap(([reason, title, about]) => {
+      const items = list.filter((p) => why.get(p.id) === reason);
+      if (!items.length) return [];
+      const ids = items.map((p) => p.id);
+      return [
+        {
+          key: `junk-${reason}`,
+          title,
+          subtitle: `${plural(items.length, 'photo')} · ${about}`,
+          items,
+          action: { label: ids.length === 1 ? 'Move to trash' : `Move these ${ids.length} to trash`, run: () => this.deletePhotos(ids) },
+          second: { label: ids.length === 1 ? 'Keep it' : 'Keep these', run: () => this.keepJunk(ids) },
+        },
+      ];
+    });
   }
 
   /** One section per duplicate group, the keeper first, in the order found. */

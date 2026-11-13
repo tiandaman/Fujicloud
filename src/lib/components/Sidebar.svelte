@@ -28,6 +28,8 @@
       // Known only once looked for: the extra copies, not counting keepers.
       count: () => (store.duplicates ? store.duplicates.reduce((n, g) => n + g.ids.length - 1, 0) : null),
     },
+    // Photos that are probably useless; known once looked for.
+    { c: { type: 'cleanup' }, label: 'Clean up', icon: 'sparkle', count: () => (store.junk ? store.junk.filter((j) => store.byId.has(j.id)).length : null) },
     // Known once opened, and after deleting.
     { c: { type: 'trash' }, label: 'Trash', icon: 'trash', count: () => store.trash?.items.length ?? null },
   ];
