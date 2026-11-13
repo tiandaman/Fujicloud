@@ -122,6 +122,68 @@ pub fn run(jobs: &[Job], progress: &dyn Fn(usize, usize), keep_going: &dyn Fn() 
     report
 }
 
+/// Which of a photo's two copies is the damaged one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Library,
+    Backup,
+    /// Both look plausible: only looking at them can tell.
+    #[default]
+    Unknown,
+}
+
+/// Works out which of two differing copies is damaged. A failing drive or
+/// a copy cut short leaves stretches of nothing (all zeros, or all ones)
+/// where the picture was; failing that, a copy that no longer opens as a
+/// picture is the bad one.
+pub fn judge(src: &Path, dest: &Path) -> Side {
+    use std::io::Read;
+    const BLOCK: usize = 4096;
+    let blank = |b: &[u8]| b.iter().all(|&x| x == 0) || b.iter().all(|&x| x == 0xFF);
+    let (mut src_blank, mut dest_blank) = (0usize, 0usize);
+    if let (Ok(mut a), Ok(mut b)) = (fs::File::open(src), fs::File::open(dest)) {
+        let (mut x, mut y) = (vec![0; BLOCK], vec![0; BLOCK]);
+        loop {
+            let fill = |f: &mut fs::File, buf: &mut [u8]| {
+                let mut n = 0;
+                while n < buf.len() {
+                    match f.read(&mut buf[n..]) {
+                        Ok(0) | Err(_) => break,
+                        Ok(k) => n += k,
+                    }
+                }
+                n
+            };
+            let (n, m) = (fill(&mut a, &mut x), fill(&mut b, &mut y));
+            let n = n.min(m);
+            if n == 0 {
+                break;
+            }
+            if x[..n] != y[..n] {
+                src_blank += blank(&x[..n]) as usize;
+                dest_blank += blank(&y[..n]) as usize;
+            }
+        }
+    }
+    match (src_blank > 0, dest_blank > 0) {
+        (true, false) => return Side::Library,
+        (false, true) => return Side::Backup,
+        _ => {}
+    }
+    let Some(kind) = Kind::from_path(src).filter(|k| *k != Kind::Video) else {
+        return Side::Unknown;
+    };
+    match (
+        crate::decode::image(src, kind).is_ok(),
+        crate::decode::image(dest, kind).is_ok(),
+    ) {
+        (true, false) => Side::Backup,
+        (false, true) => Side::Library,
+        _ => Side::Unknown,
+    }
+}
+
 /// What checking the backup against the library found.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Check {
@@ -130,6 +192,8 @@ pub struct Check {
     /// Photos whose two copies differ though their sizes match: one of
     /// them is damaged (a failing drive, a copy cut short).
     pub different: Vec<PathBuf>,
+    /// For each of `different`, which copy looks like the damaged one.
+    pub damaged: Vec<Side>,
     /// Photos that couldn't be read, in the library or in the backup.
     pub unreadable: Vec<(PathBuf, String)>,
     /// Photos not in the backup yet, or changed since (the next backup
@@ -172,7 +236,10 @@ pub fn verify(
             Ok(md) if md.len() == job.size => {
                 match (ingest::checksum(&job.src), ingest::checksum(&job.dest)) {
                     (Ok(a), Ok(b)) if a == b => check.same += 1,
-                    (Ok(_), Ok(_)) => check.different.push(job.src.clone()),
+                    (Ok(_), Ok(_)) => {
+                        check.damaged.push(judge(&job.src, &job.dest));
+                        check.different.push(job.src.clone());
+                    }
                     (Err(e), _) => check.unreadable.push((job.src.clone(), e.to_string())),
                     (_, Err(e)) => check.unreadable.push((job.dest.clone(), e.to_string())),
                 }
@@ -295,7 +362,36 @@ mod tests {
         assert_eq!(verify(&jobs, &mut check, &|_| {}, &|| true), 5);
         assert_eq!((check.same, check.waiting), (2, 2));
         assert_eq!(check.different, vec![lib.join("2026/DSCF0002.JPG")]);
+        assert_eq!(check.damaged, vec![Side::Unknown], "both look plausible");
         assert!(check.unreadable.is_empty());
+
+        // A stretch of a copy gone blank says which one is damaged.
+        let good: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8 + 1).collect();
+        let mut bad = good.clone();
+        bad[8192..12288].fill(0);
+        let (a, b) = (dir.path().join("a.RAF"), dir.path().join("b.RAF"));
+        fs::write(&a, &good).unwrap();
+        fs::write(&b, &bad).unwrap();
+        assert_eq!(judge(&a, &b), Side::Backup);
+        assert_eq!(judge(&b, &a), Side::Library);
+        // A picture that no longer opens is the bad one.
+        let picture = dir.path().join("p.png");
+        let mut png = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut png, 8, 8);
+            e.set_color(png::ColorType::Rgb);
+            e.write_header()
+                .unwrap()
+                .write_image_data(&[90; 8 * 8 * 3])
+                .unwrap();
+        }
+        fs::write(&picture, &png).unwrap();
+        let broken = dir.path().join("q.png");
+        let mut cut = png.clone();
+        cut[20..40].fill(7);
+        fs::write(&broken, &cut).unwrap();
+        assert_eq!(judge(&picture, &broken), Side::Backup);
+        assert_eq!(judge(&broken, &picture), Side::Library);
         // Stopped part-way, it says how far it got.
         let n = std::cell::Cell::new(0);
         let got = verify(&jobs, &mut Check::default(), &|d| n.set(d), &|| n.get() < 2);

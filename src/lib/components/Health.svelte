@@ -140,11 +140,22 @@
                 {#if b.damaged.length}{plural(b.damaged.length, 'photo')} differ{b.damaged.length === 1 ? 's' : ''} from {b.damaged.length === 1 ? 'its' : 'their'} backup copy{/if}{#if b.damaged.length && b.unreadable.length} · {/if}{#if b.unreadable.length}{plural(b.unreadable.length, 'file')} couldn’t be read{/if}
               </strong>
               <span class="faint">
-                One of the two copies is damaged, which can mean a drive is failing. Open each photo here: if it looks right, the library’s copy is the good one.
+                One of the two copies is damaged, which can mean a drive is failing. Where the check can tell which, it says so; otherwise open the photo here: if it looks right, the library’s copy is the good one.
+                To put a damaged copy right, replace it with the good one in File Explorer, then check again.
               </span>
               <ul>
-                {#each [...b.damaged, ...b.unreadable].slice(0, 8) as path (path)}
-                  <li class="truncate" title={path}>{name(path)} <span class="faint">{path}</span></li>
+                {#each b.damaged.slice(0, 8) as path, i (path)}
+                  {@const side = b.damagedSide?.[i]}
+                  <li class="truncate" title={path}>
+                    {name(path)}
+                    <strong class="side" class:lib={side === 'library'}>
+                      {side === 'backup' ? 'The backup’s copy is damaged; the library’s is good' : side === 'library' ? 'The library’s copy is damaged; the backup’s is good' : 'Can’t tell which copy is damaged'}
+                    </strong>
+                    <span class="faint">{path}</span>
+                  </li>
+                {/each}
+                {#each b.unreadable.slice(0, Math.max(0, 8 - b.damaged.length)) as path (path)}
+                  <li class="truncate" title={path}>{name(path)} <span class="faint">couldn’t be read · {path}</span></li>
                 {/each}
                 {#if b.damaged.length + b.unreadable.length > 8}<li class="faint">and {b.damaged.length + b.unreadable.length - 8} more (listed in the log)</li>{/if}
               </ul>
@@ -266,6 +277,14 @@
     padding: 0;
     list-style: none;
     font-size: 11.5px;
+  }
+  .side {
+    margin: 0 4px;
+    font-weight: 600;
+    color: #ffb340;
+  }
+  .side.lib {
+    color: #ff453a;
   }
   .truncate {
     overflow: hidden;

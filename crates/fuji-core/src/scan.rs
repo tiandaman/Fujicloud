@@ -245,7 +245,8 @@ pub fn sync_sidecars(
                 found.push((r.id, theirs));
                 settle.push(Settle {
                     id: r.id,
-                    marks: Some(merged),
+                    // Read again and nothing new in it: only noted as seen.
+                    marks: (merged != ours).then_some(merged),
                     mtime: mtime.unwrap_or(0),
                     base: in_file,
                     force: false,
@@ -258,9 +259,10 @@ pub fn sync_sidecars(
         if theirs != Some(&merged) && !merged.is_empty() {
             write_back.push(r.id);
         }
+        let marks = Marks::of(&merged);
         settle.push(Settle {
             id: r.id,
-            marks: Some(Marks::of(&merged)),
+            marks: (marks != Marks::of(&mine)).then_some(marks),
             mtime: mtime.unwrap_or(0),
             base: theirs.map(Marks::of).unwrap_or_default(),
             force: false,

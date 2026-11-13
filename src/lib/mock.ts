@@ -340,6 +340,7 @@ export function mockApi(): Api {
     checkTotal: 0,
     lastChecked: Date.now() / 1000 - 12 * 86400,
     damaged: new URLSearchParams(location.search).has('review') ? ['\\\\SHIELD\\Samsung_T7\\Photos\\2026\\2026-10-13\\DSCF9981.RAF'] : [],
+    damagedSide: new URLSearchParams(location.search).has('review') ? ['backup'] : [],
     unreadable: [],
     checkSame: photos.length,
     checkWaiting: 0,
@@ -750,7 +751,7 @@ export function mockApi(): Api {
     backupStatus: async () => backup,
     async checkBackup() {
       const total = photos.length;
-      backup = { ...backup, checking: true, checkDone: 0, checkTotal: total, damaged: [] };
+      backup = { ...backup, checking: true, checkDone: 0, checkTotal: total, damaged: [], damagedSide: [] };
       emit('backup', backup);
       for (let done = 0; done <= total; done += Math.ceil(total / 12)) {
         await delay(250);

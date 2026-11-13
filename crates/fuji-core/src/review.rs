@@ -215,7 +215,9 @@ impl Library {
                    flag = ?4, favorite = ?5, albums = ?6, xmp_mtime = ?7, by_name = ?8, by_at = ?9
                  WHERE removed = 0",
             )?;
+            let now = crate::db::unix_now_ms();
             for (id, tags, mtime) in items {
+                let mtime = crate::db::settled_time(*mtime, now);
                 let m = Marks::of(tags);
                 stmt.execute(params![
                     id,

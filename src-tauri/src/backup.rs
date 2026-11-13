@@ -46,6 +46,9 @@ pub struct Status {
     /// whose copies differ, ones that couldn't be read, how many were the
     /// same and how many aren't backed up yet.
     pub damaged: Vec<String>,
+    /// For each of `damaged`, which copy looks like the bad one.
+    #[serde(default)]
+    pub damaged_side: Vec<backup::Side>,
     pub unreadable: Vec<String>,
     pub check_same: usize,
     pub check_waiting: usize,
@@ -71,6 +74,12 @@ impl Backup {
                 last_backed_up: saved.last_backed_up,
                 error: saved.error,
                 last_checked: saved.last_checked,
+                damaged_side: saved
+                    .damaged
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| saved.damaged_side.get(i).copied().unwrap_or_default())
+                    .collect(),
                 damaged: saved.damaged,
                 unreadable: saved.unreadable,
                 check_same: saved.check_same,
@@ -216,6 +225,7 @@ fn check_pass(app: &AppHandle, state: &AppState) {
         found.same = s.check_same;
         found.waiting = s.check_waiting;
         found.different = s.damaged.iter().map(PathBuf::from).collect();
+        found.damaged = s.damaged_side.clone();
         found.unreadable = s
             .unreadable
             .iter()
@@ -244,6 +254,7 @@ fn check_pass(app: &AppHandle, state: &AppState) {
             s.check_same = found.same;
             s.check_waiting = found.waiting;
             s.damaged = names(&mut found.different.iter());
+            s.damaged_side = found.damaged.clone();
             s.unreadable = names(&mut found.unreadable.iter().map(|(p, _)| p));
             s.check_cursor = stretch
                 .get(got.saturating_sub(1))
@@ -259,9 +270,9 @@ fn check_pass(app: &AppHandle, state: &AppState) {
     for (file, why) in &found.unreadable {
         log::warn!("backup check: couldn't read {}: {why}", file.display());
     }
-    for file in &found.different {
+    for (file, side) in found.different.iter().zip(&found.damaged) {
         log::warn!(
-            "backup check: {} differs from its backup copy",
+            "backup check: {} differs from its backup copy (damaged: {side:?})",
             file.display()
         );
     }

@@ -264,6 +264,31 @@ pub(crate) struct Settle {
     pub force: bool,
 }
 
+/// How long (milliseconds) after a sidecar was written its time can't be
+/// trusted to change if it's written again, on a drive that keeps times
+/// only to the second or two: exFAT and FAT, and some network shares.
+const RACY_MS: i64 = 3000;
+
+pub(crate) fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// The time (milliseconds) to remember a sidecar by. On a drive with
+/// coarse times, one written only just now could be written again by
+/// another PC without its time changing; remembering it as a moment older
+/// has the next scan read it once more, which costs little and misses
+/// nothing.
+pub(crate) fn settled_time(mtime: i64, now: i64) -> i64 {
+    let coarse = mtime % 1000 == 0;
+    if mtime > 0 && coarse && (now - mtime).abs() <= RACY_MS {
+        mtime - 1
+    } else {
+        mtime
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FileInfo {
     pub path: PathBuf,
@@ -909,6 +934,7 @@ impl Library {
     /// keeps it unless forced (but one never synced takes what it's given:
     /// both sides merged). Returns how many took marks.
     pub(crate) fn settle(&self, items: &[Settle]) -> Result<usize, Error> {
+        let now = unix_now_ms();
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let mut applied = 0;
@@ -928,8 +954,9 @@ impl Library {
             )?;
             for item in items {
                 let base = serde_json::to_string(&item.base).unwrap_or_default();
+                let mtime = settled_time(item.mtime, now);
                 let Some(marks) = &item.marks else {
-                    seen.execute(params![item.id, item.mtime, base])?;
+                    seen.execute(params![item.id, mtime, base])?;
                     continue;
                 };
                 let changed = update.execute(params![
@@ -938,7 +965,7 @@ impl Library {
                     marks.label,
                     marks.flag.clamp(-1, 1),
                     marks.favorite as i64,
-                    item.mtime,
+                    mtime,
                     base,
                     item.force
                 ])?;
@@ -1882,5 +1909,23 @@ mod tests {
         // Opening again is a no-op.
         drop(lib);
         assert_eq!(Library::open(&path).unwrap().photos().unwrap()[0].mtime, -1);
+    }
+}
+
+#[cfg(test)]
+mod racy_tests {
+    use super::settled_time;
+
+    #[test]
+    fn coarse_recent_times_are_read_again() {
+        let now = 1_700_000_003_500;
+        // exFAT: whole seconds, written just now.
+        assert_eq!(settled_time(1_700_000_002_000, now), 1_700_000_001_999);
+        // The same drive, written a while ago.
+        assert_eq!(settled_time(1_699_999_990_000, now), 1_699_999_990_000);
+        // NTFS: times to the millisecond change with every write.
+        assert_eq!(settled_time(1_700_000_002_417, now), 1_700_000_002_417);
+        // No sidecar.
+        assert_eq!(settled_time(0, now), 0);
     }
 }

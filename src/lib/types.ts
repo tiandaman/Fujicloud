@@ -247,6 +247,8 @@ export interface BackupStatus {
   lastChecked: number | null;
   /** Photos whose two copies differ, and ones that couldn't be read. */
   damaged: string[];
+  /** For each of `damaged`, which copy looks like the bad one. */
+  damagedSide: ('library' | 'backup' | 'unknown')[];
   unreadable: string[];
   checkSame: number;
   /** Not in the backup yet (the next backup copies them). */
