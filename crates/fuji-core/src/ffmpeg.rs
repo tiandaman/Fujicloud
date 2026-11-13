@@ -220,6 +220,102 @@ pub fn transcode(
     Ok(())
 }
 
+/// The longest edge of a movie converted for the window: 1080p, which
+/// even a modest PC converts several times faster than it plays.
+const STREAM_EDGE: u32 = 1920;
+
+/// Starts re-encoding a movie as H.264/AAC that can be played *while* it's
+/// being made: fragmented MP4 on the program's standard output, a fragment
+/// a second, so the first pictures are there in about a second. Turned
+/// upright, HDR tone-mapped, at most 1080p. `hardware` lets the graphics
+/// card do the decoding where it can.
+pub fn stream(ffmpeg: &Path, src: &Path, hardware: bool) -> Result<std::process::Child, Error> {
+    let info = probe(ffmpeg, src)?;
+    // Shrunk first: tone-mapping a 4K picture is four times the work.
+    let mut filters = vec![format!(
+        "scale=w={STREAM_EDGE}:h={STREAM_EDGE}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+    )];
+    if info.hdr {
+        filters.push(TONEMAP.to_owned());
+    }
+    filters.push("format=yuv420p".to_owned());
+    let mut c = command(ffmpeg);
+    if hardware {
+        c.args(["-hwaccel", "auto"]);
+    }
+    c.arg("-i")
+        .arg(src)
+        .args(["-map", "0:v:0", "-map", "0:a:0?", "-vf"])
+        .arg(filters.join(","))
+        .args([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "superfast",
+            "-crf",
+            "20",
+            // No B-frames, so the first picture is at time zero; a key
+            // frame (and so a fragment) every second.
+            "-bf",
+            "0",
+            "-force_key_frames",
+            "expr:gte(t,n_forced)",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-ac",
+            "2",
+            "-movflags",
+            "frag_keyframe+empty_moov+default_base_moof",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "-loglevel",
+            "error",
+            "pipe:1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Ok(c.spawn()?)
+}
+
+/// Rewrites a finished [`stream`] as an ordinary MP4 (its index at the
+/// front), which seeks anywhere at once. Nothing is re-encoded.
+pub fn remux(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), Error> {
+    let out = command(ffmpeg)
+        .arg("-i")
+        .arg(src)
+        .args([
+            "-map",
+            "0",
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
+            "-loglevel",
+            "error",
+            "-y",
+        ])
+        .arg(dest)
+        .output()?;
+    if !out.status.success() {
+        return Err(bad(format!(
+            "FFmpeg couldn't finish the movie: {}",
+            last_line(&String::from_utf8_lossy(&out.stderr))
+        )));
+    }
+    Ok(())
+}
+
+/// The last thing a failed FFmpeg said.
+pub fn complaint(stderr: &[u8]) -> String {
+    last_line(&String::from_utf8_lossy(stderr)).to_owned()
+}
+
 /// A frame about a second in (first frames are often black), upright,
 /// fitting in `long_edge`.
 pub fn frame(ffmpeg: &Path, src: &Path, long_edge: u32) -> Result<Rgb, Error> {
@@ -398,6 +494,33 @@ mod tests {
             let mean =
                 poster.data.iter().map(|&b| b as u64).sum::<u64>() / poster.data.len() as u64;
             assert!(mean > 40, "{name}: mean {mean}");
+
+            // Played while it's made: fragments on the way out, then an
+            // ordinary MP4 from them.
+            for hardware in [true, false] {
+                let made = stream(&ffmpeg, &clip, hardware)
+                    .unwrap()
+                    .wait_with_output()
+                    .unwrap();
+                assert!(made.status.success(), "{name}: {}", complaint(&made.stderr));
+                let bytes = made.stdout;
+                assert_eq!(&bytes[4..8], b"ftyp", "{name}");
+                let has = |tag: &[u8]| bytes.windows(4).any(|w| w == tag);
+                assert!(has(b"avcC") && has(b"mp4a"), "{name}");
+                let fragments = bytes.windows(4).filter(|w| w == b"moof").count();
+                assert!(fragments >= 3, "{name}: {fragments} fragments");
+                let part = dir.join("stream.mp4");
+                std::fs::write(&part, &bytes).unwrap();
+                let whole = dir.join("whole.mp4");
+                remux(&ffmpeg, &part, &whole).unwrap();
+                let about = probe(&ffmpeg, &whole).unwrap();
+                assert!(!about.hdr, "{name}");
+                assert!((about.seconds - 3.0).abs() < 0.2, "{name}: {about:?}");
+                let head = std::fs::read(&whole).unwrap();
+                let moov = head.windows(4).position(|w| w == b"moov").unwrap();
+                let mdat = head.windows(4).position(|w| w == b"mdat").unwrap();
+                assert!(moov < mdat, "{name}: index not at the front");
+            }
             eprintln!("{name}: converted, poster mean {mean}");
         }
         let _ = std::fs::remove_dir_all(&dir);

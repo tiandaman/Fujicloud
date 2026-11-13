@@ -1,3 +1,4 @@
+import type { Chunk } from './stream';
 import { cacheVersion } from './version.svelte';
 import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Health, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, TextStatus, SyncChange, SyncResolved, Trash, TrashItem } from './types';
 
@@ -80,6 +81,17 @@ export interface Api {
   openFolder(path: string): Promise<void>;
   /** Converts a movie the window can't play; `convertedUrl` then serves it. */
   prepareMovie(id: number): Promise<void>;
+  /**
+   * Gets a movie the window can't play going at once: `converted` (it's
+   * been converted before; `convertedUrl` serves it) or `streaming` (it's
+   * being converted now; `movieChunk` hands over what's made so far).
+   */
+  playMovie(id: number): Promise<'converted' | 'streaming'>;
+  movieChunk(id: number, offset: number): Promise<Chunk>;
+  /** The viewer has moved on from a movie it was playing as it converted. */
+  leaveMovie(id: number): void;
+  /** Fetches the movie converter ahead of time, if it isn't here yet. */
+  fetchConverter(): Promise<void>;
   convertedUrl(p: Photo): string;
   openInEditor(ids: number[]): Promise<string>;
   reveal(id: number): Promise<void>;
@@ -204,6 +216,13 @@ function tauriApi(): Api {
     },
     openFolder: (path) => invoke('open_folder', { path }),
     prepareMovie: (id) => invoke('prepare_movie', { id }),
+    playMovie: (id) => invoke('play_movie', { id }),
+    movieChunk: async (id, offset) => {
+      const all = new Uint8Array(await invoke<ArrayBuffer>('movie_chunk', { id, offset }));
+      return all.length ? { state: all[0], bytes: all.subarray(1) } : { state: 2, bytes: all };
+    },
+    leaveMovie: (id) => void invoke('leave_movie', { id }).catch(() => {}),
+    fetchConverter: () => invoke('fetch_converter'),
     convertedUrl: (p) => `${base}/v/${p.id}?v=${p.mtime}`,
     openInEditor: (ids) => invoke('open_in_editor', { ids }),
     reveal: (id) => invoke('reveal', { id }),

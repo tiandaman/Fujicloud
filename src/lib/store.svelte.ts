@@ -561,6 +561,12 @@ class Store {
     this.ready = true;
     this.loadReview();
     this.loadHealth();
+    // A window that can't play iPhone movies (HEVC) itself gets the
+    // converter ahead of time, so the first one plays without a wait.
+    const hevc = ['hvc1.1.6.L93.B0', 'hvc1.2.4.L153.B0'];
+    if (api.native && typeof MediaSource !== 'undefined' && !hevc.every((c) => MediaSource.isTypeSupported(`video/mp4; codecs="${c}"`)) && this.photos.some((p) => p.kind === 'video')) {
+      setTimeout(() => api.fetchConverter().catch(() => {}), 5000);
+    }
 
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     await api.listen('library-changed', () => {

@@ -2,6 +2,7 @@ mod backup;
 mod cpu;
 mod faces;
 mod logfile;
+mod movies;
 mod pets;
 mod protocol;
 mod reach;
@@ -48,6 +49,8 @@ pub struct AppState {
     /// What the trash held when last listed (source, photo): `/x/<n>`
     /// serves the nth one's thumbnail.
     pub trash: Mutex<Vec<(i64, discard::Trashed)>>,
+    /// The movie being converted while the viewer plays it.
+    pub movies: movies::Streams,
 }
 
 impl AppState {
@@ -668,6 +671,95 @@ async fn prepare_movie(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<
     })
     .await
     .map_err(err)?
+}
+
+/// FFmpeg, fetched if it isn't here yet (one fetch at a time).
+/// `progress` gets 0–1 while it downloads.
+fn converter(state: &AppState, progress: &dyn Fn(f32)) -> CmdResult<PathBuf> {
+    static ONE: Mutex<()> = Mutex::new(());
+    let _one = ONE.lock();
+    if let Some(found) = fuji_core::ffmpeg::find() {
+        return Ok(found);
+    }
+    let ffmpeg = fuji_core::ffmpeg::download(&state.models_dir, &|done, total| {
+        if total > 0 {
+            progress(done as f32 / total as f32);
+        }
+    })
+    .map_err(|e| format!("{e}. Check that this PC can reach github.com, then try again."))?;
+    // Posters of movies Windows can't decode can be made now too.
+    protocol::forget_failures();
+    Ok(ffmpeg)
+}
+
+/// Fetches FFmpeg ahead of time, so the first movie that needs it plays
+/// at once. The window asks when it finds it can't play HEVC itself.
+#[tauri::command]
+async fn fetch_converter(state: Shared<'_>) -> CmdResult<()> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || converter(&state, &|_| {}).map(drop))
+        .await
+        .map_err(err)?
+}
+
+/// Gets a movie the window can't play (iPhone HEVC) playing at once.
+/// `"converted"`: it's in the cache already, at `/v/<id>`. `"streaming"`:
+/// it's being converted now, and `movie_chunk` hands over what's made.
+#[tauri::command]
+async fn play_movie(app: AppHandle, state: Shared<'_>, id: i64) -> CmdResult<&'static str> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (path, kind, size, mtime) = state.lib.file_of(id).map_err(err)?;
+        if kind != Kind::Video {
+            return Err("Not a movie".to_owned());
+        }
+        let src = thumbs::Source {
+            path: &path,
+            kind,
+            size,
+            mtime,
+        };
+        let dest = state.cache.movie_path(&src);
+        if dest.is_file() {
+            return Ok("converted");
+        }
+        if state.movies.has(id) {
+            return Ok("streaming");
+        }
+        reachable(&state, &path)?;
+        let last = Mutex::new(Instant::now());
+        let ffmpeg = converter(&state, &|progress| {
+            let mut last = last.lock();
+            if last.elapsed() > Duration::from_millis(200) {
+                *last = Instant::now();
+                let _ = app.emit(
+                    "movie-progress",
+                    MovieProgress {
+                        id,
+                        progress,
+                        downloading: true,
+                    },
+                );
+            }
+        })?;
+        state.movies.start(ffmpeg, id, path, dest);
+        Ok("streaming")
+    })
+    .await
+    .map_err(err)?
+}
+
+/// One byte of state (see [`movies`]), then the next stretch of the movie
+/// being converted, from `offset`.
+#[tauri::command(async)]
+fn movie_chunk(state: Shared<'_>, id: i64, offset: u64) -> tauri::ipc::Response {
+    tauri::ipc::Response::new(state.movies.read(id, offset))
+}
+
+/// The viewer has moved on from a movie it was playing as it converted.
+#[tauri::command]
+fn leave_movie(state: Shared<'_>, id: i64) {
+    state.movies.leave(id);
 }
 
 // ---- hand-off to other apps -------------------------------------------------
@@ -1736,7 +1828,9 @@ pub fn run() {
                 texts: texts::Texts::default(),
                 hardware: Hardware::detect(),
                 trash: Mutex::default(),
+                movies: movies::Streams::default(),
             });
+            movies::sweep(&state.cache.root().join("movies"));
             log::info!(
                 "{:?}: model size {:?}",
                 state.hardware,
@@ -1813,6 +1907,10 @@ pub fn run() {
             delete_photos,
             find_duplicates,
             prepare_movie,
+            play_movie,
+            movie_chunk,
+            leave_movie,
+            fetch_converter,
             export_photos,
             drag_files,
             open_folder,

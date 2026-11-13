@@ -733,6 +733,12 @@ export function mockApi(): Api {
       }
       throw new Error('no converter in the browser preview');
     },
+    playMovie: async () => {
+      throw new Error('no converter in the browser preview');
+    },
+    movieChunk: async () => ({ state: 2, bytes: new Uint8Array() }),
+    leaveMovie: () => {},
+    fetchConverter: async () => {},
     convertedUrl: (p) => sceneFor(p),
     openFolder: async () => {},
     openInEditor: async () => 'Photoshop',

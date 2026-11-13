@@ -115,8 +115,10 @@ thousands of images.
   instead of looking flat and grey.
 - **The rest of the iPhone:** Live Photos (the still and its movie as one tile, with
   *LIVE* in the viewer to play it), videos (`.MOV`, `.MP4`) with their length, date and
-  place, ProRAW `.DNG` and PNG screenshots. Video thumbnails come from Windows, so iPhone
-  HEVC clips need Microsoft's free *HEVC Video Extensions* to show and play.
+  place, ProRAW `.DNG` and PNG screenshots. iPhone **HEVC** movies play at once even on
+  a PC that can't decode them: FFmpeg (30 MB, fetched once, ahead of time) converts
+  the movie on this PC while the viewer plays what's made so far, about a second
+  behind, and the converted copy (1080p) is kept so next time it just plays.
 - **Photoshop files in the grid:** layered PSD/PSB and TIFF files get thumbnails and
   previews from their flattened image (8- or 16-bit, compressed or not). Colour is
   managed, so Adobe RGB and ProPhoto edits look the same as they do in Photoshop

@@ -6,6 +6,7 @@
   import Icon from './Icon.svelte';
   import InfoPanel from './InfoPanel.svelte';
   import Stars from './Stars.svelte';
+  import { FAILED, KEPT, RUNNING, canStream, playStream, type Playing } from '../stream';
   import type { Photo } from '../types';
 
   const INFO_W = 320;
@@ -36,13 +37,85 @@
   /** The converted copy came out sideways: turn it upright. */
   let turned = $state(false);
 
-  const movieUrl = (p: Photo) => (converted[p.id] ? api.convertedUrl(p) : api.originalUrl(p));
+  // …or, better, played at once while FFmpeg converts them: `streams` has
+  // the address the player reads what's been made so far from.
+  let streams = $state<Record<number, string>>({});
+  let stream: { id: number; play: Playing; state: number } | null = null;
+  /** The movie being got going, to show its converter being fetched. */
+  let starting: number | null = null;
+  /** Where to pick up when the player moves to the finished copy. */
+  let resume: { id: number; time: number } | null = null;
+  let player = $state<HTMLVideoElement>();
+
+  const movieUrl = (p: Photo) => streams[p.id] ?? (converted[p.id] ? api.convertedUrl(p) : api.originalUrl(p));
+
+  /** Lets go of the movie being played as it converts. */
+  function endStream() {
+    if (!stream) return;
+    const { id, play, state } = stream;
+    stream = null;
+    play.stop();
+    delete streams[id];
+    if (state === KEPT) converted[id] = true;
+    api.leaveMovie(id);
+  }
+
+  /**
+   * The whole movie is converted, and the playhead is somewhere the player
+   * no longer holds (it keeps a few minutes): carry on from the finished copy.
+   */
+  function settle() {
+    const v = player;
+    if (!stream || stream.state !== KEPT || !v) return;
+    const t = v.currentTime;
+    for (let i = 0; i < v.buffered.length; i++) if (t >= v.buffered.start(i) - 0.25 && t <= v.buffered.end(i) + 0.25) return;
+    resume = { id: stream.id, time: t };
+    endStream();
+  }
 
   async function cannotPlay(p: Photo) {
-    if (converted[p.id] || !api.native || converting) {
+    const shown = () => photo?.id === p.id || live?.id === p.id;
+    if (stream?.id === p.id) endStream();
+    else if (converted[p.id] || !api.native || converting || starting != null) {
       movieFailed = true;
       return;
+    } else if (canStream()) {
+      starting = p.id;
+      try {
+        const how = await api.playMovie(p.id);
+        if (!shown()) {
+          if (how === 'streaming') api.leaveMovie(p.id);
+          return;
+        }
+        if (how === 'converted') {
+          converted[p.id] = true;
+          return;
+        }
+        const play = playStream(
+          (offset) => api.movieChunk(p.id, offset),
+          () => player,
+          p.duration,
+        );
+        const mine = (stream = { id: p.id, play, state: RUNNING });
+        streams[p.id] = play.url;
+        play.finished.then((state) => {
+          if (stream !== mine) return;
+          mine.state = state;
+          // It broke off part-way: convert the whole of it, the slow way.
+          if (state === FAILED) cannotPlay(p);
+          else settle();
+        });
+        return;
+      } catch (e) {
+        console.warn('playing a movie as it converts:', e);
+        if (!shown()) return;
+      } finally {
+        starting = null;
+        converting = null;
+      }
     }
+    // The slow way: the whole movie converted (by Windows' own codecs if it
+    // has them), then played.
     converting = { id: p.id, progress: 0 };
     try {
       await api.prepareMovie(p.id);
@@ -57,6 +130,8 @@
   function checkTurn(e: Event, p: Photo) {
     const v = e.currentTarget as HTMLVideoElement;
     turned = !!converted[p.id] && v.videoWidth > 0 && v.videoWidth > v.videoHeight !== p.width > p.height;
+    if (resume?.id === p.id) v.currentTime = resume.time;
+    resume = null;
   }
   const stageW = $derived(vw - (store.showInfo ? INFO_W : 0));
 
@@ -181,6 +256,7 @@
       playingLive = false;
       movieFailed = false;
       turned = false;
+      endStream();
       for (const d of [1, -1, 2]) {
         const p = order[idx + d];
         if (p) new Image().src = api.previewUrl(p);
@@ -216,7 +292,7 @@
     let stop: (() => void) | undefined;
     api
       .listen<{ id: number; progress: number; downloading: boolean }>('movie-progress', (m) => {
-        if (converting?.id === m.id) converting = m;
+        if (converting?.id === m.id || starting === m.id) converting = m;
       })
       .then((u) => (stop = u));
     const rect = store.grid?.rectOf(id);
@@ -227,7 +303,10 @@
       : frame!.animate([{ opacity: 0, transform: 'scale(0.96)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing: EASE });
     anim.finished.then(() => (store.hiddenId = null)).catch(() => {});
     showChrome();
-    return () => stop?.();
+    return () => {
+      stop?.();
+      endStream();
+    };
   });
 
   async function close() {
@@ -373,6 +452,7 @@
               style:height={turned ? `${fit.w}px` : null}
               style:left={turned ? `${(fit.w - fit.h) / 2}px` : null}
               style:top={turned ? `${(fit.h - fit.w) / 2}px` : null}
+              bind:this={player}
               src={movieUrl(photo)}
               poster={api.previewUrl(photo)}
               controls
@@ -381,6 +461,7 @@
               onpointerdown={(e) => e.stopPropagation()}
               ondblclick={(e) => e.stopPropagation()}
               onloadedmetadata={(e) => checkTurn(e, photo)}
+              onseeking={settle}
               onerror={() => cannotPlay(photo)}
             ></video>
           {:else}
@@ -397,11 +478,15 @@
                 style:height={turned ? `${fit.w}px` : null}
                 style:left={turned ? `${(fit.w - fit.h) / 2}px` : null}
                 style:top={turned ? `${(fit.h - fit.w) / 2}px` : null}
+                bind:this={player}
                 src={movieUrl(live)}
                 autoplay
                 playsinline
                 onloadedmetadata={(e) => checkTurn(e, live)}
-                onended={() => (playingLive = false)}
+                onended={() => {
+                  playingLive = false;
+                  endStream();
+                }}
                 onerror={() => cannotPlay(live)}
               ></video>
             {/if}
