@@ -120,6 +120,8 @@ class Store {
   selection = $state.raw<Set<number>>(new Set());
   /** Selection toolbelts showing, so toasts make room. */
   toolbelts = $state(0);
+  /** Files from outside are being held over the window. */
+  dropping = $state(false);
   focusId = $state<number | null>(null);
   anchorId: number | null = null;
   viewerId = $state<number | null>(null);
@@ -296,6 +298,9 @@ class Store {
   /** Photos in the current collection, before toolbar filters (for counts). */
   inCollection = $derived.by(() => {
     const c = this.collection;
+    // Asked for by name in the search box, rejected photos show where they're otherwise left out.
+    const rejects = this.search.filters.some((f) => f.label === 'Rejected');
+    const kept = (p: Photo) => rejects || p.flag !== -1;
     const recent = Date.now() / 1000 - 7 * 86400;
     const similar = this.similarHits?.scores;
     const ids =
@@ -305,7 +310,7 @@ class Store {
       : c.type === 'person' ? new Set(this.personById.get(c.id)?.photoIds ?? [])
       : null;
     const test: (p: Photo) => boolean =
-      c.type === 'all' || c.type === 'map' ? (p) => p.flag !== -1
+      c.type === 'all' || c.type === 'map' ? (p) => kept(p)
       : c.type === 'picks' ? (p) => p.flag === 1
       : c.type === 'rated' ? (p) => p.rating > 0
       : c.type === 'rejected' ? (p) => p.flag === -1
@@ -316,8 +321,8 @@ class Store {
       : c.type === 'film' ? (p) => p.filmSim === c.value
       : c.type === 'camera' ? (p) => p.camera === c.value
       : c.type === 'lens' ? (p) => p.lens === c.value
-      : c.type === 'recipe' ? (p) => p.recipeKey === c.key && p.flag !== -1
-      : c.type === 'country' ? (p) => p.country === c.value && p.flag !== -1
+      : c.type === 'recipe' ? (p) => p.recipeKey === c.key && kept(p)
+      : c.type === 'country' ? (p) => p.country === c.value && kept(p)
       : c.type === 'ids' || c.type === 'duplicates' || c.type === 'person' ? (p) => ids!.has(p.id)
       : c.type === 'people' || c.type === 'pets' || c.type === 'trash' ? () => false
       : (p) => !!similar && (similar.has(p.id) || (p.pairId != null && similar.has(p.pairId)));
@@ -642,7 +647,10 @@ class Store {
       // Re-run the current search so newly analysed photos show up.
       if (finished && this.smartHits) this.#searchSmart(this.smartHits.query);
     });
-    await api.onDropPaths((paths) => paths.forEach((p) => this.addSource(p)));
+    await api.onDropPaths(
+      (paths) => paths.forEach((p) => this.addSource(p)),
+      (over) => (this.dropping = over),
+    );
   }
 
   async refresh() {

@@ -1,9 +1,11 @@
 /**
  * Drag a box to select: press on the page (not on a control), move a few
  * pixels, and everything the box touches is selected; Ctrl or Shift adds to
- * what was selected already. Near the top or bottom edge the page scrolls.
- * A press that doesn't move stays an ordinary click, and one on the page
- * itself (not on an item or a control) clears the selection.
+ * what was selected already. Near the top or bottom edge the page scrolls,
+ * faster the further past the edge. Escape gives up the box and puts the
+ * selection back as it was. A press that doesn't move stays an ordinary
+ * click, and one on the page itself (not on an item or a control) clears
+ * the selection.
  *
  *   <div class="scroller" use:marquee={{ canvas, hits, select, from }}>
  */
@@ -29,7 +31,9 @@ const EDGE = 48;
 
 export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
   let opts = options;
-  let start: { x: number; y: number; id: number; additive: boolean; blank: boolean; base: Set<number> } | null = null;
+  let start: { x: number; y: number; id: number; additive: boolean; blank: boolean; base: Set<number>; before: Set<number> } | null = null;
+  /** What the box last selected, so nothing is redrawn while that stays the same. */
+  let shown = '';
   let active = false;
   let last = { x: 0, y: 0 };
   let frame = 0;
@@ -48,7 +52,9 @@ export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
     const p = local(e.clientX, e.clientY);
     const additive = e.ctrlKey || e.metaKey || e.shiftKey;
     const blank = !t.closest(`${opts.item}, button, [role=button], label`);
-    start = { ...p, id: e.pointerId, additive, blank, base: new Set(additive ? opts.selected() : []) };
+    const before = new Set(opts.selected());
+    start = { ...p, id: e.pointerId, additive, blank, base: additive ? before : new Set(), before };
+    shown = '';
     last = { x: e.clientX, y: e.clientY };
   }
 
@@ -76,7 +82,8 @@ export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
     const view = scroller.getBoundingClientRect();
     const speed =
       last.y < view.top + EDGE ? -Math.ceil((view.top + EDGE - last.y) / 3) : last.y > view.bottom - EDGE ? Math.ceil((last.y - view.bottom + EDGE) / 3) : 0;
-    if (speed) scroller.scrollTop += Math.max(-40, Math.min(40, speed));
+    // Up to a screenful a second near the edge, three beyond it.
+    if (speed) scroller.scrollTop += Math.max(-60, Math.min(60, speed));
     const p = local(last.x, last.y);
     const b: Box = {
       left: Math.min(start.x, p.x),
@@ -89,9 +96,15 @@ export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
       box.style.width = `${b.right - b.left}px`;
       box.style.height = `${b.bottom - b.top}px`;
     }
-    const next = new Set(start.base);
-    for (const id of opts.hits(b)) next.add(id);
-    opts.select(next);
+    const hit = opts.hits(b);
+    // Only when what's inside the box has changed: every change redraws tiles.
+    const key = hit.length ? `${hit.length}:${hit[0]}:${hit[hit.length - 1]}:${hit[hit.length >> 1]}` : '';
+    if (key !== shown) {
+      shown = key;
+      const next = new Set(start.base);
+      for (const id of hit) next.add(id);
+      opts.select(next);
+    }
     // Keep scrolling while held at the edge, even without moving.
     if (speed) frame = requestAnimationFrame(tick);
   }
@@ -114,6 +127,24 @@ export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
     end();
   }
 
+  /** Escape: no box after all, and the selection as it was. */
+  function key(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !start || !active) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    opts.select(start.before);
+    const id = start.id;
+    if (scroller.hasPointerCapture(id)) scroller.releasePointerCapture(id);
+    // The button is still down: its release isn't a click on what's under it.
+    const swallow = (c: MouseEvent) => {
+      c.stopPropagation();
+      c.preventDefault();
+    };
+    window.addEventListener('click', swallow, { capture: true, once: true });
+    window.addEventListener('pointerup', () => setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0), { once: true });
+    end();
+  }
+
   function end() {
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
@@ -129,6 +160,7 @@ export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
   window.addEventListener('pointercancel', end);
+  window.addEventListener('keydown', key, { capture: true });
   return {
     update(next: MarqueeOptions) {
       opts = next;
@@ -140,6 +172,7 @@ export function marquee(scroller: HTMLElement, options: MarqueeOptions) {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', end);
+      window.removeEventListener('keydown', key, { capture: true });
     },
   };
 }

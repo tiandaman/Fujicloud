@@ -724,6 +724,7 @@ export function mockApi(): Api {
       }
       return { files: ids.length, failed: [] };
     },
+    dragPrepare: () => {},
     dragOut: async () => {},
     async prepareMovie(id) {
       for (let i = 1; i <= 10; i++) {

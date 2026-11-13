@@ -12,9 +12,28 @@ CREATE TABLE IF NOT EXISTS texts (
     -- As read, a line each; empty for a photo with nothing written in it.
     text     TEXT NOT NULL,
     -- As matched (see `searchable`).
-    norm     TEXT NOT NULL
+    norm     TEXT NOT NULL,
+    -- How many pixels across the picture it was read from was (0 if
+    -- another PC read it): small writing needs more than a thumbnail has.
+    edge     INTEGER NOT NULL DEFAULT 0
 );
 ";
+
+/// A picture this many pixels across or more shows small writing: one read
+/// from less is read again when a bigger copy of it is to hand.
+pub const SHARP: u32 = 1000;
+
+/// Columns added since the first version.
+pub(crate) fn migrate(conn: &rusqlite::Connection) -> Result<(), Error> {
+    let have: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('texts')")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    if !have.iter().any(|c| c == "edge") {
+        conn.execute_batch("ALTER TABLE texts ADD COLUMN edge INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
 
 /// Text as it's matched: lower case, punctuation as single spaces. (So
 /// \"Café—OPEN!\" is found by \"café open\".)
@@ -48,14 +67,32 @@ impl Library {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Records what `model` read in a photo (its lines; none for nothing).
-    pub fn store_text(&self, id: i64, model: &str, lines: &[String]) -> Result<(), Error> {
+    /// Records what `model` read in a photo (its lines; none for nothing),
+    /// from a picture `edge` pixels across.
+    pub fn store_text(
+        &self,
+        id: i64,
+        model: &str,
+        lines: &[String],
+        edge: u32,
+    ) -> Result<(), Error> {
         let text = lines.join("\n");
         self.conn.lock().execute(
-            "INSERT OR REPLACE INTO texts (photo_id, model, text, norm) VALUES (?1, ?2, ?3, ?4)",
-            params![id, model, text, searchable(&text)],
+            "INSERT OR REPLACE INTO texts (photo_id, model, text, norm, edge)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, model, text, searchable(&text), edge],
         )?;
         Ok(())
+    }
+
+    /// Photos `model` read from a small picture only (or that another PC
+    /// read): worth reading again where a bigger copy is to hand.
+    pub fn text_read_small(&self, model: &str) -> Result<Vec<i64>, Error> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare_cached("SELECT photo_id FROM texts WHERE model = ?1 AND edge < ?2")?;
+        let rows = stmt.query_map(params![model, SHARP], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Takes what another PC read, unless this one has read the photo.
@@ -166,9 +203,11 @@ mod tests {
             jpg,
             "m",
             &["HALIFAX HARBOUR".into(), "Open 9am – 5pm".into()],
+            512,
         )
         .unwrap();
-        lib.store_text(heic, "m", &[]).unwrap();
+        lib.store_text(heic, "m", &[], 1280).unwrap();
+        assert_eq!(lib.text_read_small("m").unwrap(), vec![jpg]);
         assert!(lib.text_todo("m").unwrap().is_empty());
         assert_eq!(lib.texts_read("m").unwrap(), (2, 1));
         assert_eq!(lib.search_text("harbour").unwrap(), vec![jpg]);

@@ -13,7 +13,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::AppState;
-use crate::faces::{Picture, picture};
+use crate::faces::Picture;
+use fuji_core::thumbs::{self, Size};
 
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -171,13 +172,30 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let mut reader = None;
 
     let failed = texts.failed.lock().clone();
-    let todo: Vec<i64> = state
+    let mut todo: Vec<i64> = state
         .lib
         .text_todo(MODEL_ID)
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|id| !failed.contains(id))
         .collect();
+    // And again, the ones read from a thumbnail that have since been opened
+    // (so a bigger copy is kept): small writing shows in that.
+    let fresh = todo.len();
+    todo.extend(
+        state
+            .lib
+            .text_read_small(MODEL_ID)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|id| !failed.contains(id) && has_preview(state, *id)),
+    );
+    if todo.len() > fresh {
+        log::info!(
+            "text: reading {} photos again from their bigger copies",
+            todo.len() - fresh
+        );
+    }
     let total = todo.len() as u64;
     texts.update(app, state, |s| {
         s.phase = Phase::Indexing;
@@ -194,11 +212,12 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                     Some(r) => r,
                     None => reader.insert(texts.reader(state)?),
                 };
+                let edge = image.width.max(image.height);
                 match fuji_core::guard(|| reader.read(&image)) {
                     Ok(lines) => {
                         state
                             .lib
-                            .store_text(id, MODEL_ID, &lines)
+                            .store_text(id, MODEL_ID, &lines, edge)
                             .map_err(|e| e.to_string())?;
                         // So other PCs needn't read it again. (Most photos
                         // have nothing written in them: no need to say so.)
@@ -227,4 +246,62 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
         (s.done, s.total) = (total, total);
     });
     Ok(())
+}
+
+/// The picture edge photos are read at: enough for small writing.
+const READ_EDGE: u32 = 1280;
+
+fn source_of(state: &AppState, id: i64) -> Option<(std::path::PathBuf, fuji_core::Kind, u64, i64)> {
+    state.lib.file_of(id).ok()
+}
+
+/// Whether the photo's bigger copy (made when it's opened) is kept.
+fn has_preview(state: &AppState, id: i64) -> bool {
+    source_of(state, id).is_some_and(|(path, kind, size, mtime)| {
+        let src = thumbs::Source {
+            path: &path,
+            kind,
+            size,
+            mtime,
+        };
+        state.cache.get(&src, Size::Preview).is_some()
+    })
+}
+
+/// The photo as an upright picture to read: its bigger copy when there is
+/// one, else the thumbnail. A screenshot's bigger copy is made if need be:
+/// its writing is small and it's what's there to read (and the file's small).
+fn picture(state: &AppState, id: i64) -> Picture {
+    let Some((path, kind, size, mtime)) = source_of(state, id) else {
+        return Picture::Failed;
+    };
+    let src = thumbs::Source {
+        path: &path,
+        kind,
+        size,
+        mtime,
+    };
+    let offline = state.reach.covers(&path);
+    let screenshot = kind == fuji_core::Kind::Png && !offline;
+    let cached = state
+        .cache
+        .get(&src, Size::Preview)
+        .or_else(|| {
+            screenshot
+                .then(|| state.cache.ensure(&src, Size::Preview).ok())
+                .flatten()
+        })
+        .or_else(|| state.cache.get(&src, Size::Thumb));
+    let file = match cached {
+        Some(file) => file,
+        None if offline => return Picture::Offline,
+        None => match state.cache.ensure(&src, Size::Thumb) {
+            Ok(file) => file,
+            Err(_) => return Picture::Failed,
+        },
+    };
+    std::fs::read(file)
+        .ok()
+        .and_then(|jpeg| thumbs::decode_rendition(&jpeg, READ_EDGE).ok())
+        .map_or(Picture::Failed, Picture::Ready)
 }

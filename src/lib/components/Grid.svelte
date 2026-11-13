@@ -130,28 +130,56 @@
 
   // ---- selection ------------------------------------------------------------------
 
+  /** What was selected when the range's anchor was set: Shift+click picks
+   * the range afresh each time (as in Explorer), on top of this. */
+  let rangeBase: Set<number> | null = null;
+
+  function setAnchor(id: number) {
+    store.anchorId = id;
+    rangeBase = null;
+  }
+
   function toggle(id: number) {
     const next = new Set(store.selection);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     store.selection = next;
     store.focusId = id;
-    store.anchorId = id;
+    setAnchor(id);
   }
 
   function selectRange(id: number) {
-    const a = layout.index.get(store.anchorId ?? id) ?? 0;
+    const a = layout.index.get(store.anchorId ?? store.focusId ?? id) ?? 0;
     const b = layout.index.get(id) ?? 0;
-    const next = new Set(store.selection);
+    // A second Shift+click moves the end of the range rather than adding
+    // another: overshoot, and click again where it should have stopped.
+    rangeBase ??= new Set(store.selection);
+    if (store.anchorId == null) store.anchorId = layout.flat[a].id;
+    const next = new Set(rangeBase);
     for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next.add(layout.flat[i].id);
     store.selection = next;
     store.focusId = id;
+  }
+
+  /** A section's heading selects all of it, or none if it all is already. */
+  function toggleSection(items: Photo[]) {
+    const next = new Set(store.selection);
+    const all = items.every((p) => next.has(p.id));
+    for (const p of items) {
+      if (all) next.delete(p.id);
+      else next.add(p.id);
+    }
+    store.selection = next;
+    rangeBase = null;
   }
 
   // ---- drag out: photos dropped on Explorer, Photoshop or a browser ----------------
 
   let press: { x: number; y: number; id: number } | null = null;
   let dragged = false;
+  /** Whether the mouse button is down (a drag mustn't start after it's let go). */
+  let held = false;
+  const dragIds = (id: number) => (store.selection.has(id) ? [...store.selection] : [id]);
 
   /** Dragging a selected photo (or any, with Alt) takes the selection out to
    * Explorer or Photoshop; dragging anywhere else draws a box to select. */
@@ -160,14 +188,31 @@
   function onTilePointerDown(e: PointerEvent, p: Photo) {
     dragged = false;
     // Touch drags scroll the grid; only a mouse or pen drags photos out.
-    if (e.button === 0 && e.pointerType !== 'touch' && dragsOut(e, p.id)) press = { x: e.clientX, y: e.clientY, id: p.id };
+    if (e.button === 0 && e.pointerType !== 'touch' && dragsOut(e, p.id)) {
+      press = { x: e.clientX, y: e.clientY, id: p.id };
+      held = true;
+      // Ready by the time the pointer has moved (a huge selection is left
+      // until it has: looking up thousands of files on every click isn't).
+      const ids = dragIds(p.id);
+      if (ids.length <= 500) api.dragPrepare(ids);
+    }
   }
+
+  /** The tallest tile, for finding what a box touches without looking at every photo. */
+  const tallest = $derived.by(() => {
+    let h = 0;
+    for (let i = 3; i < layout.boxes.length; i += 4) if (layout.boxes[i] > h) h = layout.boxes[i];
+    return h;
+  });
 
   const boxSelect = {
     item: '.tile',
     canvas: () => canvas,
     selected: () => store.selection,
-    select: (ids: Set<number>) => (store.selection = ids),
+    select: (ids: Set<number>) => {
+      store.selection = ids;
+      rangeBase = null;
+    },
     from: (e: PointerEvent) => {
       const tile = (e.target as HTMLElement).closest<HTMLElement>('.tile');
       return !tile || !dragsOut(e, Number(tile.dataset.id));
@@ -175,7 +220,17 @@
     hits: (b: import('../marquee').Box) => {
       const out: number[] = [];
       const { boxes, flat } = layout;
-      for (let i = 0; i < flat.length; i++) {
+      // Tiles are laid out top to bottom: find the first that reaches down
+      // to the box, and stop at the first that starts below it. (Tallest
+      // tile: a row never starts more than that above its lowest edge.)
+      let lo = 0;
+      let hi = flat.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (boxes[mid * 4 + 1] + tallest < b.top) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < flat.length && boxes[i * 4 + 1] <= b.bottom; i++) {
         if (touches(b, boxes[i * 4], boxes[i * 4 + 1], boxes[i * 4 + 2], boxes[i * 4 + 3])) out.push(flat[i].id);
       }
       return out;
@@ -228,11 +283,11 @@
       press = null;
       return;
     }
-    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 8) return;
-    const ids = store.selection.has(press.id) ? [...store.selection] : [press.id];
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
+    const ids = dragIds(press.id);
     press = null;
     dragged = true;
-    api.dragOut(ids).catch((err) => store.toast(String(err), 'error'));
+    api.dragOut(ids, () => held).catch((err) => store.toast(String(err), 'error'));
   }
 
   function onTileClick(e: MouseEvent, p: Photo) {
@@ -244,6 +299,11 @@
     if (e.shiftKey) selectRange(p.id);
     else if (e.ctrlKey || e.metaKey || store.selection.size) toggle(p.id);
     else store.open(p.id);
+  }
+
+  /** While selecting, a click ticks a photo; a double click opens it. */
+  function onTileDoubleClick(p: Photo) {
+    if (store.viewerId == null) store.open(p.id);
   }
 
   function onContextMenu(e: MouseEvent, p: Photo) {
@@ -323,9 +383,20 @@
         }
         return;
       case 'a':
+      case 'A':
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
-          store.selection = new Set(flat.map((p) => p.id));
+          // Ctrl+Shift+A: none.
+          store.selection = e.shiftKey ? new Set() : new Set(flat.map((p) => p.id));
+          rangeBase = null;
+        }
+        return;
+      case 'i':
+        // Ctrl+I: the other ones.
+        if ((e.ctrlKey || e.metaKey) && store.selection.size) {
+          e.preventDefault();
+          store.selection = new Set(flat.filter((p) => !store.selection.has(p.id)).map((p) => p.id));
+          rangeBase = null;
         }
         return;
       case 'Escape':
@@ -337,7 +408,7 @@
     e.preventDefault();
     const id = flat[next].id;
     if (e.shiftKey) selectRange(id);
-    else store.anchorId = id;
+    else setAnchor(id);
     store.focusId = id;
     reveal(id);
   }
@@ -358,7 +429,14 @@
   }
 </script>
 
-<svelte:window onkeydown={onKey} onpointermove={onWindowPointerMove} onpointerup={() => (press = null)} />
+<svelte:window
+  onkeydown={onKey}
+  onpointermove={onWindowPointerMove}
+  onpointerup={() => {
+    press = null;
+    held = false;
+  }}
+/>
 
 <div class="wrap">
   <div
@@ -376,6 +454,12 @@
         <header class="section" style:transform="translateY({row.y}px)">
           <h2>{row.section!.title}</h2>
           <span>{row.section!.subtitle}</span>
+          {#if row.section!.items.length > 1}
+            {@const all = row.section!.items.every((p) => store.selection.has(p.id))}
+            <button class="section-action select" class:on={all} title={all ? 'Deselect these' : `Select all ${row.section!.items.length} of these`} onclick={() => toggleSection(row.section!.items)}>
+              {all ? 'Deselect' : 'Select'}
+            </button>
+          {/if}
           {#if row.section!.action}
             <button class="section-action" onclick={row.section!.action.run}>{row.section!.action.label}</button>
           {/if}
@@ -402,6 +486,7 @@
           aria-label={p.name}
           onpointerdown={(e) => onTilePointerDown(e, p)}
           onclick={(e) => onTileClick(e, p)}
+          ondblclick={() => onTileDoubleClick(p)}
           oncontextmenu={(e) => onContextMenu(e, p)}
           onkeydown={() => {}}
         >
@@ -552,8 +637,8 @@
     top: 0;
     height: 48px;
     padding-top: 14px;
-    background: rgba(20, 20, 22, 0.86);
-    backdrop-filter: blur(20px) saturate(1.5);
+    /* Nearly solid rather than frosted: see the toolbelt. */
+    background: rgba(20, 20, 22, 0.96);
     box-shadow: 0 1px 0 var(--sep);
     pointer-events: none;
     z-index: 2;
@@ -588,10 +673,10 @@
     height: 100%;
     object-fit: cover;
     opacity: 0;
-    transition:
-      opacity 180ms ease,
-      transform 220ms var(--ease-out),
-      border-radius 220ms var(--ease-out);
+    /* Only the fade as it loads. Selecting doesn't animate: a box or
+       Ctrl+A changes dozens of tiles at once, and animating each one
+       redraws its photo every frame. */
+    transition: opacity 180ms ease;
   }
   .tile img:global(.loaded) {
     opacity: 1;
@@ -647,6 +732,15 @@
     font-size: 11.5px;
     cursor: default;
     pointer-events: auto;
+  }
+  /* Beside the title, quiet until wanted. */
+  .section-action.select {
+    margin-left: 0;
+    background: none;
+    color: var(--text-3);
+  }
+  .section-action.select.on {
+    color: var(--accent);
   }
   .section-action:hover {
     background: rgba(255, 255, 255, 0.12);
@@ -716,6 +810,10 @@
     opacity: 1;
     transform: none;
   }
+  /* Every tile's tick shows at once when selecting starts: no animation. */
+  .tile.selecting .check {
+    transition: none;
+  }
   .check:hover {
     background: rgba(255, 255, 255, 0.25);
   }
@@ -777,9 +875,8 @@
   }
   .kinds .badge,
   .badge.edit {
-    background: rgba(0, 0, 0, 0.55);
+    background: rgba(0, 0, 0, 0.62);
     color: rgba(255, 255, 255, 0.9);
-    backdrop-filter: blur(6px);
   }
   .badge.edit {
     color: #fff;

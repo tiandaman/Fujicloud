@@ -73,7 +73,10 @@ export interface Api {
   /** Exports copies into `folder`; progress arrives as `export` events. */
   exportPhotos(ids: number[], preset: ExportPreset, location: boolean, folder: string): Promise<Exported>;
   /** Starts dragging the photos' files out of the window, into another app. */
-  dragOut(ids: number[]): Promise<void>;
+  /** Gets a drag ready as the button goes down, so it starts the moment the pointer moves. */
+  dragPrepare(ids: number[]): void;
+  /** Starts dragging these photos' files out; `held` says whether the button is still down. */
+  dragOut(ids: number[], held?: () => boolean): Promise<void>;
   openFolder(path: string): Promise<void>;
   /** Converts a movie the window can't play; `convertedUrl` then serves it. */
   prepareMovie(id: number): Promise<void>;
@@ -107,7 +110,8 @@ export interface Api {
   similarPhotos(id: number): Promise<Hit[]>;
   pickFolder(title: string): Promise<string | null>;
   listen<T>(event: string, cb: (payload: T) => void): Promise<() => void>;
-  onDropPaths(cb: (paths: string[]) => void): Promise<() => void>;
+  /** `hover` hears when files from outside are over the window, and when they've gone. */
+  onDropPaths(cb: (paths: string[]) => void, hover?: (over: boolean) => void): Promise<() => void>;
   setFullscreen(on: boolean): Promise<void>;
   isFullscreen(): Promise<boolean>;
   thumbUrl(p: Photo): string;
@@ -120,6 +124,9 @@ function tauriApi(): Api {
   const base = navigator.userAgent.includes('Windows') ? 'http://fuji.localhost' : 'fuji://localhost';
   /** Files being dragged out of the window right now. */
   let outgoing = new Set<string>();
+  type DragFiles = { paths: string[]; icon: string };
+  /** A drag got ready while the button was going down. */
+  let prepared: { key: string; files: Promise<DragFiles> } | null = null;
   const core = import('@tauri-apps/api/core');
   const invoke = async <T>(cmd: string, args?: Record<string, unknown>) => (await core).invoke<T>(cmd, args);
 
@@ -172,9 +179,21 @@ function tauriApi(): Api {
     resolveSyncReview: (apply, reject, everything = false) => invoke('resolve_sync_review', { apply, reject, everything }),
     deletePhotos: (ids) => invoke('delete_photos', { ids }),
     exportPhotos: (ids, preset, location, folder) => invoke('export_photos', { ids, preset, location, folder }),
-    async dragOut(ids) {
-      const files = await invoke<{ paths: string[]; icon: string }>('drag_files', { ids });
-      const { startDrag } = await import('@crabnebula/tauri-plugin-drag');
+    dragPrepare(ids) {
+      const key = ids.join(',');
+      if (prepared?.key !== key) {
+        prepared = { key, files: invoke<DragFiles>('drag_files', { ids }) };
+        prepared.files.catch(() => {});
+      }
+      void import('@crabnebula/tauri-plugin-drag');
+    },
+    async dragOut(ids, held = () => true) {
+      const key = ids.join(',');
+      const ready = prepared?.key === key ? prepared.files : invoke<DragFiles>('drag_files', { ids });
+      prepared = null;
+      const [files, { startDrag }] = await Promise.all([ready, import('@crabnebula/tauri-plugin-drag')]);
+      // Let go before it was ready: a drag started now would stick to the pointer.
+      if (!held()) return;
       outgoing = new Set(files.paths);
       try {
         await startDrag({ item: files.paths, icon: files.icon });
@@ -216,11 +235,17 @@ function tauriApi(): Api {
       const { listen } = await import('@tauri-apps/api/event');
       return listen(event, (e) => cb(e.payload as never));
     },
-    async onDropPaths(cb) {
+    async onDropPaths(cb, hover) {
       const { getCurrentWebview } = await import('@tauri-apps/api/webview');
       return getCurrentWebview().onDragDropEvent((e) => {
         // Photos dragged out and let go over this window aren't new folders.
-        if (e.payload.type === 'drop') {
+        const ours = (paths: string[]) => paths.length > 0 && paths.every((p) => outgoing.has(p));
+        if (e.payload.type === 'enter') {
+          if (!ours(e.payload.paths) && !outgoing.size) hover?.(true);
+        } else if (e.payload.type === 'leave') {
+          hover?.(false);
+        } else if (e.payload.type === 'drop') {
+          hover?.(false);
           const paths = e.payload.paths.filter((p) => !outgoing.has(p));
           if (paths.length) cb(paths);
         }

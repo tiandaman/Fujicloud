@@ -146,6 +146,14 @@
 {#if store.confirmation}
   <Confirm />
 {/if}
+{#if store.dropping}
+  <div class="dropzone" aria-hidden="true">
+    <div class="card">
+      <strong>Drop to add to the library</strong>
+      <span>A folder of photos, or a whole drive. Its photos stay where they are.</span>
+    </div>
+  </div>
+{/if}
 <Toasts />
 
 <style>
@@ -182,5 +190,31 @@
   .fatal {
     margin: auto;
     text-align: center;
+  }
+  .dropzone {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: grid;
+    place-items: center;
+    background: rgba(10, 132, 255, 0.12);
+    box-shadow: inset 0 0 0 3px var(--accent);
+    pointer-events: none;
+  }
+  .dropzone .card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 22px 30px;
+    border-radius: 14px;
+    background: #1e1e21;
+    box-shadow: var(--shadow-lg);
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-2);
+  }
+  .dropzone strong {
+    color: var(--text);
+    font: 650 17px var(--font-display);
   }
 </style>

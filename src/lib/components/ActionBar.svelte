@@ -93,9 +93,10 @@
     padding: 6px;
     transform: translateX(-50%);
     border-radius: 16px;
-    background: linear-gradient(180deg, rgba(48, 48, 54, 0.86), rgba(34, 34, 38, 0.9));
-    backdrop-filter: blur(24px) saturate(1.7);
-    -webkit-backdrop-filter: blur(24px) saturate(1.7);
+    /* Solid, not frosted: a blur over the grid is worked out again for
+       every frame the photos behind it scroll or change, which made
+       scrolling with photos selected stutter. */
+    background: linear-gradient(180deg, #303036, #222226);
     box-shadow:
       0 18px 50px rgba(0, 0, 0, 0.5),
       0 2px 8px rgba(0, 0, 0, 0.3),

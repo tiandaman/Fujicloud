@@ -772,9 +772,20 @@ async fn drag_files(state: Shared<'_>, ids: Vec<i64>) -> CmdResult<DragFiles> {
         }
         paths.push(path.to_string_lossy().into_owned());
     }
+    // A small picture to carry under the pointer: the whole 512 px
+    // thumbnail covered what was being dropped onto.
+    let small = icon.as_ref().and_then(|thumb| {
+        let jpeg = std::fs::read(thumb).ok()?;
+        let rgb = thumbs::decode_rendition(&jpeg, 128).ok()?;
+        let made = thumbs::render_rgb(rgb.data, rgb.width, rgb.height, 128, 85).ok()?;
+        let file = std::env::temp_dir().join("fujicloud-drag.jpg");
+        std::fs::write(&file, made.jpeg).ok()?;
+        Some(file)
+    });
     Ok(DragFiles {
         paths,
-        icon: icon
+        icon: small
+            .or(icon)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
     })

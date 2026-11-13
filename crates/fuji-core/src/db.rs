@@ -329,6 +329,7 @@ impl Library {
         conn.execute_batch(crate::review::TABLES)?;
         conn.execute_batch(crate::written::TABLES)?;
         crate::review::migrate(&conn)?;
+        crate::written::migrate(&conn)?;
         crate::people::migrate(&conn)?;
         migrate(&conn)?;
         conn.execute_batch(INDEXES)?;
