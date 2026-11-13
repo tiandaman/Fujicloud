@@ -259,6 +259,16 @@ export interface BackupStatus {
 export interface Pending {
   todo: number;
   unreadable: number;
+  /** Which ones (the first few hundred). */
+  unreadableIds: number[];
+}
+
+/** A warning or problem from the log. */
+export interface LogEntry {
+  /** `2026-11-13 17:40:09` */
+  at: string;
+  problem: boolean;
+  text: string;
 }
 
 export interface Health {
@@ -274,6 +284,7 @@ export interface Health {
   offline: string[];
   /** Photos that couldn't be shown this session. */
   unshown: number;
+  unshownIds: number[];
   smart: Pending | null;
   faces: Pending | null;
   pets: Pending | null;

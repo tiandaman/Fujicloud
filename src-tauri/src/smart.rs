@@ -116,6 +116,13 @@ impl Smart {
         self.failed.lock().len()
     }
 
+    /// The photos that couldn't be read this session.
+    pub fn failed_ids(&self) -> Vec<i64> {
+        let mut ids: Vec<i64> = self.failed.lock().iter().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     pub fn forget_failures(&self) {
         self.failed.lock().clear();
     }

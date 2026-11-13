@@ -92,6 +92,13 @@ impl Texts {
     }
 
     /// Lets photos that couldn't be read be tried again.
+    /// The photos that couldn't be read this session.
+    pub fn failed_ids(&self) -> Vec<i64> {
+        let mut ids: Vec<i64> = self.failed.lock().iter().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     pub fn forget_failures(&self) {
         self.failed.lock().clear();
     }
@@ -226,7 +233,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                         }
                     }
                     Err(e) => {
-                        log::warn!("text in photo {id}: {e}");
+                        log::warn!("text: couldn't read {}: {e}", crate::name_of(state, id));
                         texts.failed.lock().insert(id);
                     }
                 }

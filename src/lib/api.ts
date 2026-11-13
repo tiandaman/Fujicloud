@@ -1,6 +1,6 @@
 import type { Chunk } from './stream';
 import { cacheVersion } from './version.svelte';
-import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Health, Label, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, TextStatus, SyncChange, SyncResolved, Trash, TrashItem } from './types';
+import type { Album, BackupStatus, Bootstrap, CacheInfo, Deleted, Detail, DuplicateGroup, Exported, ExportPreset, FaceInPhoto, FacesStatus, Hit, Health, Label, LogEntry, ModelChoice, Models, Person, PetsStatus, Photo, RecipeRow, Settings, SmartStatus, Source, Subject, TextStatus, SyncChange, SyncResolved, Trash, TrashItem } from './types';
 
 export interface Api {
   /** False when running in a plain browser against mock data. */
@@ -111,6 +111,8 @@ export interface Api {
   /** Rebuilds every thumbnail and preview; returns the new cache version. */
   rebuildThumbnails(): Promise<number>;
   openLogFolder(): Promise<void>;
+  /** The log's latest warnings and problems, newest first. */
+  recentProblems(): Promise<LogEntry[]>;
   listRecipes(): Promise<RecipeRow[]>;
   nameRecipe(key: string, name: string | null): Promise<void>;
   smartStatus(): Promise<SmartStatus>;
@@ -237,6 +239,7 @@ function tauriApi(): Api {
     cacheInfo: () => invoke('cache_info'),
     rebuildThumbnails: () => invoke('rebuild_thumbnails'),
     openLogFolder: () => invoke('open_log_folder'),
+    recentProblems: () => invoke('recent_problems'),
     listRecipes: () => invoke('list_recipes'),
     nameRecipe: (key, name) => invoke('name_recipe', { key, name }),
     smartStatus: () => invoke('smart_status'),

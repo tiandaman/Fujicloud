@@ -24,13 +24,100 @@ impl log::Log for FileLog {
     fn log(&self, r: &log::Record) {
         if self.enabled(r.metadata()) {
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-            let _ = writeln!(self.0.lock(), "{now} {:<5} {}", r.level(), r.args());
+            let _ = writeln!(
+                self.0.lock(),
+                "{}",
+                line(&now.to_string(), r.level(), &r.args().to_string())
+            );
         }
     }
 
     fn flush(&self) {
         let _ = self.0.lock().flush();
     }
+}
+
+/// One line of the log: when, a word only when something's wrong, then
+/// what happened. More lines of the same message are set in under it.
+fn line(now: &str, level: log::Level, text: &str) -> String {
+    let word = match level {
+        log::Level::Error => "PROBLEM",
+        log::Level::Warn => "WARNING",
+        _ => "",
+    };
+    let text = text
+        .trim_end()
+        .replace('\n', "\n                               ");
+    format!("{now}  {word:<7}  {text}")
+}
+
+/// A warning or problem from the log.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct Entry {
+    /// `2026-11-13 17:40:09`
+    pub at: String,
+    pub problem: bool,
+    pub text: String,
+}
+
+/// Picks the warnings and problems out of the log's text, oldest first.
+/// Reads this format and the one before it (`WARN`, `ERROR`).
+fn problems(text: &str) -> Vec<Entry> {
+    let mut found: Vec<Entry> = Vec::new();
+    let mut open = false;
+    for l in text.lines() {
+        let stamped = l.len() > 20
+            && l.is_char_boundary(19)
+            && l.as_bytes()[4] == b'-'
+            && l.as_bytes()[13] == b':'
+            && l.as_bytes()[..4].iter().all(u8::is_ascii_digit);
+        if !stamped {
+            // More of the message above.
+            if open
+                && !l.trim().is_empty()
+                && !l.starts_with('=')
+                && let Some(last) = found.last_mut()
+            {
+                last.text.push('\n');
+                last.text.push_str(l.trim());
+            }
+            continue;
+        }
+        let rest = l[19..].trim_start();
+        let level = [
+            ("PROBLEM", true),
+            ("ERROR", true),
+            ("WARNING", false),
+            ("WARN", false),
+        ]
+        .into_iter()
+        .find(|(word, _)| rest.starts_with(&format!("{word} ")));
+        open = level.is_some();
+        if let Some((word, problem)) = level {
+            found.push(Entry {
+                at: l[..19].to_owned(),
+                problem,
+                text: rest[word.len()..].trim().to_owned(),
+            });
+        }
+    }
+    found
+}
+
+/// The last `most` warnings and problems in the log, newest first.
+pub fn recent(dir: &Path, most: usize) -> Vec<Entry> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut text = Vec::new();
+    if let Ok(mut f) = File::open(dir.join("fujicloud.log")) {
+        // The end of it is plenty.
+        let len = f.metadata().map_or(0, |m| m.len());
+        let _ = f.seek(SeekFrom::Start(len.saturating_sub(512 << 10)));
+        let _ = f.read_to_end(&mut text);
+    }
+    let mut found = problems(&String::from_utf8_lossy(&text));
+    found.reverse();
+    found.truncate(most);
+    found
 }
 
 pub fn init(dir: &Path, version: &str) {
@@ -45,6 +132,12 @@ pub fn init(dir: &Path, version: &str) {
     };
     #[cfg(windows)]
     last_words::install(&file);
+    // Each run of the app under its own heading.
+    let started = chrono::Local::now().format("%A %-d %B %Y, %H:%M");
+    let _ = writeln!(
+        &file,
+        "\n======== Fujicloud {version} opened {started} ========"
+    );
     if log::set_boxed_logger(Box::new(FileLog(Mutex::new(file)))).is_ok() {
         log::set_max_level(log::LevelFilter::Info);
     }
@@ -186,5 +279,40 @@ mod tests {
         assert!(text.contains("last words before the crash"), "{text}");
         assert!(text.contains("crashed: exception 0xc0000005 in "), "{text}");
         assert!(text.to_lowercase().contains(".exe at +0x"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn problems_are_picked_out_of_the_log() {
+        let text = [
+            "======== Fujicloud 0.2.0 opened Friday 13 November 2026, 17:40 ========".to_owned(),
+            line(
+                "2026-11-13 17:40:01",
+                log::Level::Info,
+                "library open: 2 folders",
+            ),
+            line(
+                "2026-11-13 17:40:09",
+                log::Level::Warn,
+                "pets: couldn't read C:\\Photos\\IMG_1.HEIC: not a picture\nsecond line",
+            ),
+            "2026-11-12 09:00:00 ERROR problem in a worker: boom".to_owned(),
+            line("2026-11-13 17:41:00", log::Level::Info, "done"),
+        ]
+        .join("\n");
+        let found = problems(&text);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].at, "2026-11-13 17:40:09");
+        assert!(!found[0].problem);
+        assert_eq!(
+            found[0].text,
+            "pets: couldn't read C:\\Photos\\IMG_1.HEIC: not a picture\nsecond line"
+        );
+        assert!(found[1].problem);
+        assert_eq!(found[1].text, "problem in a worker: boom");
     }
 }

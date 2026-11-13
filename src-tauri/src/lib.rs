@@ -1319,6 +1319,19 @@ async fn similar_photos(state: Shared<'_>, id: i64) -> CmdResult<Vec<Hit>> {
 struct Pending {
     todo: usize,
     unreadable: usize,
+    /// Which ones (the first few hundred).
+    unreadable_ids: Vec<i64>,
+}
+
+/// As many photos as Library health lists by name.
+const LISTED: usize = 300;
+
+/// A photo's file, for the log: its path, or its number if it's gone.
+pub fn name_of(state: &AppState, id: i64) -> String {
+    state.lib.file_of(id).map_or_else(
+        |_| format!("photo {id}"),
+        |(path, ..)| path.display().to_string(),
+    )
 }
 
 #[derive(Serialize)]
@@ -1339,6 +1352,7 @@ struct Health {
     /// Photos that couldn't be shown this session (damaged, or a kind of
     /// file that can't be read).
     unshown: usize,
+    unshown_ids: Vec<i64>,
     /// For each analysis that's on.
     smart: Option<Pending>,
     faces: Option<Pending>,
@@ -1356,13 +1370,19 @@ async fn library_health(state: Shared<'_>, deep: bool) -> CmdResult<Health> {
         let settings = state.settings.read().clone();
         let (photos, sidecars_owed) = lib.counts().map_err(err)?;
         let level = state.level();
-        let pending = |todo: Result<Vec<i64>, fuji_core::Error>, unreadable: usize| {
+        let pending = |todo: Result<Vec<i64>, fuji_core::Error>, mut failed: Vec<i64>| {
+            let unreadable = failed.len();
+            failed.truncate(LISTED);
             todo.map(|t| Pending {
                 todo: t.len().saturating_sub(unreadable),
                 unreadable,
+                unreadable_ids: failed,
             })
             .ok()
         };
+        let mut unshown_ids = protocol::failed_ids();
+        let unshown = unshown_ids.len();
+        unshown_ids.truncate(LISTED);
         Ok(Health {
             photos,
             database_problem: if deep {
@@ -1381,13 +1401,14 @@ async fn library_health(state: Shared<'_>, deep: bool) -> CmdResult<Health> {
                 .filter(|s| state.reach.is_offline(s.id))
                 .map(|s| s.label)
                 .collect(),
-            unshown: protocol::failures(),
+            unshown,
+            unshown_ids,
             smart: settings
                 .smart_search
                 .then(|| {
                     pending(
                         lib.missing_embeddings(smart::model(&state).id),
-                        state.smart.failures(),
+                        state.smart.failed_ids(),
                     )
                 })
                 .flatten(),
@@ -1396,7 +1417,7 @@ async fn library_health(state: Shared<'_>, deep: bool) -> CmdResult<Health> {
                 .then(|| {
                     pending(
                         lib.faces_todo(faces::model_id(level)),
-                        state.faces.failures(),
+                        state.faces.failed_ids(),
                     )
                 })
                 .flatten(),
@@ -1405,7 +1426,7 @@ async fn library_health(state: Shared<'_>, deep: bool) -> CmdResult<Health> {
                 .then(|| {
                     pending(
                         lib.pets_todo(fuji_core::animals::MODEL_ID),
-                        state.pets.failures(),
+                        state.pets.failed_ids(),
                     )
                 })
                 .flatten(),
@@ -1414,7 +1435,7 @@ async fn library_health(state: Shared<'_>, deep: bool) -> CmdResult<Health> {
                 .then(|| {
                     pending(
                         lib.text_todo(fuji_core::text::MODEL_ID),
-                        state.texts.failures(),
+                        state.texts.failed_ids(),
                     )
                 })
                 .flatten(),
@@ -1770,6 +1791,16 @@ fn open_log_folder(app: AppHandle) -> CmdResult<()> {
     tauri_plugin_opener::open_path(&dir, None::<&str>).map_err(err)
 }
 
+/// The warnings and problems most recently written to the log, newest
+/// first, for reading in the app.
+#[tauri::command]
+async fn recent_problems(app: AppHandle) -> CmdResult<Vec<logfile::Entry>> {
+    let dir = app.path().app_local_data_dir().map_err(err)?.join("logs");
+    tauri::async_runtime::spawn_blocking(move || logfile::recent(&dir, 200))
+        .await
+        .map_err(err)
+}
+
 // ---- app ---------------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1915,6 +1946,7 @@ pub fn run() {
             drag_files,
             open_folder,
             open_log_folder,
+            recent_problems,
             list_recipes,
             name_recipe,
             smart_status,

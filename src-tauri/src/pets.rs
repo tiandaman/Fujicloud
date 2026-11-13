@@ -95,6 +95,13 @@ impl Pets {
         self.failed.lock().len()
     }
 
+    /// The photos that couldn't be read this session.
+    pub fn failed_ids(&self) -> Vec<i64> {
+        let mut ids: Vec<i64> = self.failed.lock().iter().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     pub fn forget_failures(&self) {
         self.failed.lock().clear();
     }
@@ -226,7 +233,7 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                         crate::sidecars::save(&[id]);
                     }
                     Err(e) => {
-                        log::warn!("pets in photo {id}: {e}");
+                        log::warn!("pets: couldn't read {}: {e}", crate::name_of(state, id));
                         pets.failed.lock().insert(id);
                     }
                 }

@@ -130,11 +130,16 @@ fn remember_failure(id: i64, mtime: i64) {
     FAILED.lock().get_or_insert_default().insert((id, mtime));
 }
 
-/// How many photos couldn't be shown this session.
-pub fn failures() -> usize {
-    FAILED.lock().as_ref().map_or(0, |f| {
-        f.iter().map(|(id, _)| id).collect::<HashSet<_>>().len()
-    })
+/// The photos that couldn't be shown this session.
+pub fn failed_ids() -> Vec<i64> {
+    let mut ids: Vec<i64> = FAILED
+        .lock()
+        .as_ref()
+        .map_or_else(HashSet::new, |f| f.iter().map(|(id, _)| *id).collect())
+        .into_iter()
+        .collect();
+    ids.sort_unstable();
+    ids
 }
 
 /// Gives every rendition another chance (after "Rebuild thumbnails").

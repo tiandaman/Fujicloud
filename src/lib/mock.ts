@@ -772,10 +772,11 @@ export function mockApi(): Api {
         held: review.length,
         offline: offline ? ['Shield · Samsung T7'] : [],
         unshown: sick ? 3 : 0,
-        smart: settings.smartSearch ? { todo: 0, unreadable: 0 } : null,
-        faces: settings.faces ? { todo: sick ? 212 : 0, unreadable: sick ? 3 : 0 } : null,
-        pets: settings.pets ? { todo: 0, unreadable: 0 } : null,
-        text: settings.readText ? { todo: 0, unreadable: 0 } : null,
+        unshownIds: sick ? photos.slice(3, 6).map((p) => p.id) : [],
+        smart: settings.smartSearch ? { todo: 0, unreadable: 0, unreadableIds: [] } : null,
+        faces: settings.faces ? { todo: sick ? 212 : 0, unreadable: sick ? 3 : 0, unreadableIds: sick ? photos.slice(3, 6).map((p) => p.id) : [] } : null,
+        pets: settings.pets ? { todo: 0, unreadable: sick ? 5 : 0, unreadableIds: sick ? photos.slice(10, 15).map((p) => p.id) : [] } : null,
+        text: settings.readText ? { todo: 0, unreadable: 0, unreadableIds: [] } : null,
         backup,
       };
     },
@@ -871,6 +872,11 @@ export function mockApi(): Api {
       return settings.cacheVersion;
     },
     openLogFolder: async () => {},
+    recentProblems: async () => [
+      { at: '2026-11-13 17:40:09', problem: false, text: "pets: couldn't read \\\\SHIELD\\Samsung_T7\\Photos\\2026\\2026-10-13\\IMG_4411.HEIC: not a picture this app can open" },
+      { at: '2026-11-13 17:38:51', problem: true, text: 'problem in a worker: index out of range\nat faces::scan' },
+      { at: '2026-11-12 09:12:00', problem: false, text: 'backup check: couldn’t read D:\\Backup\\Photos\\2025\\DSCF1200.RAF: The device is not ready' },
+    ],
     pickFolder: async () => window.prompt('Folder path (mock)', '\\\\SHIELD\\Samsung_T7\\Photos'),
     async listen(event, cb) {
       const set = listeners.get(event) ?? new Set();

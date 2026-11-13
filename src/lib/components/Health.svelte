@@ -2,7 +2,7 @@
   import { api } from '../api';
   import { formatAgo, formatCount, plural } from '../format';
   import { store } from '../store.svelte';
-  import type { Pending } from '../types';
+  import type { LogEntry, Pending } from '../types';
   import Icon from './Icon.svelte';
 
   // Opening it reads the database back too.
@@ -24,8 +24,32 @@
     setTimeout(() => store.loadHealth(), 1500);
   }
 
+  /** Rows whose list of photos is open, by what they're about. */
+  let open = $state<Record<string, boolean>>({});
+  /** The log's warnings and problems, once asked for. */
+  let problems = $state<LogEntry[] | null>(null);
+
+  async function toggleProblems() {
+    problems = problems ? null : await api.recentProblems().catch(() => []);
+  }
+
+  function show(id: number) {
+    close();
+    store.viewerId = id;
+    store.focusId = id;
+  }
+
+  /** `2026-11-13 17:40:09` → "13 Nov, 17:40". */
+  function logTime(at: string) {
+    const d = new Date(at.replace(' ', 'T'));
+    return isNaN(d.getTime()) ? at : `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, ${at.slice(11, 16)}`;
+  }
+  /** A path in a message is long: its file name is what's read. */
+  const tidy = (text: string) => text.replace(/(?:(?<![A-Za-z])[A-Za-z]:[\\/]|\\\\)[^:\n]*[\\/]([^\\/:\n]+)/g, '$1');
+
   type Tone = 'ok' | 'warn' | 'bad' | 'busy' | 'off';
-  const analysis = (name: string, a: Pending | null): { tone: Tone; text: string; detail: string } =>
+  const analysis = (name: string, a: Pending | null): { tone: Tone; text: string; detail: string; ids: number[] } => ({ ...describe(name, a), ids: a?.unreadableIds ?? [] });
+  const describe = (name: string, a: Pending | null): { tone: Tone; text: string; detail: string } =>
     !a
       ? { tone: 'off', text: `${name} is off`, detail: 'Switch it on in Settings.' }
       : a.todo > 0
@@ -100,12 +124,39 @@
         {@render row('ok', 'Every change is saved to the library', '')}
       {/if}
 
+      {#snippet which(key: string, ids: number[], total: number)}
+        {#if ids.length}
+          <div class="which">
+            <button class="link" onclick={() => (open[key] = !open[key])}>{open[key] ? 'Hide them' : `Show which ${total === 1 ? 'photo' : 'photos'}`}</button>
+            {#if open[key]}
+              <ul>
+                {#each ids as id (id)}
+                  {@const p = store.byId.get(id)}
+                  <li>
+                    {#if p}
+                      <button class="link name" title="Open this photo" onclick={() => show(id)}>{p.name}</button>
+                      <span class="faint truncate" title={p.folder}>{p.folder}</span>
+                      <button class="link" onclick={() => api.reveal(id).catch((e) => store.toast(String(e), 'error'))}>Show in folder</button>
+                    {:else}
+                      <span class="faint">A photo that’s no longer in the library</span>
+                    {/if}
+                  </li>
+                {/each}
+                {#if total > ids.length}<li class="faint">and {formatCount(total - ids.length)} more</li>{/if}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+      {/snippet}
+
       {#if h.unshown}
         {@render row('warn', `${plural(h.unshown, 'photo')} couldn’t be shown`, 'Damaged, or a kind of file that can’t be opened.', { label: 'Try again', run: retry })}
+        {@render which('unshown', h.unshownIds, h.unshown)}
       {/if}
 
       {#each [analysis('Smart search', h.smart), analysis('People', h.faces), analysis('Pets', h.pets), analysis('Text in photos', h.text)] as a (a.text)}
         {@render row(a.tone, a.text, a.detail, a.tone === 'warn' ? { label: 'Try again', run: retry } : undefined)}
+        {@render which(a.text, a.ids, a.ids.length)}
       {/each}
 
       {#if !b?.target}
@@ -173,8 +224,29 @@
       {/if}
     </div>
   {/if}
+  {#if problems}
+    <div class="problems">
+      <h3>Recent problems <span class="faint">newest first</span></h3>
+      {#if !problems.length}
+        <p class="faint">Nothing has gone wrong lately.</p>
+      {:else}
+        <ul>
+          {#each problems as e, i (i)}
+            <li title={e.text}>
+              <span class="dot {e.problem ? 'bad' : 'warn'}"></span>
+              <span class="faint when">{logTime(e.at)}</span>
+              <span class="said">{tidy(e.text)}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+  {/if}
   <footer>
-    <button class="btn subtle" onclick={() => api.openLogFolder()}>Open log folder</button>
+    <span>
+      <button class="btn subtle" onclick={toggleProblems}>{problems ? 'Hide recent problems' : 'Recent problems'}</button>
+      <button class="btn subtle" onclick={() => api.openLogFolder()}>Open log folder</button>
+    </span>
     <button class="btn primary" onclick={close}>Done</button>
   </footer>
 </div>
@@ -285,6 +357,82 @@
   }
   .side.lib {
     color: #ff453a;
+  }
+  .which {
+    padding: 0 6px 9px 26px;
+    margin-top: -5px;
+    font-size: 11.5px;
+  }
+  .which ul {
+    max-height: 170px;
+    overflow-y: auto;
+  }
+  .which li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+  }
+  .which li .truncate {
+    flex: 1;
+    min-width: 0;
+  }
+  .link {
+    flex: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+  }
+  .link:hover {
+    text-decoration: underline;
+  }
+  .link.name {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .problems {
+    flex: none;
+    max-height: 34vh;
+    overflow-y: auto;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--sep);
+  }
+  .problems h3 {
+    margin: 0 0 4px;
+    font: 600 12.5px var(--font-display);
+  }
+  .problems h3 .faint {
+    margin-left: 6px;
+    font-weight: 400;
+    font-size: 11.5px;
+  }
+  .problems li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+  .problems .dot {
+    width: 7px;
+    height: 7px;
+    margin: 0;
+    align-self: center;
+  }
+  .when {
+    flex: none;
+    width: 86px;
+  }
+  .said {
+    flex: 1;
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .truncate {
     overflow: hidden;
