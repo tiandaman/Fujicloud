@@ -31,6 +31,8 @@
   const live = $derived(store.liveMovie(photo));
   let playingLive = $state(false);
   let movieFailed = $state(false);
+  /** Why, as the converter put it. */
+  let movieWhy = $state('');
   // Movies the window can't play (iPhone HEVC) are converted once by Windows.
   let converted = $state<Record<number, boolean>>({});
   let converting = $state<{ id: number; progress: number; downloading?: boolean } | null>(null);
@@ -120,7 +122,8 @@
     try {
       await api.prepareMovie(p.id);
       converted[p.id] = true;
-    } catch {
+    } catch (e) {
+      movieWhy = String(e);
       movieFailed = true;
     } finally {
       converting = null;
@@ -255,6 +258,7 @@
       wantOriginal = false;
       playingLive = false;
       movieFailed = false;
+      movieWhy = '';
       turned = false;
       endStream();
       for (const d of [1, -1, 2]) {
@@ -513,8 +517,9 @@
       <div>
         <strong>This movie can't play here</strong>
         <p class="muted">
-          It couldn't be converted either; the log file says why. Opening it in another app may still work.
+          It couldn't be converted either. Opening it in another app may still work.
         </p>
+        {#if movieWhy}<p class="why" title={movieWhy}>{movieWhy}</p>{/if}
         <button class="btn" onclick={() => api.openDefault((live ?? photo).id).catch((e) => store.toast(String(e), 'error'))}>
           <Icon name="open" size={14} /> Open in another app
         </button>
@@ -720,6 +725,14 @@
     box-shadow: var(--shadow-lg);
     text-align: center;
     pointer-events: auto;
+  }
+  .movie-failed .why {
+    max-height: 5.6em;
+    overflow: auto;
+    font: 11px/1.4 ui-monospace, Consolas, monospace;
+    color: var(--text-3);
+    overflow-wrap: anywhere;
+    user-select: text;
   }
   .movie-failed p {
     margin: 6px 0 14px;

@@ -97,6 +97,10 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Bumped to drop a cache whose build outputs pointed at folders
+          # that were no longer in it.
+          prefix-key: v1-rust
       - run: npm ci
       # GPU smart search: ship Microsoft's DirectML runtime next to the app.
       - name: Fetch DirectML

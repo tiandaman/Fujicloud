@@ -128,6 +128,16 @@ fn probe(ffmpeg: &Path, src: &Path) -> Result<Probe, Error> {
     Ok(parse_probe(&text))
 }
 
+/// What FFmpeg complained of: its last few lines, as one.
+fn said(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(3)..].join(" · ")
+}
+
 fn last_line(text: &str) -> &str {
     text.lines()
         .rev()
@@ -149,8 +159,27 @@ pub fn transcode(
     progress: &dyn Fn(f32),
 ) -> Result<(), Error> {
     let info = probe(ffmpeg, src)?;
+    match transcode_once(ffmpeg, src, dest, &info, progress, false) {
+        // Colour information FFmpeg can't make sense of stops the
+        // tone-mapping: without it the movie is flat-looking, but plays.
+        Err(first) if info.hdr => {
+            log::info!("{}: {first}; trying without tone-mapping", src.display());
+            transcode_once(ffmpeg, src, dest, &info, progress, true)
+        }
+        other => other,
+    }
+}
+
+fn transcode_once(
+    ffmpeg: &Path,
+    src: &Path,
+    dest: &Path,
+    info: &Probe,
+    progress: &dyn Fn(f32),
+    plain: bool,
+) -> Result<(), Error> {
     let mut filters = Vec::new();
-    if info.hdr {
+    if info.hdr && !plain {
         filters.push(TONEMAP);
     }
     // Even sizes, which H.264 needs.
@@ -213,7 +242,7 @@ pub fn transcode(
     if !status.success() {
         return Err(bad(format!(
             "FFmpeg couldn't convert the movie: {}",
-            last_line(&errors)
+            said(&errors)
         )));
     }
     progress(1.0);
@@ -229,13 +258,22 @@ const STREAM_EDGE: u32 = 3840;
 /// a second, so the first pictures are there in about a second. Turned
 /// upright, HDR tone-mapped, at most 4K. `hardware` lets the graphics
 /// card do the decoding where it can.
-pub fn stream(ffmpeg: &Path, src: &Path, hardware: bool) -> Result<std::process::Child, Error> {
+///
+/// `plain` leaves out the HDR tone-mapping, for a movie whose colour
+/// information FFmpeg can't make sense of: better a flat-looking movie
+/// than none.
+pub fn stream(
+    ffmpeg: &Path,
+    src: &Path,
+    hardware: bool,
+    plain: bool,
+) -> Result<std::process::Child, Error> {
     let info = probe(ffmpeg, src)?;
     // Anything bigger than 4K is shrunk first, before the tone-mapping.
     let mut filters = vec![format!(
         "scale=w={STREAM_EDGE}:h={STREAM_EDGE}:force_original_aspect_ratio=decrease:force_divisible_by=2"
     )];
-    if info.hdr {
+    if info.hdr && !plain {
         filters.push(TONEMAP.to_owned());
     }
     filters.push("format=yuv420p".to_owned());
@@ -313,7 +351,7 @@ pub fn remux(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), Error> {
 
 /// The last thing a failed FFmpeg said.
 pub fn complaint(stderr: &[u8]) -> String {
-    last_line(&String::from_utf8_lossy(stderr)).to_owned()
+    said(&String::from_utf8_lossy(stderr))
 }
 
 /// A frame about a second in (first frames are often black), upright,
@@ -497,8 +535,8 @@ mod tests {
 
             // Played while it's made: fragments on the way out, then an
             // ordinary MP4 from them.
-            for hardware in [true, false] {
-                let made = stream(&ffmpeg, &clip, hardware)
+            for (hardware, plain) in [(true, false), (false, false), (false, true)] {
+                let made = stream(&ffmpeg, &clip, hardware, plain)
                     .unwrap()
                     .wait_with_output()
                     .unwrap();
@@ -514,7 +552,7 @@ mod tests {
                 let whole = dir.join("whole.mp4");
                 remux(&ffmpeg, &part, &whole).unwrap();
                 let about = probe(&ffmpeg, &whole).unwrap();
-                assert!(!about.hdr, "{name}");
+                assert_eq!(about.hdr, plain && name == "hlg.mov", "{name}");
                 assert!((about.seconds - 3.0).abs() < 0.2, "{name}: {about:?}");
                 let head = std::fs::read(&whole).unwrap();
                 let moov = head.windows(4).position(|w| w == b"moov").unwrap();

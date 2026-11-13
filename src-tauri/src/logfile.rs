@@ -283,7 +283,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod reading {
     use super::*;
 
     #[test]

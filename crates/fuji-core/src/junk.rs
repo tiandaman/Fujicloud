@@ -99,7 +99,9 @@ pub fn measure(image: &Rgb) -> Option<Measures> {
     }
     let luma: Vec<f32> = image
         .data
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .take(w * h)
         .map(|p| 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32)
         .collect();

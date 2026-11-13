@@ -143,14 +143,17 @@ impl Streams {
 fn convert(ffmpeg: &Path, stream: &Stream, src: &Path, dest: &Path) -> Result<u8, String> {
     let err = |e: &dyn std::fmt::Display| e.to_string();
     std::fs::create_dir_all(dest.parent().unwrap_or(Path::new("."))).map_err(|e| err(&e))?;
-    for hardware in [true, false] {
+    // With the graphics card's help; without; and last without the HDR
+    // tone-mapping, which colour information FFmpeg can't read stops.
+    let attempts = [(true, false), (false, false), (false, true)];
+    for (n, (hardware, plain)) in attempts.into_iter().enumerate() {
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(&stream.part)
             .map_err(|e| err(&e))?;
-        let mut child = ffmpeg::stream(ffmpeg, src, hardware).map_err(|e| err(&e))?;
+        let mut child = ffmpeg::stream(ffmpeg, src, hardware, plain).map_err(|e| err(&e))?;
         let mut out = child.stdout.take();
         let stderr = child.stderr.take();
         *stream.child.lock() = Some(child);
@@ -205,9 +208,9 @@ fn convert(ffmpeg: &Path, stream: &Stream, src: &Path, dest: &Path) -> Result<u8
         }
         let why = ffmpeg::complaint(&said);
         // Nothing has reached the window yet, so it can start again.
-        if hardware && stream.written.load(Ordering::Relaxed) == 0 {
+        if n + 1 < attempts.len() && stream.written.load(Ordering::Relaxed) == 0 {
             log::info!(
-                "{}: not with the graphics card ({why}); trying without",
+                "{}: FFmpeg stopped ({why}); trying a plainer way",
                 src.display()
             );
             continue;
