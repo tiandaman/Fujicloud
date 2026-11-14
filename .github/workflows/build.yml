@@ -98,9 +98,12 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          # Bumped to drop a cache whose build outputs pointed at folders
-          # that were no longer in it.
-          prefix-key: v1-rust
+          # Downloaded crates only, not what was built from them: with the
+          # newer Cargo's folder layout a restored build is missing folders
+          # the app's build step looks for ("cannot find the path
+          # specified"). A build from scratch takes about 45 minutes.
+          prefix-key: v2-rust
+          cache-targets: false
       - run: npm ci
       # GPU smart search: ship Microsoft's DirectML runtime next to the app.
       - name: Fetch DirectML
