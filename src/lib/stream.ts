@@ -59,7 +59,14 @@ export function mimeOf(head: Uint8Array): string | null {
  * (it isn't there until the player has the URL). `seconds` is the movie's
  * length when known, so the scrubber is the right size from the start.
  */
-export function playStream(read: (offset: number) => Promise<Chunk>, video: () => HTMLVideoElement | null | undefined, seconds: number | null, mime?: string): Playing {
+export function playStream(
+  read: (offset: number) => Promise<Chunk>,
+  video: () => HTMLVideoElement | null | undefined,
+  seconds: number | null,
+  mime?: string,
+  /** Told why, when it fails. */
+  why: (text: string) => void = () => {},
+): Playing {
   const source = new MediaSource();
   const url = URL.createObjectURL(source);
   let stopped = false;
@@ -95,7 +102,11 @@ export function playStream(read: (offset: number) => Promise<Chunk>, video: () =
     };
 
     for (;;) {
-      if (stopped || source.readyState !== 'open') return FAILED;
+      if (stopped) return FAILED;
+      if (source.readyState !== 'open') {
+        why(`the player closed the stream (${video()?.error?.message || 'no reason given'})`);
+        return FAILED;
+      }
       // Enough is ready: let the playhead catch up before fetching more.
       if (buffer) {
         const b = buffer.buffered;
@@ -106,13 +117,19 @@ export function playStream(read: (offset: number) => Promise<Chunk>, video: () =
       }
       const { state, bytes } = await read(offset);
       if (stopped) return FAILED;
-      if (state === FAILED) return FAILED;
+      if (state === FAILED) {
+        why(offset ? 'the converter stopped part-way' : 'the converter made nothing');
+        return FAILED;
+      }
       if (!bytes.length) {
         if (state === RUNNING) {
           await wait(120);
           continue;
         }
-        if (!buffer) return FAILED;
+        if (!buffer) {
+          why('the converter finished without a playable start');
+          return FAILED;
+        }
         await settled();
         if (source.readyState === 'open') source.endOfStream();
         return state;
@@ -126,7 +143,10 @@ export function playStream(read: (offset: number) => Promise<Chunk>, video: () =
         held = [head];
         const type = mime ?? mimeOf(head);
         if (!type) continue;
-        if (!MediaSource.isTypeSupported(type)) return FAILED;
+        if (!MediaSource.isTypeSupported(type)) {
+          why(`the window can't play ${type}`);
+          return FAILED;
+        }
         buffer = source.addSourceBuffer(type);
         if (seconds && seconds > 0) source.duration = seconds;
         await append(head);
@@ -142,7 +162,7 @@ export function playStream(read: (offset: number) => Promise<Chunk>, video: () =
   };
 
   const finished = run().catch((e) => {
-    if (!stopped) console.warn('playing a movie as it converts:', e);
+    if (!stopped) why(`the player refused the movie (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`);
     return FAILED;
   });
   return {

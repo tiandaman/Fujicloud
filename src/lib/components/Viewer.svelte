@@ -75,13 +75,34 @@
     endStream();
   }
 
-  async function cannotPlay(p: Photo) {
+  /** What the player said was wrong, for the log and the card. */
+  function playerError(e?: Event) {
+    const err = (e?.currentTarget as HTMLVideoElement | undefined)?.error;
+    if (!err) return '';
+    const kinds = ['', 'stopped', 'a network problem', 'it couldn’t be decoded', 'a format the window can’t play'];
+    return `${kinds[err.code] ?? `error ${err.code}`}${err.message ? `: ${err.message}` : ''}`;
+  }
+
+  async function cannotPlay(p: Photo, e?: Event) {
     const shown = () => photo?.id === p.id || live?.id === p.id;
-    if (stream?.id === p.id) endStream();
-    else if (converted[p.id] || !api.native || converting || starting != null) {
+    const said = playerError(e);
+    // Already being got ready: the player complaining again about the
+    // original (it's shown that while waiting) is no news.
+    if (starting === p.id || converting?.id === p.id) return;
+    if (stream?.id === p.id) {
+      api.note(`${p.name}: stopped playing as it converted (${said || 'no reason given'}); converting the whole of it`);
+      endStream();
+    } else if (converted[p.id]) {
+      api.note(`${p.name}: the converted copy won't play (${said || 'no reason given'})`);
+      movieWhy = `It was converted, but the converted copy wouldn’t play either${said ? ` (${said})` : ''}.`;
+      movieFailed = true;
+      return;
+    } else if (!api.native || converting || starting != null) {
+      movieWhy = api.native ? 'Another movie is still being got ready. Open this one again in a moment.' : '';
       movieFailed = true;
       return;
     } else if (canStream()) {
+      api.note(`${p.name}: the window can't play it as it is (${said || 'no reason given'}); converting`);
       starting = p.id;
       try {
         const how = await api.playMovie(p.id);
@@ -97,6 +118,8 @@
           (offset) => api.movieChunk(p.id, offset),
           () => player,
           p.duration,
+          undefined,
+          (text) => api.note(`${p.name}: playing as it converts failed: ${text}`),
         );
         const mine = (stream = { id: p.id, play, state: RUNNING });
         streams[p.id] = play.url;
@@ -105,11 +128,14 @@
           mine.state = state;
           // It broke off part-way: convert the whole of it, the slow way.
           if (state === FAILED) cannotPlay(p);
-          else settle();
+          else {
+            api.note(`${p.name}: converted while playing (${state === KEPT ? 'kept' : 'not kept'})`, false);
+            settle();
+          }
         });
         return;
       } catch (e) {
-        console.warn('playing a movie as it converts:', e);
+        api.note(`${p.name}: couldn't start converting (${String(e)})`);
         if (!shown()) return;
       } finally {
         starting = null;
@@ -122,6 +148,7 @@
     try {
       await api.prepareMovie(p.id);
       converted[p.id] = true;
+      movieFailed = false;
     } catch (e) {
       movieWhy = String(e);
       movieFailed = true;
@@ -466,7 +493,7 @@
               ondblclick={(e) => e.stopPropagation()}
               onloadedmetadata={(e) => checkTurn(e, photo)}
               onseeking={settle}
-              onerror={() => cannotPlay(photo)}
+              onerror={(e) => cannotPlay(photo, e)}
             ></video>
           {:else}
             <img class="layer" src={api.previewUrl(photo)} alt={photo.name} draggable="false" decoding="async" use:fadeIn />
@@ -491,7 +518,7 @@
                   playingLive = false;
                   endStream();
                 }}
-                onerror={() => cannotPlay(live)}
+                onerror={(e) => cannotPlay(live, e)}
               ></video>
             {/if}
           {/if}

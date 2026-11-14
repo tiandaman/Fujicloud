@@ -1912,6 +1912,17 @@ fn rebuild_thumbnails(app: AppHandle, state: Shared) -> CmdResult<u32> {
     Ok(version)
 }
 
+/// A line for the log from the window: what the player made of a movie.
+#[tauri::command]
+fn log_note(text: String, problem: bool) {
+    let text: String = text.chars().take(600).collect();
+    if problem {
+        log::warn!("{text}");
+    } else {
+        log::info!("{text}");
+    }
+}
+
 #[tauri::command]
 fn open_log_folder(app: AppHandle) -> CmdResult<()> {
     let dir = app.path().app_local_data_dir().map_err(err)?.join("logs");
@@ -2078,6 +2089,7 @@ pub fn run() {
             drag_files,
             open_folder,
             open_log_folder,
+            log_note,
             recent_problems,
             list_recipes,
             name_recipe,
