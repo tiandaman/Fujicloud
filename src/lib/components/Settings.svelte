@@ -133,15 +133,15 @@
     </section>
 
     <section>
-      <h3><Icon name="wifi" size={16} /> Camera and phone sync</h3>
+      <h3><Icon name="sync" size={16} /> Import and sync</h3>
       <p class="hint">
-        Have the camera send shots to this PC over Wi-Fi (FUJIFILM <em>PC AutoSave</em>), and let <em>iCloud for Windows</em> download your
-        iPhone photos. Fujicloud watches those folders and copies each new photo into your library, organised by date, checking every copy
-        against the original.
+        Name the folders new photos arrive in: one you copy the camera's card into, the camera's Wi-Fi folder (FUJIFILM <em>PC AutoSave</em>),
+        or <em>iCloud for Windows</em>. Fujicloud watches them and copies each new photo into your library (on the Shield, say), organised
+        by date, checking every copy against the original, then analyses it.
       </p>
       <div class="flow">
         <div class="node"><Icon name="camera" size={18} /><span>Camera · iPhone</span></div>
-        <span class="arrow">Wi-Fi</span>
+        <span class="arrow">card · Wi-Fi</span>
         <div class="node"><Icon name="folder" size={18} /><span>Inboxes</span></div>
         <span class="arrow">LAN</span>
         <div class="node"><Icon name="drive" size={18} /><span>Shield SSD</span></div>
@@ -173,7 +173,7 @@
             </div>
           {/each}
           <div class="inline wrap">
-            <button class="btn" onclick={async () => addInbox(await api.pickFolder('Folder the camera or phone saves into'))}>
+            <button class="btn" onclick={async () => addInbox(await api.pickFolder('Folder new photos arrive in'))}>
               <Icon name="plus" size={13} stroke={2} /> Add folder…
             </button>
             {#each suggestions as s (s)}
