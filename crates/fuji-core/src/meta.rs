@@ -83,7 +83,18 @@ pub fn read(path: &Path, kind: Kind) -> Result<PhotoMeta, Error> {
                 }
             }),
         Kind::Heif => heif(path),
-        Kind::Png => png(path),
+        Kind::Png => png(path).or_else(|e| {
+            // A JPEG or HEIC saved under a .png name.
+            let mut head = [0u8; 16];
+            File::open(path)?.read_exact(&mut head)?;
+            if crate::decode::is_jpeg(&head) {
+                from_jpeg_stream(&mut BufReader::with_capacity(64 * 1024, File::open(path)?))
+            } else if crate::decode::disguise(&head) == Some(crate::decode::Disguise::Heif) {
+                heif(path)
+            } else {
+                Err(e)
+            }
+        }),
         Kind::Dng => dng(path),
         Kind::Video => crate::video::read(path),
         // Edits can be hundreds of MB; read just the header. Date, camera and

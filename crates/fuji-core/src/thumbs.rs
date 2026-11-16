@@ -127,7 +127,17 @@ impl Cache {
     fn generate_from_picture(&self, src: &Source, size: Size, path: &Path) -> Result<(), Error> {
         // HEIF and PSD/TIFF edits are expensive to decode (and may be large
         // network reads): make both renditions from one decode.
-        if !matches!(src.kind, Kind::Jpeg | Kind::Raf) {
+        // A JPEG saved under a .png name is made like any JPEG (turned
+        // upright by its EXIF, which a decoded PNG has no need of).
+        let jpeg_inside = src.kind == Kind::Png && {
+            use std::io::Read;
+            let mut head = [0u8; 3];
+            fs::File::open(src.path)
+                .and_then(|mut f| f.read_exact(&mut head))
+                .is_ok()
+                && decode::is_jpeg(&head)
+        };
+        if !matches!(src.kind, Kind::Jpeg | Kind::Raf) && !jpeg_inside {
             return self.store_decoded(src, decode::image(src.path, src.kind)?);
         }
 
@@ -138,6 +148,7 @@ impl Cache {
             .flatten();
         let bytes = match &preview {
             Some(p) => fs::read(p)?,
+            None if jpeg_inside => fs::read(src.path)?,
             None => source_jpeg(src)?,
         };
         if preview.is_none() && decode::disguise(&bytes).is_some() {
@@ -646,6 +657,40 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A JPEG saved under a .png name (apps and transfer tools do it) is
+    /// shown, measured and read like the JPEG it is.
+    #[test]
+    fn a_jpeg_called_png_is_still_a_picture() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = decode::Rgb {
+            data: (0..120 * 80 * 3).map(|i| (i % 251) as u8).collect(),
+            width: 120,
+            height: 80,
+        };
+        let jpeg = render_rgb_all(image).unwrap().preview.jpeg;
+        let path = dir.path().join("IMG_6445.png");
+        fs::write(&path, &jpeg).unwrap();
+        let md = fs::metadata(&path).unwrap();
+        let src = Source {
+            path: &path,
+            kind: Kind::Png,
+            size: md.len(),
+            mtime: 1,
+        };
+        let cache = Cache::new(dir.path().join("cache")).unwrap();
+        let thumb = cache.ensure(&src, Size::Thumb).unwrap();
+        let shown = decode_rendition(&fs::read(thumb).unwrap(), 512).unwrap();
+        assert_eq!((shown.width, shown.height), (120, 80));
+        let decoded = decode::image(&path, Kind::Png).unwrap();
+        assert_eq!((decoded.width, decoded.height), (120, 80));
+        let meta = crate::meta::read(&path, Kind::Png).unwrap();
+        assert_eq!((meta.width, meta.height), (120, 80));
+        // Something that's no picture at all still says so.
+        let junk = dir.path().join("junk.png");
+        fs::write(&junk, b"not a picture").unwrap();
+        assert!(decode::image(&junk, Kind::Png).is_err());
+    }
 
     /// A pet or face filling the frame, or touching its edge, crops without
     /// error: a square a hair past the edge once failed a whole photo.

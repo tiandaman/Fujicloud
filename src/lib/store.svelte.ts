@@ -154,7 +154,7 @@ class Store {
   /** Export progress while one runs. */
   exporting = $state.raw<{ done: number; total: number } | null>(null);
   /** A question waiting for an answer (see `ask`). */
-  confirmation = $state.raw<{ title: string; body: string; action: string; resolve: (ok: boolean) => void } | null>(null);
+  confirmation = $state.raw<{ title: string; body: string; action: string; cancel?: string; calm?: boolean; resolve: (ok: boolean) => void } | null>(null);
   /** Before/after comparison, shown over everything else. */
   compare = $state.raw<{ before: number; after: number } | null>(null);
   compareMode = $state<'split' | 'slider'>('split');
@@ -576,6 +576,17 @@ class Store {
     }
 
     await api.listen<{ done: number; total: number }>('junk-progress', (p) => (this.junkProgress = p));
+    // The first time the window is closed: carry on in the background?
+    await api.listen('ask-background', async () => {
+      const keep = await this.ask(
+        'Keep Fujicloud running in the background?',
+        'Importing, syncing, backing up and analysing carry on with the window closed. Its icon sits by the clock: click it to open, right-click to quit. You can change this in Settings.',
+        'Keep running',
+        'Quit',
+      );
+      if (this.settings) this.settings = { ...this.settings, runInBackground: keep };
+      await api.closeWindow(keep);
+    });
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     await api.listen('library-changed', () => {
       clearTimeout(refreshTimer);
@@ -881,9 +892,10 @@ class Store {
   }
 
   /** Asks before doing something that can't be undone with Ctrl+Z. */
-  ask(title: string, body: string, action: string): Promise<boolean> {
+  /** `cancel` names the other answer; with it the question isn't a warning. */
+  ask(title: string, body: string, action: string, cancel?: string): Promise<boolean> {
     this.confirmation?.resolve(false);
-    return new Promise((resolve) => (this.confirmation = { title, body, action, resolve }));
+    return new Promise((resolve) => (this.confirmation = { title, body, action, cancel, calm: cancel != null, resolve }));
   }
 
   answer(ok: boolean) {

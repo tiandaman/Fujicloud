@@ -269,6 +269,7 @@ export function mockApi(): Api {
     writeXmp: true,
     reviewSync: true,
     petsBold: false,
+    runInBackground: null,
     editorPath: null,
     editRaw: true,
     smartSearch: false,
@@ -891,6 +892,7 @@ export function mockApi(): Api {
       return settings.cacheVersion;
     },
     openLogFolder: async () => {},
+    closeWindow: async () => {},
     note: (text) => console.info('log:', text),
     recentProblems: async () => [
       { at: '2026-11-13 17:40:09', problem: false, text: "pets: couldn't read \\\\SHIELD\\Samsung_T7\\Photos\\2026\\2026-10-13\\IMG_4411.HEIC: not a picture this app can open" },

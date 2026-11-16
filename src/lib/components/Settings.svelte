@@ -271,6 +271,13 @@
         </div>
         <input type="checkbox" class="switch" bind:checked={draft.reviewSync} />
       </label>
+      <label class="row toggle">
+        <div>
+          <span>Keep running when the window is closed</span>
+          <small class="faint">Importing, syncing, backing up and analysing carry on. The icon by the clock opens the window again; right-click it to quit.</small>
+        </div>
+        <input type="checkbox" class="switch" checked={draft.runInBackground === true} onchange={(e) => (draft.runInBackground = e.currentTarget.checked)} />
+      </label>
     </section>
 
     <section>

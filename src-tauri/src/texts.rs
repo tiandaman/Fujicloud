@@ -219,7 +219,12 @@ fn run(app: &AppHandle, state: &AppState) -> Result<(), String> {
                     Some(r) => r,
                     None => reader.insert(texts.reader(state)?),
                 };
-                let edge = image.width.max(image.height);
+                // Read from its bigger copy, there's no better to wait for,
+                // however small the photo itself is.
+                let edge = match has_preview(state, id) {
+                    true => image.width.max(image.height).max(fuji_core::written::SHARP),
+                    false => image.width.max(image.height),
+                };
                 match fuji_core::guard(|| reader.read(&image)) {
                     Ok(lines) => {
                         state

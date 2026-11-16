@@ -33,6 +33,12 @@
     problems = problems ? null : await api.recentProblems().catch(() => []);
   }
 
+  /** Damaged for good: off to the trash (asked first, and undoable from there). */
+  async function trash(ids: number[]) {
+    await store.deletePhotos(ids, 'file');
+    store.loadHealth();
+  }
+
   function show(id: number) {
     close();
     store.viewerId = id;
@@ -137,6 +143,7 @@
                       <button class="link name" title="Open this photo" onclick={() => show(id)}>{p.name}</button>
                       <span class="faint truncate" title={p.folder}>{p.folder}</span>
                       <button class="link" onclick={() => api.reveal(id).catch((e) => store.toast(String(e), 'error'))}>Show in folder</button>
+                      <button class="link danger" title="Move this file to the trash" onclick={() => trash([id])}>Trash</button>
                     {:else}
                       <span class="faint">A photo that’s no longer in the library</span>
                     {/if}
@@ -144,6 +151,9 @@
                 {/each}
                 {#if total > ids.length}<li class="faint">and {formatCount(total - ids.length)} more</li>{/if}
               </ul>
+              {#if ids.filter((id) => store.byId.has(id)).length > 1}
+                <button class="link danger" onclick={() => trash(ids.filter((id) => store.byId.has(id)))}>Move all {ids.filter((id) => store.byId.has(id)).length} to the trash…</button>
+              {/if}
             {/if}
           </div>
         {/if}
@@ -388,6 +398,9 @@
   }
   .link:hover {
     text-decoration: underline;
+  }
+  .link.danger {
+    color: #ff6961;
   }
   .link.name {
     color: var(--text);

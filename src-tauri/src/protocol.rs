@@ -291,11 +291,11 @@ pub fn handle(state: &AppState, request: &Request<Vec<u8>>) -> Response<Vec<u8>>
         Err(fuji_core::Error::Unsupported(_)) => status(StatusCode::UNSUPPORTED_MEDIA_TYPE),
         Err(fuji_core::Error::Io(e)) => {
             // Possibly the network: worth trying again later.
-            log::warn!("{path}: {e}");
+            log::warn!("couldn't show {} ({kind}): {e}", crate::name_of(state, id));
             status(StatusCode::INTERNAL_SERVER_ERROR)
         }
         Err(e) => {
-            log::warn!("{path}: {e}");
+            log::warn!("couldn't show {} ({kind}): {e}", crate::name_of(state, id));
             if kind != "o" {
                 remember_failure(id, mtime);
             }

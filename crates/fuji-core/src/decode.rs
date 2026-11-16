@@ -39,7 +39,18 @@ pub fn image(path: &Path, kind: Kind) -> Result<Rgb, Error> {
 pub fn image_at(path: &Path, kind: Kind, long_edge: u32) -> Result<Rgb, Error> {
     match kind {
         Kind::Heif => heif(&std::fs::read(path)?),
-        Kind::Png => png(&std::fs::read(path)?),
+        Kind::Png => {
+            let bytes = std::fs::read(path)?;
+            // Apps and transfer tools save JPEG and HEIC pictures under a
+            // .png name too: go by what the file is, not what it's called.
+            if is_jpeg(&bytes) {
+                crate::thumbs::decode_rendition(&bytes, long_edge)
+            } else if disguise(&bytes) == Some(Disguise::Heif) {
+                heif(&bytes)
+            } else {
+                png(&bytes)
+            }
+        }
         Kind::Dng => dng(path, long_edge),
         Kind::Video => crate::video::poster(path, long_edge),
         Kind::Psd | Kind::Tiff => {
@@ -138,6 +149,11 @@ fn jxl(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), Error> {
 pub enum Disguise {
     Heif,
     Png,
+}
+
+/// Whether a file's first bytes are a JPEG's.
+pub fn is_jpeg(head: &[u8]) -> bool {
+    head.starts_with(&[0xFF, 0xD8, 0xFF])
 }
 
 /// Recognises a disguised picture from its first bytes.

@@ -36,6 +36,11 @@ pub struct Settings {
     /// filed without asking, a few more wrongly.
     #[serde(default)]
     pub pets_bold: bool,
+    /// Closing the window keeps the app running by the clock (syncing,
+    /// backing up and analysing carry on). Unset until asked, at the first
+    /// close.
+    #[serde(default)]
+    pub run_in_background: Option<bool>,
     /// Explicit editor path; Photoshop is auto-detected when unset.
     pub editor_path: Option<PathBuf>,
     /// Open the RAF (via Camera Raw) instead of the JPEG for RAW+JPEG pairs.
@@ -68,6 +73,7 @@ impl Default for Settings {
             write_xmp: true,
             review_sync: true,
             pets_bold: false,
+            run_in_background: None,
             editor_path: None,
             edit_raw: true,
             smart_search: false,

@@ -1942,6 +1942,67 @@ async fn recent_problems(app: AppHandle) -> CmdResult<Vec<logfile::Entry>> {
 
 // ---- app ---------------------------------------------------------------------
 
+/// Brings the window back from by the clock.
+fn show_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// The icon by the clock: click to open, right-click to open or quit.
+fn add_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    let open = MenuItem::with_id(app, "open", "Open Fujicloud", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Fujicloud", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("Fujicloud")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+/// Closing the window: keep running by the clock, or quit. Remembered, and
+/// done now (the window asked because it was being closed).
+#[tauri::command]
+fn close_window(app: AppHandle, state: Shared, background: bool) -> CmdResult<()> {
+    {
+        let mut settings = state.settings.write();
+        settings.run_in_background = Some(background);
+        settings.save(&state.settings_path).map_err(err)?;
+    }
+    if background {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.hide();
+        }
+    } else {
+        app.exit(0);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn on(yes: bool) -> &'static str {
     if yes { "on" } else { "off" }
@@ -1949,6 +2010,33 @@ fn on(yes: bool) -> &'static str {
 
 pub fn run() {
     tauri::Builder::default()
+        // Started again while it's running (perhaps hidden by the clock):
+        // the window that's there comes forward instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_window(app)
+        }))
+        .on_window_event(|window, event| {
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+            let Some(state) = window.app_handle().try_state::<Arc<AppState>>() else {
+                return;
+            };
+            let keep = state.settings.read().run_in_background;
+            match keep {
+                // Carries on by the clock.
+                Some(true) => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                Some(false) => {}
+                // Not asked yet: the window asks, then closes or hides.
+                None => {
+                    api.prevent_close();
+                    let _ = window.emit("ask-background", ());
+                }
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_opener::init())
@@ -2029,6 +2117,9 @@ pub fn run() {
                     on(s.pets)
                 );
             }
+            if let Err(e) = add_tray(app) {
+                log::warn!("no icon by the clock: {e}");
+            }
             app.manage(state.clone());
             sidecars::start(app.handle().clone(), state.clone());
             sidecars::flush(&state);
@@ -2089,6 +2180,7 @@ pub fn run() {
             drag_files,
             open_folder,
             open_log_folder,
+            close_window,
             log_note,
             recent_problems,
             list_recipes,

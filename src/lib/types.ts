@@ -135,6 +135,8 @@ export interface Settings {
   reviewSync: boolean;
   /** File pets under the named pet they're most like more readily. */
   petsBold: boolean;
+  /** Closing the window keeps the app running by the clock; null until asked. */
+  runInBackground: boolean | null;
   editorPath: string | null;
   editRaw: boolean;
   smartSearch: boolean;

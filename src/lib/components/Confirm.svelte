@@ -23,8 +23,8 @@
   <h2 id="confirm-title">{c.title}</h2>
   <p id="confirm-body">{c.body}</p>
   <footer>
-    <button class="btn subtle" onclick={() => store.answer(false)}>Cancel</button>
-    <button class="btn danger" use:focus onclick={() => store.answer(true)}>{c.action}</button>
+    <button class="btn subtle" onclick={() => store.answer(false)}>{c.cancel ?? 'Cancel'}</button>
+    <button class="btn" class:danger={!c.calm} class:primary={c.calm} use:focus onclick={() => store.answer(true)}>{c.action}</button>
   </footer>
 </div>
 

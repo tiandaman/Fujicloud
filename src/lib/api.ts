@@ -117,6 +117,8 @@ export interface Api {
   /** Rebuilds every thumbnail and preview; returns the new cache version. */
   rebuildThumbnails(): Promise<number>;
   openLogFolder(): Promise<void>;
+  /** Answers "keep running when closed?": remembered, then the window hides or the app quits. */
+  closeWindow(background: boolean): Promise<void>;
   /** Writes a line to the log from the window (a warning unless `problem` is false). */
   note(text: string, problem?: boolean): void;
   /** The log's latest warnings and problems, newest first. */
@@ -250,6 +252,7 @@ function tauriApi(): Api {
     cacheInfo: () => invoke('cache_info'),
     rebuildThumbnails: () => invoke('rebuild_thumbnails'),
     openLogFolder: () => invoke('open_log_folder'),
+    closeWindow: (background) => invoke('close_window', { background }),
     note: (text, problem = true) => void invoke('log_note', { text, problem }).catch(() => {}),
     recentProblems: () => invoke('recent_problems'),
     listRecipes: () => invoke('list_recipes'),

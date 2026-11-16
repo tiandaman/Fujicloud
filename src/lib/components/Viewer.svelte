@@ -399,8 +399,14 @@
       case 'End':
         if (order.length) store.viewerId = order[order.length - 1].id;
         break;
-      case 'Escape':
       case ' ':
+        // A movie plays and pauses; a photo closes, as Space opened it.
+        if (photo?.kind === 'video' && player) {
+          if (player.paused) player.play().catch(() => {});
+          else player.pause();
+        } else close();
+        break;
+      case 'Escape':
       case 'Backspace':
         close();
         break;
